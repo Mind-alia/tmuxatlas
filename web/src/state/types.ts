@@ -57,6 +57,8 @@ export interface PaneState {
   height: number
   current_command?: string
   pid?: number
+  /** The coding agent in the pane, even behind a launcher such as python3. */
+  agent?: string
 }
 
 export interface ToolEventState {

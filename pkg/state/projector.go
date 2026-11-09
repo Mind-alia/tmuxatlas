@@ -77,6 +77,7 @@ func ReconcileHosts(current Projection, hosts []HostSnapshot) ([]Operation, erro
 						Index: tmuxPane.Index, Active: tmuxPane.Active,
 						Width: tmuxPane.Width, Height: tmuxPane.Height,
 						CurrentCommand: tmuxPane.CurrentCommand, PID: tmuxPane.PID,
+						Agent: tmuxPane.Agent,
 					}
 				}
 			}

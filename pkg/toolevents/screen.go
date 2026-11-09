@@ -75,6 +75,11 @@ func ClassifyScreen(tool Tool, content string, silent time.Duration) Observation
 		return classifyClaude(content, lines)
 	case ToolCodex:
 		return classifyCodex(content, lines)
+	case ToolAgy:
+		// Its screen while working has not been captured yet. Judging it from
+		// its output would call typing or a dictation timer work, and the
+		// silence after it a finished turn: no status rather than a guess.
+		return Observation{}
 	default:
 		return classifyGeneric(content, silent)
 	}

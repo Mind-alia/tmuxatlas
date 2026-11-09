@@ -89,6 +89,14 @@ Hooks are the fastest signal. The watcher corrects what they cannot report, such
 
 **Process tree match:** Binary named `opencode`.
 
+### agy (Antigravity CLI)
+
+**Detection:** Process tree only. A launcher often starts it (`python3 → agy`), so the pane's foreground command is not `agy`; the server publishes the agent of each pane as `agent` in the session state.
+
+**Status:** None yet. Its screen while working has not been captured, and judging it from its output would call typing or a dictation timer work, and the silence after it a finished turn. Talk still drives its `/voice` dictation (see [Voice input](voice.md)).
+
+**Process tree match:** Binary named `agy`.
+
 ## How Each Layer Works
 
 ### Hooks

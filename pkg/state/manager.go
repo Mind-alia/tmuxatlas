@@ -6,6 +6,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/LosFurina/tmuxatlas/pkg/tmux"
+	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
 )
 
 // Manager holds the central state tree
@@ -125,6 +126,9 @@ func (m *Manager) loadSessionDetails(session *tmux.Session) error {
 		if err != nil {
 			logrus.WithError(err).WithField("window", win.Name).Warn("failed to list panes")
 			continue
+		}
+		for _, pane := range panes {
+			pane.Agent = string(toolevents.PaneAgent(pane.CurrentCommand, pane.PID))
 		}
 		win.Panes = panes
 	}

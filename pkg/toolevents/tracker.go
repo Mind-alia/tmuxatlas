@@ -15,6 +15,9 @@ const (
 	ToolCodex    Tool = "codex"
 	ToolCopilot  Tool = "copilot"
 	ToolOpenCode Tool = "opencode"
+	// ToolAgy is the Antigravity CLI. Its working screen is not known yet, so the
+	// watcher records no status for it (see ClassifyScreen).
+	ToolAgy Tool = "agy"
 )
 
 // Status represents the current state of an agent

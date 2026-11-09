@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronDown, Maximize2, Mic, Plus, X } from 'lucide-react'
 import { useMicStream } from '../hooks/useMicStream'
 import { getBrandStorage, setBrandStorage } from '../lib/brandStorage'
+import { activePaneOf, talkAgentOf } from '../lib/talkAgent'
 import { useHostLabel } from '../lib/hostLabel'
 import { isAttentionStatus, type WorkspaceViewModel } from '../workspace/model'
 import { IconButton, StatusIcon } from './ui'
@@ -11,11 +12,6 @@ const storageKey = 'wall-targets:v1'
 type WallSession = WorkspaceViewModel['sessions'][number]
 const noLocalHosts: ReadonlySet<string> = new Set()
 
-/** Claude runs in the pane the session shows, the one Talk speaks to. */
-function claudeInActivePane(session: WallSession): boolean {
-  const window = session.source?.windows?.find(item => item.active)
-  return window?.panes?.find(pane => pane.active)?.current_command === 'claude'
-}
 
 /**
  * Up to four live sessions side by side. Until the account chooses its tiles,
@@ -237,7 +233,8 @@ export function WallView({
                     sessionStatus={session.status}
                     hostLocal={localHosts.has(session.hostId)}
                     voiceAllowed
-                    claudeActive={claudeInActivePane(session)}
+                    claudeActive={talkAgentOf(activePaneOf(session.source)) === 'claude'}
+                    agyActive={talkAgentOf(activePaneOf(session.source)) === 'agy'}
                     talkSlot={talkSlots[key]}
                     sharedMic={mic}
                     talkLocked={talking !== null && talking !== key}

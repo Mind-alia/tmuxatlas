@@ -516,6 +516,83 @@ describe('Claude talk button', () => {
     })
   })
 
+  describe('with agy', () => {
+    const agyTalk = () => screen.getByRole('button', { name: 'Talk : parler à agy' })
+    const F5 = new TextEncoder().encode('\x1b[15~')
+    const rule = '─'.repeat(76)
+    const agyScreen = (prompt: string, footer = '') => [
+      rule,
+      prompt,
+      rule,
+      ...(footer ? [footer] : []),
+      '? for shortcuts      Gemini 3.8 Flash · medium',
+    ]
+    const recording = agyScreen('>', '● Recording 00:01  enter or f5 to insert · esc to discard')
+    const finishing = agyScreen('>', '  Finishing up... enter or f5 to insert what you have · esc to discard')
+    const advance = (ms: number) =>
+      act(() => {
+        vi.advanceTimersByTime(ms)
+      })
+    const start = () => {
+      render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} agyActive />)
+      terminal.readScreen.mockReturnValue(agyScreen('>'))
+      fireEvent.click(agyTalk())
+      terminal.readScreen.mockReturnValue(recording)
+      advance(200)
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers()
+      terminal.sendRawInput.mockClear()
+      terminal.readScreen.mockReset().mockReturnValue([])
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('presses F5 to start and F5 to stop, leaving the transcript to edit', () => {
+      start()
+      expect(terminal.sendRawInput).toHaveBeenCalledTimes(1)
+      expect(terminal.sendRawInput).toHaveBeenLastCalledWith(F5)
+      expect(terminal.setVoiceHold).not.toHaveBeenCalled()
+      fireEvent.click(stop())
+      expect(terminal.sendRawInput).toHaveBeenCalledTimes(2)
+      expect(terminal.sendRawInput).toHaveBeenLastCalledWith(F5)
+      expect(agyTalk()).toBeEnabled()
+    })
+
+    it('presses Enter once the transcript is in the prompt', () => {
+      start()
+      fireEvent.click(send())
+      expect(terminal.sendRawInput).toHaveBeenLastCalledWith(F5)
+      terminal.readScreen.mockReturnValue(finishing)
+      advance(2_000)
+      terminal.readScreen.mockReturnValue(agyScreen('> Corrige le test du mur'))
+      advance(1_000)
+      expect(terminal.sendRawInput).toHaveBeenLastCalledWith(new Uint8Array([13]))
+      expect(terminal.sendRawInput).toHaveBeenCalledTimes(3)
+    })
+
+    it('sends nothing when agy transcribed nothing', () => {
+      start()
+      fireEvent.click(send())
+      terminal.readScreen.mockReturnValue(['> /voice', '  ⎿  No speech detected', ...agyScreen('>')])
+      advance(3_000)
+      expect(terminal.sendRawInput).toHaveBeenCalledTimes(2)
+      expect(screen.getByRole('alert').textContent).toContain('agy n’a rien transcrit')
+    })
+
+    it('never presses F5 unless agy is at its prompt or recording', () => {
+      render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} agyActive />)
+      terminal.readScreen.mockReturnValue(recording)
+      fireEvent.click(agyTalk())
+      expect(terminal.sendRawInput).not.toHaveBeenCalled()
+      terminal.readScreen.mockReturnValue(agyScreen('>'))
+      fireEvent.click(stop())
+      expect(terminal.sendRawInput).not.toHaveBeenCalled()
+    })
+  })
+
   it('stays disabled until the microphone and Terminal are ready', () => {
     mic.state = 'off'
     const view = render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} claudeActive />)

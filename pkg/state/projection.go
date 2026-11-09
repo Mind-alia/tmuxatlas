@@ -92,6 +92,7 @@ type Pane struct {
 	Height         int       `json:"height"`
 	CurrentCommand string    `json:"current_command,omitempty"`
 	PID            int       `json:"pid,omitempty"`
+	Agent          string    `json:"agent,omitempty"`
 }
 
 type ToolEvent struct {

@@ -1,6 +1,6 @@
 # Voice input from the browser
 
-Programs on the server that capture from the default audio device, such as Claude Code `/voice`, need a microphone, and a remote server has none. With `TMUXATLAS_VOICE=on`, TmuxAtlas gives the server a virtual microphone fed by the browser.
+Programs on the server that capture from the default audio device, such as Claude Code and agy `/voice`, need a microphone, and a remote server has none. With `TMUXATLAS_VOICE=on`, TmuxAtlas gives the server a virtual microphone fed by the browser.
 
 ```
 browser tab mic → /ws/mic → pacat → the tab's PulseAudio null sink → monitor source → ALSA pulse plugin → SoX
@@ -9,8 +9,10 @@ browser tab mic → /ws/mic → pacat → the tab's PulseAudio null sink → mon
 ## Setup
 
 ```bash
-sudo apt-get install -y sox pulseaudio pulseaudio-utils libasound2-plugins
+sudo apt-get install -y sox pulseaudio pulseaudio-utils libasound2-plugins alsa-utils
 ```
+
+agy records with `arecord`, from `alsa-utils`; without it, its `/voice` reports "No microphone recorder found".
 
 Set `TMUXATLAS_VOICE=on` for the TmuxAtlas service and restart it. At startup, and for each microphone stream, TmuxAtlas:
 
@@ -30,16 +32,19 @@ The microphone turns on when you open a local session; the browser asks for perm
 
 Claude Code needs voice enabled in hold mode, its default. Run `/voice hold` once if it is not; the setting persists.
 
-1. Click **Talk** in the status bar below the Terminal. It is active only while Claude Code runs in the active pane. TmuxAtlas holds the space bar until you stop, so you can release the button while you speak.
+1. Click **Talk** in the status bar below the Terminal, or in a tile header on the Wall. It is active only while Claude Code or agy runs in the active pane. For Claude, TmuxAtlas holds the space bar until you stop, so you can release the button while you speak. For agy, it presses `F5`, which starts agy's dictation, and `F5` again when you stop.
 2. When you finish, click one of the two buttons that replace **Talk**:
    - The **square** stops recording and leaves the transcription in the prompt, so you can edit it and press Enter.
-   - The **arrow** stops recording and sends the prompt once Claude has inserted the transcription. If Claude was not listening or could not transcribe, nothing is sent.
+   - The **arrow** stops recording and sends the prompt once the agent has inserted the transcription. If it was not listening or could not transcribe, nothing is sent.
+
+agy is found through its process tree, so Talk also works when a launcher starts it and the pane shows another command, such as `python3`. agy allows one dictation stream at a time per account.
 
 ## Limits
 
 - **Local sessions only.** The button appears only for sessions on the machine serving the page. Sessions on other hosts are not relayed.
 - **Secure context.** Browsers allow the microphone only over HTTPS or on `localhost`.
 - **One microphone per tab, up to 16 per host.** Each tab has its own virtual microphone, so several people can dictate at the same time without hearing each other. A recorder hears the tab that last typed or pressed **Talk** in its tmux session; a recorder outside tmux, or in a session no tab has used, hears the newest tab. Two people in the same session share its recorder.
+- **agy's footer.** TmuxAtlas presses `F5` only when agy's footer shows its prompt or a recording, and the arrow sends only once the transcription is in agy's prompt. An agy update that rewords `Recording` or `Finishing up...` could stop Talk from working with it.
 - **Claude prompt and default key binding.** **Talk** repeats the space bar on the server, because Claude treats a 200 ms gap as a release. It needs Claude's prompt and the default `space` binding; in a Claude dialog or the transcript viewer, the spaces act as key presses there. The arrow also reads Claude's footer on screen, so a Claude Code update that rewords it could stop the arrow from working.
 
 Audio is forwarded to the host in real time while the microphone is on, whether or not you are dictating, and is never stored.

@@ -141,3 +141,33 @@ func TestClassifyGenericUsesOutput(t *testing.T) {
 		t.Fatalf("silent: %+v", got)
 	}
 }
+
+// Captures from a real agy pane, at its prompt and while dictating with /voice.
+var agyScreens = map[string]string{
+	"ready": strings.Join([]string{
+		"> /voice", "  ⎿  No speech detected", "",
+		strings.Repeat("─", 76), ">", strings.Repeat("─", 76),
+		"? for shortcuts                                    Gemini 3.8 Flash · medium",
+	}, "\n"),
+	"recording": strings.Join([]string{
+		strings.Repeat("─", 76), ">", strings.Repeat("─", 76),
+		"● Recording 00:00  enter or f5 to insert · esc to discard",
+		"? for shortcuts                                    Gemini 3.8 Flash · medium",
+	}, "\n"),
+	"finishing": strings.Join([]string{
+		strings.Repeat("─", 76), ">", strings.Repeat("─", 76),
+		"  Finishing up... enter or f5 to insert what you have · esc to discard",
+		"? for shortcuts                                    Gemini 3.8 Flash · medium",
+	}, "\n"),
+}
+
+// agy's working screen is unknown: its output or its silence must not become a status.
+func TestClassifyAgyGuessesNothing(t *testing.T) {
+	for name, screen := range agyScreens {
+		for _, silent := range []time.Duration{0, time.Minute} {
+			if got := ClassifyScreen(ToolAgy, screen, silent); got != (Observation{}) {
+				t.Errorf("%s after %v of silence: %+v", name, silent, got)
+			}
+		}
+	}
+}

@@ -36,6 +36,7 @@ import {
   type CommandScope,
 } from './commands/registry'
 import { buildWorkspaceViewModel, toolEventStatusLabel } from './workspace/model'
+import { talkAgentOf } from './lib/talkAgent'
 import { useWorkspacePreferences } from './workspace/preferences'
 
 function errorMessage(err: unknown): string {
@@ -952,7 +953,8 @@ function AppInner({
                   zenMode={zenMode}
                   hostLocal={activeHost?.local === true}
                   voiceAllowed
-                  claudeActive={activePane?.current_command === 'claude'}
+                  claudeActive={talkAgentOf(activePane) === 'claude'}
+                  agyActive={talkAgentOf(activePane) === 'agy'}
                   talkSlot={statusBarSlot}
                   onToggleFullscreen={toggleFullscreen}
                   onToggleZen={toggleZen}

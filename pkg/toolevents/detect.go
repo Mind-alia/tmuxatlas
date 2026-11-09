@@ -49,6 +49,31 @@ var agentPatterns = []agentPattern{
 			return matchBinaryName(args, "opencode")
 		},
 	},
+	{
+		// Often started by a launcher, such as python3 → agy.
+		tool: ToolAgy,
+		match: func(args []string) bool {
+			return matchBinaryName(args, "agy")
+		},
+	},
+}
+
+// PaneAgent names the agent running in a pane, from its foreground command or
+// its process tree: a launcher can hide the agent behind its own name. It
+// returns "" for a shell or a program that is not an agent.
+func PaneAgent(currentCommand string, pid int) Tool {
+	if shells[currentCommand] {
+		return ""
+	}
+	switch tool := Tool(currentCommand); tool {
+	case ToolClaude, ToolCodex, ToolCopilot, ToolOpenCode, ToolAgy:
+		return tool
+	}
+	if pid <= 0 {
+		return ""
+	}
+	tool, _ := DetectAgentInProcessTree(pid)
+	return tool
 }
 
 // matchBinaryName checks if the first arg (the binary) has the given base name.

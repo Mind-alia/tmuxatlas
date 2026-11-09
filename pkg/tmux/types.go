@@ -62,4 +62,7 @@ type Pane struct {
 	Height         int    `json:"height"`
 	CurrentCommand string `json:"current_command"`
 	PID            int    `json:"pid"`
+	// Agent is the coding agent running in the pane, found through its process
+	// tree when a launcher hides it behind another command.
+	Agent string `json:"agent,omitempty"`
 }

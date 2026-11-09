@@ -118,7 +118,17 @@ describe('Mur', () => {
         windows: [{ active: true, panes: [{ active: true, current_command: command }] }],
       } as never,
     })
-    const tiles = [withPane('claude-a', 'claude'), withPane('claude-b', 'claude'), withPane('shell', 'zsh')]
+    const tiles = [
+      withPane('claude-a', 'claude'),
+      withPane('claude-b', 'claude'),
+      withPane('shell', 'zsh'),
+      {
+        ...session('agy', 'idle'),
+        source: {
+          windows: [{ active: true, panes: [{ active: true, current_command: 'python3', agent: 'agy' }] }],
+        } as never,
+      },
+    ]
     const talkWorkspace: WorkspaceViewModel = {
       sessions: tiles,
       hosts: [],
@@ -149,7 +159,13 @@ describe('Mur', () => {
       expect(a.talkSlot).toBeInstanceOf(HTMLElement)
       expect(a.talkSlot?.closest('header')).not.toBeNull()
       expect(terminalProps.get('shell')).toMatchObject({ claudeActive: false })
+      expect(terminalProps.get('claude-a')).toMatchObject({ agyActive: false })
       expect(screen.getByRole('button', { name: 'Désactiver le micro' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('reconnaît agy derrière son lanceur', () => {
+      show(['host/agy'], new Set(['host']))
+      expect(terminalProps.get('agy')).toMatchObject({ claudeActive: false, agyActive: true })
     })
 
     it('n’ouvre pas le micro quand aucune tuile n’est sur cette machine', () => {

@@ -33,6 +33,7 @@ export function selectSessions(state: ApplicationState): Session[] {
               height: pane.height,
               current_command: pane.current_command || '',
               pid: pane.pid || 0,
+              ...(pane.agent ? { agent: pane.agent } : {}),
             }))
           return {
             id: window.tmux_id,

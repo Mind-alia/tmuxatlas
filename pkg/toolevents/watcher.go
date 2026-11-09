@@ -216,7 +216,7 @@ func (w *Watcher) identify(pane WatchedPane, event *Event) (Tool, bool) {
 		return "", false
 	}
 	switch tool := Tool(pane.CurrentCommand); tool {
-	case ToolClaude, ToolCodex, ToolCopilot, ToolOpenCode:
+	case ToolClaude, ToolCodex, ToolCopilot, ToolOpenCode, ToolAgy:
 		return tool, true
 	}
 	if tool, ok := w.detect(pane.PID); ok {

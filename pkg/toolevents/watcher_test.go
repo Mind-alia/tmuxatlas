@@ -270,3 +270,22 @@ func TestHookCompletionWithoutBackgroundWorkIsKept(t *testing.T) {
 		t.Fatalf("finished turn: %q", got)
 	}
 }
+
+// agy is known as an agent, hidden behind its launcher, but gets no status.
+func TestWatcherDetectsAgyWithoutGuessingItsStatus(t *testing.T) {
+	f := newWatcherFixture()
+	f.panes[0].CurrentCommand = "python3"
+	f.watcher.detect = func(int) (Tool, bool) { return ToolAgy, true }
+	f.watcher.RecordOutput("%1")
+	for _, screen := range agyScreens {
+		f.screen = screen
+		f.tick(t)
+		f.tick(t)
+	}
+	if status := f.status(t); status != "" {
+		t.Fatalf("agy got a status: %q", status)
+	}
+	if got := f.watcher.DetectedPanes()["%1"]; got != ToolAgy {
+		t.Fatalf("detected = %q", got)
+	}
+}

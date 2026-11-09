@@ -79,7 +79,7 @@ func (p Projection) SessionViews() []*tmux.Session {
 					SessionID: source.TmuxID, Index: sourcePane.Index,
 					Active: sourcePane.Active, Width: sourcePane.Width,
 					Height: sourcePane.Height, CurrentCommand: sourcePane.CurrentCommand,
-					PID: sourcePane.PID,
+					PID: sourcePane.PID, Agent: sourcePane.Agent,
 				})
 			}
 			session.Windows = append(session.Windows, window)

@@ -14,6 +14,8 @@ import { terminalTargetKey } from '../lib/terminalInput'
 import type { ConnectionState } from '../state/types'
 import { deriveTerminalWorkspaceConnection, type TerminalWorkspaceConnectionState } from '../state/terminalConnection'
 import { useMicStream, type MicState } from '../hooks/useMicStream'
+import { readAgyVoiceStatus } from '../lib/agyVoiceStatus'
+import type { TalkAgent } from '../lib/talkAgent'
 import { TalkButton } from './TalkButton'
 import { TerminalCockpit } from './TerminalCockpit'
 import { TerminalContextMenu, type TerminalMenuPosition } from './TerminalContextMenu'
@@ -61,6 +63,8 @@ export interface TerminalProps {
   voiceAllowed?: boolean
   /** Claude Code runs in the pane this Terminal has active. */
   claudeActive?: boolean
+  /** agy runs in the pane this Terminal has active; Talk toggles its F5 dictation. */
+  agyActive?: boolean
   /** Where the talk button renders; it is absent while the status bar is hidden. */
   talkSlot?: HTMLElement | null
   /**
@@ -78,6 +82,9 @@ export interface TerminalProps {
   onCommandActionsChange?: (actions: TerminalCommandActions | null) => void
   terminalDrafts?: TerminalDraftStore
 }
+
+// F5 as a terminal sends it: agy's /voice key.
+const AGY_DICTATION_KEY = '\x1b[15~'
 
 const terminalStateMessages: Record<TerminalWorkspaceConnectionState, string> = {
   connecting: 'Connexion au terminal…',
@@ -119,6 +126,7 @@ export function Terminal({
   hostLocal,
   voiceAllowed = true,
   claudeActive,
+  agyActive,
   talkSlot,
   sharedMic,
   talkLocked = false,
@@ -182,13 +190,31 @@ export function Terminal({
     mic.toggle()
     focus()
   }, [focus, mic])
+  const talkAgent: TalkAgent | null = claudeActive ? 'claude' : agyActive ? 'agy' : null
+  // The agent a hold started with, so that its release reaches the same agent.
+  const heldAgent = useRef<TalkAgent | null>(null)
   const holdSpace = useCallback(
     (on: boolean) => {
-      setVoiceHold(on)
+      const agent = on ? talkAgent : heldAgent.current
+      heldAgent.current = on ? talkAgent : null
+      if (agent === 'agy') {
+        // F5 starts agy's dictation and, while it records, inserts the transcript.
+        // Reading its footer first keeps a stray F5 from starting or stopping one.
+        const status = readAgyVoiceStatus(readScreen())
+        if (on ? status === 'idle' : status === 'recording') {
+          try {
+            sendRawInput(new TextEncoder().encode(AGY_DICTATION_KEY))
+          } catch {
+            /* the Terminal reports the disconnect */
+          }
+        }
+      } else {
+        setVoiceHold(on)
+      }
       onTalkHold?.(on)
       focus()
     },
-    [focus, onTalkHold, setVoiceHold],
+    [focus, onTalkHold, readScreen, sendRawInput, setVoiceHold, talkAgent],
   )
   // Embedded on the Wall, Talk follows the Wall's shared microphone.
   const talkMic = embedded ? sharedMic : mic
@@ -535,7 +561,8 @@ export function Terminal({
         createPortal(
           <TalkButton
             key={targetKey}
-            disabled={!claudeActive || talkMic?.state !== 'on' || workspaceConnection !== 'connected' || talkLocked}
+            agent={talkAgent ?? 'claude'}
+            disabled={!talkAgent || talkMic?.state !== 'on' || workspaceConnection !== 'connected' || talkLocked}
             onHold={holdSpace}
             readScreen={readScreen}
             onSubmit={submitPrompt}
@@ -713,7 +740,8 @@ export function Terminal({
                 </button>
                 <TalkButton
                   key={targetKey}
-                  disabled={!claudeActive || mic.state !== 'on' || workspaceConnection !== 'connected'}
+                  agent={talkAgent ?? 'claude'}
+                  disabled={!talkAgent || mic.state !== 'on' || workspaceConnection !== 'connected'}
                   onHold={holdSpace}
                   readScreen={readScreen}
                   onSubmit={submitPrompt}

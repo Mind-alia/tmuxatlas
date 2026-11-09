@@ -10,6 +10,8 @@ export interface Pane {
   height: number
   current_command: string
   pid: number
+  /** The coding agent in the pane, found through its process tree. */
+  agent?: string
 }
 
 export interface Window {
