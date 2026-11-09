@@ -258,6 +258,7 @@ function AppInner({
   // The Wall suggests the account's own sessions. Wait for the owner names, or it
   // would take every session for someone else's and suggest none.
   const wallReady = !role || !username || usersById.size > 0
+  const localHostIds = useMemo(() => new Set(hosts.filter(host => host.local).map(host => host.id)), [hosts])
 
   useEffect(() => {
     const metadata = applicationState.projection.metadata?.server as { version?: string } | undefined
@@ -895,6 +896,7 @@ function AppInner({
                 <WallView
                   workspace={workspace}
                   owner={role ? username : null}
+                  localHosts={localHostIds}
                   onOpenSession={(key: string) => void jumpToSession(key)}
                 />
               )

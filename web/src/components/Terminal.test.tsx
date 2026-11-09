@@ -476,6 +476,46 @@ describe('Claude talk button', () => {
     expect(talk()).toBeDisabled()
   })
 
+  describe('on the Wall', () => {
+    const wallTalk = () => screen.getByRole('button', { name: 'Talk : parler à Claude dans Hôte/s' })
+    const shared = { available: true, state: 'on' as const }
+
+    it('uses the Wall microphone, never its own, and reports its hold', () => {
+      const onTalkHold = vi.fn()
+      render(
+        <Terminal
+          embedded
+          sessionName="s"
+          hostId="h"
+          hostLocal
+          talkSlot={slot}
+          claudeActive
+          sharedMic={shared}
+          onTalkHold={onTalkHold}
+        />,
+      )
+      expect(useMicStream).toHaveBeenLastCalledWith(false)
+      expect(slot).toContainElement(wallTalk())
+      fireEvent.click(wallTalk())
+      expect(terminal.setVoiceHold).toHaveBeenLastCalledWith(true)
+      expect(onTalkHold).toHaveBeenLastCalledWith(true)
+      fireEvent.click(stop())
+      expect(terminal.setVoiceHold).toHaveBeenLastCalledWith(false)
+      expect(onTalkHold).toHaveBeenLastCalledWith(false)
+    })
+
+    it('waits while another tile dictates, and hides without the Wall microphone', () => {
+      const view = render(
+        <Terminal embedded sessionName="s" hostId="h" hostLocal talkSlot={slot} claudeActive sharedMic={shared} talkLocked />,
+      )
+      expect(wallTalk()).toBeDisabled()
+      view.rerender(<Terminal embedded sessionName="s" hostId="h" hostLocal talkSlot={slot} claudeActive />)
+      expect(screen.queryByRole('button', { name: /Talk/ })).toBeNull()
+      view.rerender(<Terminal embedded sessionName="s" hostId="h" talkSlot={slot} claudeActive sharedMic={shared} />)
+      expect(screen.queryByRole('button', { name: /Talk/ })).toBeNull()
+    })
+  })
+
   it('stays disabled until the microphone and Terminal are ready', () => {
     mic.state = 'off'
     const view = render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} claudeActive />)

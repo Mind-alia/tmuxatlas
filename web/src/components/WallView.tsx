@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, Maximize2, Plus, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { ChevronDown, Maximize2, Mic, Plus, X } from 'lucide-react'
+import { useMicStream } from '../hooks/useMicStream'
 import { getBrandStorage, setBrandStorage } from '../lib/brandStorage'
 import { useHostLabel } from '../lib/hostLabel'
 import { isAttentionStatus, type WorkspaceViewModel } from '../workspace/model'
@@ -8,6 +9,13 @@ import { Terminal } from './Terminal'
 
 const storageKey = 'wall-targets:v1'
 type WallSession = WorkspaceViewModel['sessions'][number]
+const noLocalHosts: ReadonlySet<string> = new Set()
+
+/** Claude runs in the pane the session shows, the one Talk speaks to. */
+function claudeInActivePane(session: WallSession): boolean {
+  const window = session.source?.windows?.find(item => item.active)
+  return window?.panes?.find(pane => pane.active)?.current_command === 'claude'
+}
 
 /**
  * Up to four live sessions side by side. Until the account chooses its tiles,
@@ -16,11 +24,14 @@ type WallSession = WorkspaceViewModel['sessions'][number]
 export function WallView({
   workspace,
   owner,
+  localHosts = noLocalHosts,
   onOpenSession,
 }: {
   workspace: WorkspaceViewModel
   /** The signed-in account; without one, every session counts as its own. */
   owner?: string | null
+  /** Hosts served by this page's machine, where the virtual microphone lives. */
+  localHosts?: ReadonlySet<string>
   onOpenSession: (key: string) => void
 }) {
   const hostLabel = useHostLabel()
@@ -71,6 +82,33 @@ export function WallView({
       /* Stockage indisponible. */
     }
   }, [targets])
+  // One microphone for the whole Wall, opened while a tile shows a local session.
+  const voiceTiles = targets.some(key => {
+    const session = workspace.byTarget.get(key)
+    return Boolean(session && localHosts.has(session.hostId))
+  })
+  const mic = useMicStream(voiceTiles)
+  // The tile holding Claude's talk key: the others wait, so that one voice reaches one Claude.
+  const [talking, setTalking] = useState<string | null>(null)
+  const [talkSlots, setTalkSlots] = useState<Record<string, HTMLElement | null>>({})
+  const slotRefs = useRef(new Map<string, (node: HTMLElement | null) => void>())
+  const talkSlotRef = useCallback((key: string) => {
+    let ref = slotRefs.current.get(key)
+    if (!ref) {
+      ref = node => setTalkSlots(previous => (previous[key] === node ? previous : { ...previous, [key]: node }))
+      slotRefs.current.set(key, ref)
+    }
+    return ref
+  }, [])
+  const holdRefs = useRef(new Map<string, (on: boolean) => void>())
+  const talkHold = useCallback((key: string) => {
+    let hold = holdRefs.current.get(key)
+    if (!hold) {
+      hold = on => setTalking(previous => (on ? key : previous === key ? null : previous))
+      holdRefs.current.set(key, hold)
+    }
+    return hold
+  }, [])
   const available = workspace.sessions.filter(session => !targets.includes(session.key))
   const availableOwn = available.filter(isOwn)
   const availableOthers = available.filter(session => !isOwn(session))
@@ -100,13 +138,30 @@ export function WallView({
     })
   return (
     <section className="flex min-h-0 flex-1 flex-col gap-3 p-3">
-      <header className="flex items-center justify-between">
+      <header className="flex items-center justify-between gap-2">
         <h1 className="text-2xl">Mur</h1>
-        {targets.length < 4 && available.length > 0 && (
-          <IconButton aria-label="Ajouter une tuile" onClick={() => choose(previous => [...previous, ''])}>
-            <Plus size={16} />
-          </IconButton>
-        )}
+        <div className="flex min-w-0 items-center gap-1">
+          {mic.error && (
+            <span role="alert" className="min-w-0 truncate text-xs text-destructive">
+              {mic.error}
+            </span>
+          )}
+          {mic.available && (
+            <IconButton
+              aria-label={mic.state === 'off' ? 'Activer le micro' : 'Désactiver le micro'}
+              aria-pressed={mic.state !== 'off'}
+              className={mic.state === 'off' ? undefined : 'text-primary'}
+              onClick={mic.toggle}
+            >
+              <Mic size={16} />
+            </IconButton>
+          )}
+          {targets.length < 4 && available.length > 0 && (
+            <IconButton aria-label="Ajouter une tuile" onClick={() => choose(previous => [...previous, ''])}>
+              <Plus size={16} />
+            </IconButton>
+          )}
+        </div>
       </header>
       {targets.length > 2 && (
         <p className="text-xs text-muted-foreground md:hidden">
@@ -159,6 +214,7 @@ export function WallView({
                     </select>
                     <ChevronDown size={16} aria-hidden="true" className="pointer-events-none absolute right-0" />
                   </div>
+                  {session && <span ref={talkSlotRef(key)} className="flex shrink-0 items-center text-xs" />}
                   {session && (
                     <IconButton aria-label="Agrandir" size="sm" onClick={() => onOpenSession(key)}>
                       <Maximize2 size={16} />
@@ -179,6 +235,13 @@ export function WallView({
                     hostId={session.hostId}
                     hostName={session.hostName}
                     sessionStatus={session.status}
+                    hostLocal={localHosts.has(session.hostId)}
+                    voiceAllowed
+                    claudeActive={claudeInActivePane(session)}
+                    talkSlot={talkSlots[key]}
+                    sharedMic={mic}
+                    talkLocked={talking !== null && talking !== key}
+                    onTalkHold={talkHold(key)}
                   />
                 )}
               </div>

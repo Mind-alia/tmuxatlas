@@ -20,11 +20,14 @@ export function TalkButton({
   onHold,
   readScreen,
   onSubmit,
+  targetLabel,
 }: {
   disabled: boolean
   onHold: (on: boolean) => void
   readScreen: () => string[]
   onSubmit: () => void
+  /** Names the session when several Talk buttons share the page, as on the Wall. */
+  targetLabel?: string
 }) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [notice, setNotice] = useState('')
@@ -88,7 +91,7 @@ export function TalkButton({
         <button
           type="button"
           disabled={disabled}
-          aria-label="Talk : parler à Claude"
+          aria-label={targetLabel ? `Talk : parler à Claude dans ${targetLabel}` : 'Talk : parler à Claude'}
           title="Maintient la barre espace jusqu’à l’arrêt ou l’envoi"
           className="min-h-11 shrink-0 rounded border border-border px-2 text-muted-foreground hover:text-foreground disabled:opacity-40 md:min-h-8"
           onClick={() => {

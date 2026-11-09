@@ -13,7 +13,7 @@ import { MobileTerminalInput, terminalKeys, type ModifierName, type ModifierStat
 import { terminalTargetKey } from '../lib/terminalInput'
 import type { ConnectionState } from '../state/types'
 import { deriveTerminalWorkspaceConnection, type TerminalWorkspaceConnectionState } from '../state/terminalConnection'
-import { useMicStream } from '../hooks/useMicStream'
+import { useMicStream, type MicState } from '../hooks/useMicStream'
 import { TalkButton } from './TalkButton'
 import { TerminalCockpit } from './TerminalCockpit'
 import { TerminalContextMenu, type TerminalMenuPosition } from './TerminalContextMenu'
@@ -63,6 +63,15 @@ export interface TerminalProps {
   claudeActive?: boolean
   /** Where the talk button renders; it is absent while the status bar is hidden. */
   talkSlot?: HTMLElement | null
+  /**
+   * The Wall's microphone, shared by its tiles. An embedded Terminal opens no
+   * microphone of its own, and shows Talk only with this one.
+   */
+  sharedMic?: { available: boolean; state: MicState }
+  /** Another tile is dictating: the virtual microphone serves one Claude at a time. */
+  talkLocked?: boolean
+  /** Reports when this Terminal starts and stops holding Claude's talk key. */
+  onTalkHold?: (on: boolean) => void
   onToggleFullscreen?: () => void
   onToggleZen?: () => void
   onRetry?: () => void
@@ -111,6 +120,9 @@ export function Terminal({
   voiceAllowed = true,
   claudeActive,
   talkSlot,
+  sharedMic,
+  talkLocked = false,
+  onTalkHold,
   onToggleFullscreen,
   onToggleZen,
   onRetry,
@@ -173,10 +185,14 @@ export function Terminal({
   const holdSpace = useCallback(
     (on: boolean) => {
       setVoiceHold(on)
+      onTalkHold?.(on)
       focus()
     },
-    [focus, setVoiceHold],
+    [focus, onTalkHold, setVoiceHold],
   )
+  // Embedded on the Wall, Talk follows the Wall's shared microphone.
+  const talkMic = embedded ? sharedMic : mic
+  const showTalk = embedded ? Boolean(sharedMic?.available && hostLocal && voiceAllowed) : !compact && mic.available
 
   const submitPrompt = useCallback(() => {
     try {
@@ -514,17 +530,16 @@ export function Terminal({
           onMore={showMenuAtButton}
         />
       )}
-      {!embedded &&
-        !compact &&
-        mic.available &&
+      {showTalk &&
         talkSlot &&
         createPortal(
           <TalkButton
             key={targetKey}
-            disabled={!claudeActive || mic.state !== 'on' || workspaceConnection !== 'connected'}
+            disabled={!claudeActive || talkMic?.state !== 'on' || workspaceConnection !== 'connected' || talkLocked}
             onHold={holdSpace}
             readScreen={readScreen}
             onSubmit={submitPrompt}
+            targetLabel={embedded ? targetLabel : undefined}
           />,
           talkSlot,
         )}

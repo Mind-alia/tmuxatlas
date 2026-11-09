@@ -1,14 +1,29 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { TerminalProps } from './Terminal'
 import type { WorkspaceViewModel } from '../workspace/model'
 import { WallView } from './WallView'
 
+const terminalProps = new Map<string, TerminalProps>()
 vi.mock('./Terminal', () => ({
-  Terminal: ({ sessionName, embedded }: { sessionName: string; embedded: boolean }) => (
-    <div data-testid="terminal">
-      {sessionName} {String(embedded)}
-    </div>
-  ),
+  Terminal: (props: TerminalProps) => {
+    terminalProps.set(props.sessionName, props)
+    return (
+      <div data-testid="terminal">
+        {props.sessionName} {String(props.embedded)}
+      </div>
+    )
+  },
+}))
+const mic = {
+  available: false,
+  state: 'off' as 'off' | 'starting' | 'on',
+  error: '',
+  toggle: vi.fn(),
+}
+const useMicStream = vi.fn((_allowed: boolean) => mic)
+vi.mock('../hooks/useMicStream', () => ({
+  useMicStream: (allowed: boolean) => useMicStream(allowed),
 }))
 vi.mock('../lib/hostLabel', () => ({
   useHostLabel: () => (_id: string, fallback: string) => fallback,
@@ -94,6 +109,64 @@ describe('Mur', () => {
       render(<WallView workspace={mixedWorkspace} owner="camille" onOpenSession={vi.fn()} />)
       expect(screen.queryAllByTestId('terminal')).toEqual([])
       expect(screen.getByRole('combobox', { name: 'Choisir une session' })).toBeInTheDocument()
+    })
+  })
+  describe('Talk', () => {
+    const withPane = (name: string, command: string) => ({
+      ...session(name, 'idle'),
+      source: {
+        windows: [{ active: true, panes: [{ active: true, current_command: command }] }],
+      } as never,
+    })
+    const tiles = [withPane('claude-a', 'claude'), withPane('claude-b', 'claude'), withPane('shell', 'zsh')]
+    const talkWorkspace: WorkspaceViewModel = {
+      sessions: tiles,
+      hosts: [],
+      byTarget: new Map(tiles.map(item => [item.key, item])),
+    }
+    const show = (keys: string[], localHosts?: ReadonlySet<string>) => {
+      localStorage.setItem('tmuxatlas:wall-targets:v1', JSON.stringify(keys))
+      return render(<WallView workspace={talkWorkspace} localHosts={localHosts} onOpenSession={vi.fn()} />)
+    }
+    beforeEach(() => {
+      terminalProps.clear()
+      useMicStream.mockClear()
+      mic.available = true
+      mic.state = 'on'
+      mic.error = ''
+    })
+
+    it('ouvre un seul micro pour le mur et donne à chaque tuile sa place pour Talk', () => {
+      show(['host/claude-a', 'host/shell'], new Set(['host']))
+      expect(useMicStream).toHaveBeenLastCalledWith(true)
+      const a = terminalProps.get('claude-a')!
+      expect(a).toMatchObject({
+        hostLocal: true,
+        claudeActive: true,
+        sharedMic: mic,
+        talkLocked: false,
+      })
+      expect(a.talkSlot).toBeInstanceOf(HTMLElement)
+      expect(a.talkSlot?.closest('header')).not.toBeNull()
+      expect(terminalProps.get('shell')).toMatchObject({ claudeActive: false })
+      expect(screen.getByRole('button', { name: 'Désactiver le micro' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('n’ouvre pas le micro quand aucune tuile n’est sur cette machine', () => {
+      mic.available = false
+      show(['host/claude-a'])
+      expect(useMicStream).toHaveBeenLastCalledWith(false)
+      expect(terminalProps.get('claude-a')).toMatchObject({ hostLocal: false })
+      expect(screen.queryByRole('button', { name: /micro/ })).toBeNull()
+    })
+
+    it('ne laisse dicter qu’une tuile à la fois', () => {
+      show(['host/claude-a', 'host/claude-b'], new Set(['host']))
+      act(() => terminalProps.get('claude-a')!.onTalkHold!(true))
+      expect(terminalProps.get('claude-a')!.talkLocked).toBe(false)
+      expect(terminalProps.get('claude-b')!.talkLocked).toBe(true)
+      act(() => terminalProps.get('claude-a')!.onTalkHold!(false))
+      expect(terminalProps.get('claude-b')!.talkLocked).toBe(false)
     })
   })
 })
