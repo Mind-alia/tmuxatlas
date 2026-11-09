@@ -1,0 +1,23 @@
+/* Syntax tokens. Colour and weight/style only: the editor overlays a transparent
+   textarea, so tokens must never change glyph advance (no padding, margin,
+   border, letter-spacing, font-size or font-family). */
+.tok-comment { color: color-mix(in oklch, var(--muted-foreground) 85%, var(--foreground)); font-style: italic; opacity: 0.85; }
+.tok-string { color: color-mix(in oklch, var(--success) 85%, var(--foreground)); }
+.tok-number { color: var(--mon-b); }
+.tok-keyword { color: var(--chart-secondary); }
+.tok-type { color: color-mix(in oklch, var(--warning) 80%, var(--foreground)); }
+.tok-function { color: var(--primary); }
+.tok-constant { color: var(--mon-b); }
+.tok-property { color: color-mix(in oklch, var(--chart-primary) 80%, var(--foreground)); }
+.tok-tag { color: color-mix(in oklch, var(--accent) 70%, var(--primary)); }
+.tok-attr { color: color-mix(in oklch, var(--warning) 70%, var(--foreground)); }
+.tok-operator { color: color-mix(in oklch, var(--foreground) 75%, var(--muted-foreground)); }
+.tok-punct { color: var(--muted-foreground); }
+.tok-heading { color: var(--primary); font-weight: 700; }
+.tok-emphasis { font-style: italic; color: color-mix(in oklch, var(--foreground) 85%, var(--mon-a)); }
+.tok-strong { font-weight: 700; color: var(--foreground); }
+.tok-link { color: var(--primary); text-decoration: underline; }
+.tok-code { color: color-mix(in oklch, var(--success) 70%, var(--foreground)); background: color-mix(in oklch, var(--foreground) 8%, transparent); }
+.tok-meta { color: var(--mon-a); }
+.tok-variable { color: color-mix(in oklch, var(--mon-b) 75%, var(--foreground)); }
+.tok-regexp { color: color-mix(in oklch, var(--destructive) 85%, var(--foreground)); }

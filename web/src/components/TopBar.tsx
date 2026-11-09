@@ -18,6 +18,7 @@ interface TopBarProps {
   onOverview: () => void
   onMonitoring: () => void
   onWall: () => void
+  onFiles?: () => void
   onAdmin?: () => void
   onOpenPalette: () => void
   onSettings: () => void
@@ -49,6 +50,7 @@ export function TopBar({
   onOverview,
   onMonitoring,
   onWall,
+  onFiles,
   onAdmin,
   onOpenPalette,
   onSettings,
@@ -91,6 +93,7 @@ export function TopBar({
     ['overview', 'Vue d’ensemble', onOverview],
     ['wall', 'Mur', onWall],
     ['monitoring', 'Monitoring', onMonitoring] as const,
+    ...(onFiles ? ([['files', 'Fichiers', onFiles]] as const) : []),
     ...(role === 'admin' && onAdmin ? ([['admin', 'Administration', onAdmin]] as const) : []),
   ]
   const alertColor = actionable.some(event => event.status === 'error')

@@ -51,11 +51,12 @@ pkg/
   preferences/           # User preferences
   stats/                 # System statistics
   webpush/               # Browser push notifications
+  files/                 # File explorer: list, edit, preview, upload, zip download (`/api/files/*`, admin only, disable with TMUXATLAS_FILES=off)
   voice/                 # Browser microphone to PulseAudio virtual mic (`/ws/mic`, enable with TMUXATLAS_VOICE=on)
 web/
   src/
     App.tsx              # Main app component
-    components/          # Shell, Overview, Inbox, Terminal, WindowTabs, monitoring, Brand and shared ui primitives
+    components/          # Shell, Overview, Inbox, Terminal, WindowTabs, monitoring, files (explorer, editor, Markdown), Brand and shared ui primitives
     hooks/               # Custom hooks (useTerminal, useSessions, useHosts, etc.)
     state/               # Revisioned Hub projection and connection state
     workspace/           # Workspace view model and status helpers

@@ -9,7 +9,9 @@ const limits = {
   // WebGL (25 Kio gzip) est chargé à la demande sur desktop ; Unicode 11,
   // le Mur et À traiter augmentent aussi le budget global. Marge d’environ 5 %.
   'xterm gzip': 97 * 1024,
-  'total brotli': 237 * 1024,
+  // L’explorateur de fichiers (éditeur, Markdown, coloration) ajoute environ
+  // 42 Kio brotli, chargés seulement à l’ouverture de /files. Marge d’environ 5 %.
+  'total brotli': 292 * 1024,
 }
 let entryGzip = 0
 let xtermGzip = 0

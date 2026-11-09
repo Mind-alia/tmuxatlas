@@ -25,6 +25,7 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/agentcheck"
 	"github.com/LosFurina/tmuxatlas/pkg/auth"
 	"github.com/LosFurina/tmuxatlas/pkg/common"
+	"github.com/LosFurina/tmuxatlas/pkg/files"
 	"github.com/LosFurina/tmuxatlas/pkg/httpguard"
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
 	"github.com/LosFurina/tmuxatlas/pkg/ingress"
@@ -350,7 +351,11 @@ func Run(ctx context.Context, opts *Options) error {
 	publicRouter.Use(chimiddleware.StripSlashes)
 	publicRouter.Use(chimiddleware.RequestID)
 	publicRouter.Use(hostValidation)
-	publicRouter.Use(httpguard.GlobalBodyLimitMiddleware(httpguard.GlobalBodyLimit))
+	var fileExplorer *files.Handler
+	if files.Enabled(os.Getenv("TMUXATLAS_FILES")) {
+		fileExplorer = files.New()
+	}
+	publicRouter.Use(fileBodyLimit(fileExplorer))
 	accountPolicy := newAccountPolicy(opts)
 	if actionRouter != nil {
 		accountPolicy.router = actionRouter
@@ -596,6 +601,26 @@ func Run(ctx context.Context, opts *Options) error {
 				}
 				w.WriteHeader(http.StatusNoContent)
 			})
+
+			// File explorer — browse, edit, preview and transfer files on this host.
+			// Account users never reach these routes: they are admin-only.
+			if fileExplorer != nil {
+				fileMutations := mutations
+				if opts.AccountsAuth == nil && !opts.AuthEnabled {
+					fileMutations = r.With(originMiddleware)
+				}
+				r.Get("/files/list", fileExplorer.List)
+				r.Get("/files/content", fileExplorer.Read)
+				r.Get("/files/raw", fileExplorer.Raw)
+				r.Get("/files/archive", fileExplorer.Archive)
+				fileMutations.With(httpguard.BodyReadDeadline(60*time.Second)).Put("/files/content", fileExplorer.Write)
+				fileMutations.Post("/files/upload", fileExplorer.Upload)
+				smallFileJSON := fileMutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit))
+				smallFileJSON.Post("/files/mkdir", fileExplorer.Mkdir)
+				smallFileJSON.Post("/files/create", fileExplorer.Create)
+				smallFileJSON.Post("/files/rename", fileExplorer.Rename)
+				smallFileJSON.Post("/files/delete", fileExplorer.Delete)
+			}
 
 			// Voice status — whether the browser microphone can be used on this host
 			r.Get("/voice", func(w http.ResponseWriter, r *http.Request) {
@@ -1078,4 +1103,28 @@ func monitorURLs(value string) []string {
 		}
 	}
 	return urls
+}
+
+// fileBodyLimit applies the global body limit, except for the explorer routes
+// that carry whole files: saving a text file and uploading.
+func fileBodyLimit(explorer *files.Handler) func(http.Handler) http.Handler {
+	global := httpguard.GlobalBodyLimitMiddleware(httpguard.GlobalBodyLimit)
+	if explorer == nil {
+		return global
+	}
+	save := httpguard.GlobalBodyLimitMiddleware(files.MaxEditSize + 1)
+	upload := httpguard.GlobalBodyLimitMiddleware(explorer.UploadLimit())
+	return func(next http.Handler) http.Handler {
+		globalNext, saveNext, uploadNext := global(next), save(next), upload(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodPut && strings.TrimSuffix(r.URL.Path, "/") == "/api/files/content":
+				saveNext.ServeHTTP(w, r)
+			case r.Method == http.MethodPost && strings.TrimSuffix(r.URL.Path, "/") == "/api/files/upload":
+				uploadNext.ServeHTTP(w, r)
+			default:
+				globalNext.ServeHTTP(w, r)
+			}
+		})
+	}
 }

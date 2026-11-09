@@ -9,6 +9,7 @@ export type CommandId =
   | 'navigation.settings'
   | 'navigation.monitoring'
   | 'navigation.wall'
+  | 'navigation.files'
   | 'navigation.admin'
   | 'session.next'
   | 'session.previous'
@@ -28,6 +29,7 @@ export interface CommandEnvironment {
   hasAttention: boolean
   canMonitor?: boolean
   isAdmin?: boolean
+  canBrowseFiles?: boolean
 }
 
 export interface CommandHandlerContext {
@@ -102,6 +104,14 @@ const definitions: readonly CommandDefinition[] = [
     scope: 'workspace',
     focusAfterRun: 'none',
     enablement: always,
+  },
+  {
+    id: 'navigation.files',
+    label: 'Fichiers',
+    category: 'Navigation',
+    scope: 'workspace',
+    focusAfterRun: 'none',
+    enablement: environment => Boolean(environment.canBrowseFiles),
   },
   {
     id: 'navigation.admin',

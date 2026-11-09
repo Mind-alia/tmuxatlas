@@ -5,6 +5,10 @@ export function setCSRFToken(token: string | null | undefined) {
   csrfToken = token || ''
 }
 
+export function getCSRFToken() {
+  return csrfToken
+}
+
 export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   const method = (init.method || 'GET').toUpperCase()
   const headers = new Headers(init.headers)
