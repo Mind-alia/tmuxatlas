@@ -1,14 +1,14 @@
 # File explorer
 
-The **Fichiers** view (`/files`) browses the filesystem of the host that serves the web UI. It opens text files in a built-in editor, renders Markdown, previews images, video and audio, and transfers files in both directions.
+The **Fichiers** view (`/files`), also available as a tab inside every local session, browses the filesystem of the host that serves the web UI. It opens text files in a built-in editor, renders Markdown, previews images, video and audio, and transfers files in both directions.
 
 ## Access
 
 - The explorer reaches what the TmuxAtlas process can reach: the operating system enforces permissions. A file the process cannot write opens read-only.
-- With account authentication, only `admin` accounts can use it. Accounts with the `user` role get `403` on every `/api/files/*` route and do not see the view.
+- With account authentication, every account can use it, `user` accounts included: each of them can read, change and delete any file the TmuxAtlas process can reach. This was a deliberate operator choice; remove the `/api/files/*` entries from `accountUserRoutes` in `pkg/server/account_guard.go` to restrict it to admins again.
 - Every write (save, upload, create, rename, move, delete) needs a same-origin request, plus the CSRF token when authentication is on.
 - Set `TMUXATLAS_FILES=off` to disable the explorer: its routes then return `404`.
-- Remote peers are not browsed: the explorer only shows the local host.
+- Remote peers are not browsed: the explorer only shows the local host, so the session tab appears only on local sessions. It opens in the working directory of the active pane (`GET /api/files/pane-dir?pane=%ID`), and the terminal stays connected underneath.
 
 ## Editing
 

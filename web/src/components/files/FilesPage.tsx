@@ -124,10 +124,22 @@ function movedPath(path: string, from: string, to: string) {
 type NameDialog = { mode: 'file' | 'folder' } | { mode: 'rename'; entry: FileEntry }
 type ContextMenuState = { entry: FileEntry; x: number; y: number }
 
-export function FilesPage({ hosts }: { hosts: Host[] }) {
+export function FilesPage({
+  hosts,
+  embedded = false,
+  initialPath,
+}: {
+  hosts: Host[]
+  /** Shown inside a session: the URL is left alone and the page is not a landmark. */
+  embedded?: boolean
+  /** Folder to open first, such as the working directory of a pane. */
+  initialPath?: string
+}) {
   const initialDir = useMemo(() => {
+    if (embedded) return initialPath || memory?.dir || readStorage<string>(storageKeys.lastDir, '')
     const params = new URLSearchParams(window.location.search)
     return params.get('path') || memory?.dir || readStorage<string>(storageKeys.lastDir, '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   const [dir, setDir] = useState(initialDir)
   const [listing, setListing] = useState<Listing | null>(null)
@@ -163,6 +175,7 @@ export function FilesPage({ hosts }: { hosts: Host[] }) {
   const fileInput = useRef<HTMLInputElement>(null)
   const folderInput = useRef<HTMLInputElement>(null)
   const nameInput = useRef<HTMLInputElement>(null)
+  const crumbsRef = useRef<HTMLElement>(null)
   const listingDir = listing?.path ?? dir
   const localHost = hosts.find(host => host.local)
 
@@ -281,7 +294,7 @@ export function FilesPage({ hosts }: { hosts: Host[] }) {
   useEffect(() => {
     // Tabs restored while they were still loading would otherwise wait forever.
     for (const tab of tabsRef.current) if (tab.status === 'loading') void loadText(tab.path)
-    const file = new URLSearchParams(window.location.search).get('file')
+    const file = embedded ? null : new URLSearchParams(window.location.search).get('file')
     if (file) openFile(file)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -612,10 +625,16 @@ export function FilesPage({ hosts }: { hosts: Host[] }) {
   }
 
   const crumbs = breadcrumbs(listingDir || '/')
+  // Long paths keep the current folder in view.
+  useEffect(() => {
+    const nav = crumbsRef.current
+    if (nav) nav.scrollLeft = nav.scrollWidth
+  }, [listingDir, editingPath])
   const toolbarButton = 'shrink-0'
 
+  const Root = embedded ? 'div' : 'main'
   return (
-    <main
+    <Root
       className="relative flex min-h-0 flex-1 overflow-hidden"
       onDragEnter={pageDragEnter}
       onDragLeave={pageDragLeave}
@@ -729,6 +748,7 @@ export function FilesPage({ hosts }: { hosts: Host[] }) {
           </form>
         ) : (
           <nav
+            ref={crumbsRef}
             aria-label="Chemin"
             className="flex shrink-0 cursor-text items-center overflow-x-auto px-2 pb-2 text-xs scrollbar-none"
             onClick={event => {
@@ -1141,7 +1161,7 @@ export function FilesPage({ hosts }: { hosts: Host[] }) {
       >
         {null}
       </Dialog>
-    </main>
+    </Root>
   )
 }
 

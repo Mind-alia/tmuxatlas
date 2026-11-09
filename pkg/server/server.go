@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -613,6 +614,9 @@ func Run(ctx context.Context, opts *Options) error {
 				r.Get("/files/content", fileExplorer.Read)
 				r.Get("/files/raw", fileExplorer.Raw)
 				r.Get("/files/archive", fileExplorer.Archive)
+				r.Get("/files/pane-dir", func(w http.ResponseWriter, r *http.Request) {
+					handlePaneDir(w, r, opts.Client)
+				})
 				fileMutations.With(httpguard.BodyReadDeadline(60*time.Second)).Put("/files/content", fileExplorer.Write)
 				fileMutations.Post("/files/upload", fileExplorer.Upload)
 				smallFileJSON := fileMutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit))
@@ -1103,6 +1107,31 @@ func monitorURLs(value string) []string {
 		}
 	}
 	return urls
+}
+
+var paneIDPattern = regexp.MustCompile(`^%[0-9]+$`)
+
+// handlePaneDir returns the working directory of a local tmux pane, so the
+// explorer of a session opens where its shell is.
+func handlePaneDir(w http.ResponseWriter, r *http.Request, client *tmux.Client) {
+	pane := r.URL.Query().Get("pane")
+	if !paneIDPattern.MatchString(pane) {
+		http.Error(w, "pane invalide", http.StatusBadRequest)
+		return
+	}
+	if client == nil {
+		http.Error(w, "tmux indisponible sur cet hôte", http.StatusNotFound)
+		return
+	}
+	out, err := client.Exec("display-message", "-p", "-t", pane, "#{pane_current_path}")
+	path := strings.TrimSpace(out)
+	if err != nil || path == "" {
+		http.Error(w, "pane introuvable", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]string{"path": path})
 }
 
 // fileBodyLimit applies the global body limit, except for the explorer routes

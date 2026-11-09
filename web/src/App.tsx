@@ -1,5 +1,6 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { flushSync } from 'react-dom'
+import { SessionPanelTabs, type SessionPanel } from './components/SessionPanelTabs'
 import { MobileNav } from './components/MobileNav'
 import { useAttentionBadge } from './hooks/useAttentionBadge'
 import { selectWindow, selectPane, type NewSessionAgent } from './lib/sessionApi'
@@ -68,6 +69,9 @@ const MonitoringPage = lazy(() =>
   import('./components/monitoring/MonitoringPage').then(module => ({ default: module.MonitoringPage })),
 )
 const FilesPage = lazy(() => import('./components/files/FilesPage').then(module => ({ default: module.FilesPage })))
+const SessionFiles = lazy(() =>
+  import('./components/files/SessionFiles').then(module => ({ default: module.SessionFiles })),
+)
 const WallView = lazy(() => import('./components/WallView').then(module => ({ default: module.WallView })))
 const HelpModal = lazy(() => import('./components/HelpModal').then(module => ({ default: module.HelpModal })))
 const NewSessionModal = lazy(() =>
@@ -226,6 +230,10 @@ function AppInner({
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [terminalFullscreen, setTerminalFullscreen] = useState(false)
   const [zenMode, setZenMode] = useState(false)
+  // Inside a session, the explorer can replace the terminal on screen while
+  // the terminal stays connected underneath.
+  const [sessionPanel, setSessionPanel] = useState<SessionPanel>('terminal')
+  useEffect(() => setSessionPanel('terminal'), [selectedSession])
   const [helpOpen, setHelpOpen] = useState(false)
   const [runtimeError, setRuntimeError] = useState<string | null>(null)
   const pendingSessionRef = useRef<string | null>(null)
@@ -415,7 +423,7 @@ function AppInner({
       navigateTo(null)
       return
     }
-    if (role === 'user' && (currentView === 'setup' || currentView === 'files')) {
+    if (role === 'user' && currentView === 'setup') {
       navigateTo(null)
     }
   }, [currentView, navigateTo, role])
@@ -612,7 +620,7 @@ function AppInner({
         navigateTo(null, 'monitoring')
       },
       'navigation.wall': () => navigateTo(null, 'wall'),
-      ...(role !== 'user' ? { 'navigation.files': () => navigateTo(null, 'files') } : {}),
+      'navigation.files': () => navigateTo(null, 'files'),
       ...(role === 'admin' ? { 'navigation.admin': () => navigateTo(null, 'admin') } : {}),
       'session.next': () => moveSession(1),
       'session.previous': () => moveSession(-1),
@@ -658,7 +666,7 @@ function AppInner({
           hasAttention: allToolEvents.some(event => event.status === 'waiting' || event.status === 'error'),
           canMonitor: true,
           isAdmin: role === 'admin',
-          canBrowseFiles: role !== 'user',
+          canBrowseFiles: true,
         },
         handlers: commandHandlers,
         quickSwitcherShortcut: prefs.quick_switcher_shortcut,
@@ -807,7 +815,7 @@ function AppInner({
             onOverview={() => navigateTo(null)}
             onMonitoring={() => navigateTo(null, 'monitoring')}
             onWall={() => navigateTo(null, 'wall')}
-            onFiles={role !== 'user' ? () => navigateTo(null, 'files') : undefined}
+            onFiles={() => navigateTo(null, 'files')}
             onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}
             onOpenPalette={() => setQuickSwitcherOpen(true)}
             onSettings={navigateToSettings}
@@ -880,7 +888,7 @@ function AppInner({
               />
             ) : currentView === 'monitoring' ? (
               <MonitoringPage hosts={hosts} />
-            ) : currentView === 'files' && role !== 'user' ? (
+            ) : currentView === 'files' ? (
               <FilesPage hosts={hosts} />
             ) : currentView === 'wall' ? (
               wallReady && (
@@ -891,6 +899,11 @@ function AppInner({
                 />
               )
             ) : selectedSession && (role !== 'user' || activeSession || selectedSession === pendingSessionRef.current) ? (
+              <div className="flex flex-1 flex-col overflow-hidden">
+                {activeHost?.local === true && !zenMode && (
+                  <SessionPanelTabs value={sessionPanel} onChange={setSessionPanel} />
+                )}
+                <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
               <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
                 <Terminal
                   windows={activeSession?.windows}
@@ -946,6 +959,13 @@ function AppInner({
                   terminalDrafts={terminalDrafts}
                 />
               </div>
+                  {sessionPanel === 'files' && activeHost?.local === true && !zenMode && (
+                    <div className="absolute inset-0 z-20 flex bg-background">
+                      <SessionFiles key={selectedSession} hosts={hosts} paneId={activePane?.id} />
+                    </div>
+                  )}
+                </div>
+              </div>
             ) : applicationState.connection === 'ready' && sessions.length === 0 && role !== 'user' ? (
               <EmptyWorkspaceState onNewSession={openNewSessionModal} onOpenSetup={() => navigateTo(null, 'setup')} />
             ) : (
@@ -977,7 +997,7 @@ function AppInner({
           onOverview={() => navigateTo(null)}
           onSessions={() => setMobileSidebarOpen(true)}
           onMonitoring={() => navigateTo(null, 'monitoring')}
-          onFiles={role !== 'user' ? () => navigateTo(null, 'files') : undefined}
+          onFiles={() => navigateTo(null, 'files')}
           onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}
           onSettings={navigateToSettings}
         />

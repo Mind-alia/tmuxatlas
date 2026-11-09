@@ -51,7 +51,7 @@ pkg/
   preferences/           # User preferences
   stats/                 # System statistics
   webpush/               # Browser push notifications
-  files/                 # File explorer: list, edit, preview, upload, zip download (`/api/files/*`, admin only, disable with TMUXATLAS_FILES=off)
+  files/                 # File explorer: list, edit, preview, upload, zip download (`/api/files/*`, every account, disable with TMUXATLAS_FILES=off)
   voice/                 # Browser microphone to PulseAudio virtual mic (`/ws/mic`, enable with TMUXATLAS_VOICE=on)
 web/
   src/

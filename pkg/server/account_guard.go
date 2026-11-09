@@ -25,6 +25,12 @@ var accountUserRoutes = map[string]bool{
 	"POST /api/session/rename": true, "POST /api/session/kill": true,
 	"POST /api/session/select-window": true, "POST /api/session/select-pane": true,
 	"DELETE /api/tool-event": true, "GET /ws/session": true, "GET /ws/events": true,
+	// The file explorer is open to every account by the operator's choice: it
+	// reaches the whole filesystem with the TmuxAtlas process permissions.
+	"GET /api/files/list": true, "GET /api/files/content": true, "GET /api/files/raw": true,
+	"GET /api/files/archive": true, "GET /api/files/pane-dir": true, "PUT /api/files/content": true,
+	"POST /api/files/upload": true, "POST /api/files/mkdir": true, "POST /api/files/create": true,
+	"POST /api/files/rename": true, "POST /api/files/delete": true,
 }
 
 // Routes outside the user allow-list are recorded explicitly so a router walk
@@ -38,10 +44,7 @@ var accountOtherRoutes = map[string]string{
 	"GET /api/agent-status": "admin", "DELETE /api/tool-events": "admin",
 	"GET /api/push/vapid-key": "admin", "POST /api/push/subscribe": "admin",
 	"POST /api/push/unsubscribe": "admin", "PUT /api/preferences": "admin", "POST /api/pair": "admin",
-	"GET /api/files/list": "admin", "GET /api/files/content": "admin", "GET /api/files/raw": "admin",
-	"GET /api/files/archive": "admin", "PUT /api/files/content": "admin", "POST /api/files/upload": "admin",
-	"POST /api/files/mkdir": "admin", "POST /api/files/create": "admin", "POST /api/files/rename": "admin",
-	"POST /api/files/delete": "admin", "GET /ws/peer": "peer", "GET /ws/peer-pty": "peer",
+	"GET /ws/peer": "peer", "GET /ws/peer-pty": "peer",
 	"POST /api/pair/complete": "peer", "GET /*": "public",
 	"CONNECT /api/*": "denied", "DELETE /api/*": "denied", "GET /api/*": "denied",
 	"HEAD /api/*": "denied", "OPTIONS /api/*": "denied", "PATCH /api/*": "denied",
