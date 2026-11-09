@@ -227,8 +227,13 @@ binary, preventing the wrong copy from being replaced.
 
 Use `tmuxatlas update --check` to check without installing,
 `--no-restart` to defer a service restart, or `--force` to reinstall the current
-version. Restarting clears in-memory browser sessions, so the next visit
-requires Passkey login.
+version. Browser sessions are saved in the configuration directory
+(`sessions-accounts.json` or `sessions-passkey.json`, readable by the owner only,
+holding token hashes and never tokens), so a restart signs no one out. At
+startup, TmuxAtlas still ends the saved sessions of a deleted or disabled
+account, of an account whose password was reset (for example with
+`tmuxatlas users bootstrap-admin --force`) and of a removed passkey. Deleting
+the file signs everyone out.
 
 An immutable Docker deployment must be updated by pulling a new image and
 recreating the container. Inside a container, `tmuxatlas update` and recovery

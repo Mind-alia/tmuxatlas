@@ -15,18 +15,33 @@ import (
 	"time"
 )
 
-// SessionManager manages in-memory session tokens with expiry.
+// SessionManager manages session tokens with expiry, in memory unless PersistTo
+// gives it a file.
 type SessionManager struct {
 	mu       sync.RWMutex
 	sessions map[string]session
 	ttl      time.Duration
+	path     string
+	savedAt  time.Time
+	wake     chan struct{}
+	stopped  chan struct{}
+	writeMu  sync.Mutex
 }
 
 type session struct {
-	expiry    time.Time
-	csrf      string
-	accountID string
-	done      chan struct{}
+	expiry     time.Time
+	issued     time.Time
+	csrf       string
+	accountID  string
+	credential string
+	done       chan struct{}
+}
+
+// SessionInfo describes a session to Retain, without its token.
+type SessionInfo struct {
+	AccountID  string
+	Credential string
+	Issued     time.Time
 }
 
 func NewSessionManager(ttl time.Duration) *SessionManager {
@@ -48,6 +63,16 @@ func sessionKey(token string) string {
 
 // CreateForAccount binds a browser session to an account without storing its bearer token.
 func (sm *SessionManager) CreateForAccount(accountID string) (string, error) {
+	return sm.create(accountID, "")
+}
+
+// CreateForCredential binds a browser session to the passkey that opened it, so
+// that deleting the passkey ends the session.
+func (sm *SessionManager) CreateForCredential(credential string) (string, error) {
+	return sm.create("", credential)
+}
+
+func (sm *SessionManager) create(accountID, credential string) (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
@@ -59,7 +84,12 @@ func (sm *SessionManager) CreateForAccount(accountID string) (string, error) {
 	}
 	sm.mu.Lock()
 	key := sessionKey(token)
-	sm.sessions[key] = session{expiry: time.Now().Add(sm.ttl), csrf: hex.EncodeToString(csrfBytes), accountID: accountID, done: make(chan struct{})}
+	now := time.Now()
+	sm.sessions[key] = session{
+		expiry: now.Add(sm.ttl), issued: now, csrf: hex.EncodeToString(csrfBytes),
+		accountID: accountID, credential: credential, done: make(chan struct{}),
+	}
+	sm.persistLocked()
 	sm.mu.Unlock()
 	time.AfterFunc(sm.ttl, func() { sm.expire(key) })
 	return token, nil
@@ -80,6 +110,7 @@ func (sm *SessionManager) expire(key string) {
 	}
 	delete(sm.sessions, key)
 	close(value.done)
+	sm.persistLocked()
 }
 
 func (sm *SessionManager) Validate(token string) bool {
@@ -97,11 +128,13 @@ func (sm *SessionManager) AccountSession(token string) (string, <-chan struct{},
 		if ok {
 			close(value.done)
 			delete(sm.sessions, key)
+			sm.persistLocked()
 		}
 		return "", nil, false
 	}
 	value.expiry = time.Now().Add(sm.ttl)
 	sm.sessions[key] = value
+	sm.persistRefreshLocked()
 	return value.accountID, value.done, true
 }
 
@@ -121,6 +154,7 @@ func (sm *SessionManager) Revoke(token string) {
 	if value, ok := sm.sessions[key]; ok {
 		close(value.done)
 		delete(sm.sessions, key)
+		sm.persistLocked()
 	}
 	sm.mu.Unlock()
 }
@@ -129,11 +163,42 @@ func (sm *SessionManager) Revoke(token string) {
 func (sm *SessionManager) RevokeAccount(accountID, except string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+	revoked := false
 	for key, value := range sm.sessions {
 		if value.accountID == accountID && accountID != "" && (except == "" || key != sessionKey(except)) {
 			close(value.done)
 			delete(sm.sessions, key)
+			revoked = true
 		}
+	}
+	if revoked {
+		sm.persistLocked()
+	}
+}
+
+// RevokeCredential ends every session opened with a passkey.
+func (sm *SessionManager) RevokeCredential(credential string) {
+	if credential == "" {
+		return
+	}
+	sm.Retain(func(info SessionInfo) bool { return info.Credential != credential })
+}
+
+// Retain ends every session that keep rejects. At startup it drops restored
+// sessions that a change made while TmuxAtlas was stopped has invalidated.
+func (sm *SessionManager) Retain(keep func(SessionInfo) bool) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	removed := false
+	for key, value := range sm.sessions {
+		if !keep(SessionInfo{AccountID: value.accountID, Credential: value.credential, Issued: value.issued}) {
+			close(value.done)
+			delete(sm.sessions, key)
+			removed = true
+		}
+	}
+	if removed {
+		sm.persistLocked()
 	}
 }
 
@@ -141,11 +206,16 @@ func (sm *SessionManager) Cleanup() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	now := time.Now()
+	removed := false
 	for token, value := range sm.sessions {
 		if now.After(value.expiry) {
 			close(value.done)
 			delete(sm.sessions, token)
+			removed = true
 		}
+	}
+	if removed {
+		sm.persistLocked()
 	}
 }
 
@@ -208,7 +278,7 @@ func CSRFMiddleware(sm *SessionManager) func(http.Handler) http.Handler {
 			}
 			expected, ok := sm.CSRF(cookie.Value)
 			provided := r.Header.Get(CSRFHeader)
-			if !ok || len(provided) != len(expected) ||
+			if !ok || expected == "" || len(provided) != len(expected) ||
 				subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
 				writeError(w, http.StatusForbidden, "csrf validation failed")
 				return
@@ -266,8 +336,8 @@ func refreshSessionCookie(w http.ResponseWriter, token string, ttl time.Duration
 	})
 }
 
-func setSessionCookie(w http.ResponseWriter, sm *SessionManager, secure bool) error {
-	token, err := sm.Create()
+func setSessionCookie(w http.ResponseWriter, sm *SessionManager, credential string, secure bool) error {
+	token, err := sm.CreateForCredential(credential)
 	if err != nil {
 		return err
 	}

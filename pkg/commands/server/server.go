@@ -143,6 +143,8 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 			return fmt.Errorf("la durée de session doit être d'au moins une minute")
 		}
 		accountSessions = auth.NewSessionManager(c.Duration("session-ttl"))
+		persistSessions(accountSessions, "sessions-accounts.json")
+		retainAccountSessions(accountSessions, users)
 		accountAuth, err = auth.NewAccountsAuth(store, accountSessions)
 		if err != nil {
 			return err
@@ -249,11 +251,13 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 			return fmt.Errorf("session TTL must be at least 1 minute")
 		}
 		sessionMgr = auth.NewSessionManager(sessionTTL)
+		persistSessions(sessionMgr, "sessions-passkey.json")
 		passkeyManager, err = auth.NewPasskeyManager(publicURL.String(), sessionMgr)
 		if err != nil {
 			return fmt.Errorf("failed to initialize auth: %w", err)
 		}
 		authEnabled = true
+		retainPasskeySessions(sessionMgr, passkeyManager.CredentialIDs())
 
 		if !passkeyManager.HasCredentials() {
 			logrus.WithFields(logrus.Fields{
@@ -350,7 +354,13 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 	}
 
 	// Start the HTTP server (blocks until ctx is cancelled)
-	return server.Run(ctx, opts)
+	runErr := server.Run(ctx, opts)
+	if sessionMgr != nil {
+		if err := sessionMgr.Close(); err != nil {
+			logrus.WithError(err).Warn("browser sessions not saved")
+		}
+	}
+	return runErr
 }
 
 func serverFlags() []cli.Flag {
@@ -492,6 +502,42 @@ func init() {
 	common.RegisterCommand(serverCommand)
 	common.RegisterCommand(standaloneCommand)
 	common.RegisterCommand(hubCommand)
+}
+
+// persistSessions keeps browser sessions across restarts. Each authentication
+// mode has its own file: a passkey session grants full access, so an account's
+// session must never be read as one. Without the file, sessions stay in memory.
+func persistSessions(sessions *auth.SessionManager, name string) {
+	dir, err := paths.ConfigDir()
+	if err == nil {
+		err = sessions.PersistTo(filepath.Join(dir, name))
+	}
+	if err != nil {
+		logrus.WithError(err).Warn("browser sessions could not be restored")
+	}
+}
+
+// retainAccountSessions ends the restored sessions that a change made while
+// TmuxAtlas was stopped has invalidated: the account was deleted or disabled, or
+// its password was reset, for example by users bootstrap-admin --force.
+func retainAccountSessions(sessions *auth.SessionManager, users []accounts.User) {
+	byID := make(map[string]accounts.User, len(users))
+	for _, user := range users {
+		byID[user.ID] = user
+	}
+	sessions.Retain(func(info auth.SessionInfo) bool {
+		user, ok := byID[info.AccountID]
+		return ok && !user.Disabled && !user.PasswordChangedAt.After(info.Issued)
+	})
+}
+
+// retainPasskeySessions ends the restored sessions whose passkey is gone.
+func retainPasskeySessions(sessions *auth.SessionManager, credentials []string) {
+	known := make(map[string]bool, len(credentials))
+	for _, id := range credentials {
+		known[id] = true
+	}
+	sessions.Retain(func(info auth.SessionInfo) bool { return known[info.Credential] })
 }
 
 // agentPaneLister lists tmux panes for the agent watcher.

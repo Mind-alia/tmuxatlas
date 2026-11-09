@@ -114,8 +114,8 @@ cookie. Configure it in `~/.config/tmuxatlas/.env`, for example:
 TMUXATLAS_SESSION_TTL=168h
 ```
 
-Sessions remain in memory, so restarting TmuxAtlas always requires a fresh
-Passkey login regardless of this setting.
+Sessions are saved in the configuration directory, so restarting TmuxAtlas
+keeps them until this idle time runs out.
 
 ## Cloudflare Tunnel
 

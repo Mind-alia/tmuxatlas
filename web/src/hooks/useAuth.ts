@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { authenticatePasskey, registerPasskey } from '../lib/webauthn'
 import { apiFetch, setCSRFToken } from '../lib/api'
 
@@ -39,6 +39,9 @@ export interface AuthState {
   refreshAuthStatus: () => Promise<boolean>
 }
 
+// Retry delays while the first status check cannot reach the server.
+const STATUS_RETRY_MS = [1_000, 2_000, 5_000, 10_000]
+
 let interceptorInstalled = false
 function installFetchInterceptor() {
   if (interceptorInstalled) return
@@ -58,16 +61,20 @@ export function useAuth(): AuthState {
   const [rpId, setRPID] = useState<string | null>(null)
   const [origin, setOrigin] = useState<string | null>(null)
 
-  const refreshAuthStatus = useCallback(async (): Promise<boolean> => {
+  const authenticatedRef = useRef(false)
+  useEffect(() => {
+    authenticatedRef.current = authenticated
+  }, [authenticated])
+
+  /**
+   * Asks the server whether this browser is signed in. Returns null when no answer
+   * came: the network dropped or the proxy could not reach TmuxAtlas, which says
+   * nothing about the session.
+   */
+  const readAuthStatus = useCallback(async (): Promise<boolean | null> => {
     try {
       const statusRes = await fetch('/api/auth/status')
-      if (!statusRes.ok) {
-        setAuthenticated(false)
-        setUsername(null)
-        setRole(null)
-        setCSRFToken(null)
-        return false
-      }
+      if (!statusRes.ok) return null
       const status = await statusRes.json()
       if (status.mode === 'accounts') {
         setAuthMode('accounts')
@@ -103,21 +110,52 @@ export function useAuth(): AuthState {
         return false
       }
       const checkRes = await fetch('/api/auth/check')
+      // A 401 is the server's answer for a browser without a session.
+      if (checkRes.status === 401) {
+        setCSRFToken(null)
+        setAuthenticated(false)
+        return false
+      }
+      if (!checkRes.ok) return null
       const check = await checkRes.json()
       setCSRFToken(check.csrf_token)
       const isAuth = check.authenticated === true
       setAuthenticated(isAuth)
       return isAuth
     } catch {
-      setAuthenticated(false)
-      return false
+      return null
     }
   }, [])
 
+  /** Refreshes the sign-in state; without an answer from the server, it keeps the current one. */
+  const refreshAuthStatus = useCallback(async (): Promise<boolean> => {
+    const answer = await readAuthStatus()
+    return answer ?? authenticatedRef.current
+  }, [readAuthStatus])
+
   useEffect(() => {
     installFetchInterceptor()
-    refreshAuthStatus().finally(() => setLoading(false))
-  }, [refreshAuthStatus])
+    let cancelled = false
+    let timer: number | undefined
+    const attempt = async (retry: number) => {
+      const answer = await readAuthStatus()
+      if (cancelled) return
+      if (answer === null) {
+        // Showing sign-in would be wrong: the session may well be valid.
+        timer = window.setTimeout(
+          () => void attempt(retry + 1),
+          STATUS_RETRY_MS[Math.min(retry, STATUS_RETRY_MS.length - 1)],
+        )
+        return
+      }
+      setLoading(false)
+    }
+    void attempt(0)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [readAuthStatus])
 
   useEffect(() => {
     if (!authRequired) return

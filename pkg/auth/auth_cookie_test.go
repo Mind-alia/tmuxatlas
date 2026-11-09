@@ -18,7 +18,7 @@ func TestSessionCookieSecurityFollowsPublicURLPolicy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			ttl := 2 * time.Hour
-			if err := setSessionCookie(rec, NewSessionManager(ttl), tt.secure); err != nil {
+			if err := setSessionCookie(rec, NewSessionManager(ttl), "credential", tt.secure); err != nil {
 				t.Fatal(err)
 			}
 			cookies := rec.Result().Cookies()

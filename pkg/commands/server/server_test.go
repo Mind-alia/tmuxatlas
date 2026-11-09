@@ -3,6 +3,10 @@ package server
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/LosFurina/tmuxatlas/pkg/accounts"
+	"github.com/LosFurina/tmuxatlas/pkg/auth"
 )
 
 func TestValidateListenAddress(t *testing.T) {
@@ -123,5 +127,38 @@ func TestValidateNoAuthMode(t *testing.T) {
 	}
 	if err := validateNoAuthMode(true, "127.0.0.1:7654", external); err == nil {
 		t.Fatal("external no-auth origin accepted")
+	}
+}
+
+// A reset made while TmuxAtlas was stopped must end the sessions it invalidates.
+func TestRetainAccountSessions(t *testing.T) {
+	sessions := auth.NewSessionManager(time.Hour)
+	active, _ := sessions.CreateForAccount("active")
+	reset, _ := sessions.CreateForAccount("reset")
+	disabled, _ := sessions.CreateForAccount("disabled")
+	deleted, _ := sessions.CreateForAccount("deleted")
+	past := time.Now().Add(-time.Hour)
+	retainAccountSessions(sessions, []accounts.User{
+		{ID: "active", PasswordChangedAt: past},
+		{ID: "reset", PasswordChangedAt: time.Now().Add(time.Minute)},
+		{ID: "disabled", Disabled: true, PasswordChangedAt: past},
+	})
+	if !sessions.Validate(active) {
+		t.Fatal("a valid session was ended")
+	}
+	for name, token := range map[string]string{"reset": reset, "disabled": disabled, "deleted": deleted} {
+		if sessions.Validate(token) {
+			t.Errorf("%s: session kept", name)
+		}
+	}
+}
+
+func TestRetainPasskeySessions(t *testing.T) {
+	sessions := auth.NewSessionManager(time.Hour)
+	known, _ := sessions.CreateForCredential("known")
+	gone, _ := sessions.CreateForCredential("gone")
+	retainPasskeySessions(sessions, []string{"known"})
+	if !sessions.Validate(known) || sessions.Validate(gone) {
+		t.Fatal("only sessions of registered passkeys must survive")
 	}
 }

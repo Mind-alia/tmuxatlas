@@ -363,8 +363,18 @@ func (m *PasskeyManager) RotateBootstrapToken() (string, error) {
 	return token, nil
 }
 func (m *PasskeyManager) HasCredentials() bool { return m.store.HasCredentials() }
-func (m *PasskeyManager) RPID() string         { return m.rpID }
-func (m *PasskeyManager) Origin() string       { return m.origin }
+
+// CredentialIDs lists the registered passkeys, encoded as their sessions record them.
+func (m *PasskeyManager) CredentialIDs() []string {
+	user := m.store.snapshot()
+	ids := make([]string, 0, len(user.credentials))
+	for _, credential := range user.credentials {
+		ids = append(ids, encodeCredentialID(credential.ID))
+	}
+	return ids
+}
+func (m *PasskeyManager) RPID() string   { return m.rpID }
+func (m *PasskeyManager) Origin() string { return m.origin }
 
 func (m *PasskeyManager) authenticated(r *http.Request) bool {
 	cookie, err := r.Cookie(cookieName)
@@ -492,7 +502,13 @@ func (m *PasskeyManager) RenameHandler() http.HandlerFunc {
 
 func (m *PasskeyManager) DeleteHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		err := m.store.Delete(chi.URLParam(r, "credentialID"))
+		encoded := chi.URLParam(r, "credentialID")
+		err := m.store.Delete(encoded)
+		if err == nil {
+			if id, decodeErr := decodeCredentialID(encoded); decodeErr == nil {
+				m.sessions.RevokeCredential(encodeCredentialID(id))
+			}
+		}
 		switch {
 		case errors.Is(err, ErrInvalidPasskeyID):
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -531,7 +547,7 @@ func (m *PasskeyManager) FinishRegistrationHandler() http.HandlerFunc {
 		m.bootstrapExpires = time.Time{}
 		m.mu.Unlock()
 		if !hadCredentials {
-			if err := setSessionCookie(w, m.sessions, m.secureCookies); err != nil {
+			if err := setSessionCookie(w, m.sessions, encodeCredentialID(credential.ID), m.secureCookies); err != nil {
 				writeError(w, http.StatusInternalServerError, "could not create session")
 				return
 			}
@@ -593,7 +609,7 @@ func (m *PasskeyManager) FinishLoginHandler() http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "could not update passkey")
 			return
 		}
-		if err := setSessionCookie(w, m.sessions, m.secureCookies); err != nil {
+		if err := setSessionCookie(w, m.sessions, encodeCredentialID(credential.ID), m.secureCookies); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not create session")
 			return
 		}
