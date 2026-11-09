@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type M
 import {
   ArrowDown,
   ArrowUp,
+  CornerLeftUp,
   File,
   FileArchive,
   FileAudio,
@@ -78,6 +79,8 @@ interface FileListProps {
   onContextMenu: (entry: FileEntry, x: number, y: number) => void
   onMove: (from: string, toDir: string) => void
   onDropFiles: (dir: string, dataTransfer: DataTransfer) => void
+  /** Shown as a ".." row on top of the list when the folder has a parent. */
+  parentPath?: string
   onParent: () => void
   emptyLabel: string
 }
@@ -93,6 +96,7 @@ export function FileList({
   onContextMenu,
   onMove,
   onDropFiles,
+  parentPath,
   onParent,
   emptyLabel,
 }: FileListProps) {
@@ -241,6 +245,7 @@ export function FileList({
         onKeyDown={onKeyDown}
         className="ui-focus-ring min-h-0 flex-1 overflow-y-auto py-1 outline-none"
       >
+        {parentPath && <ParentRow path={parentPath} dropTarget={dropTarget} handlers={{ rowDragEnter, rowDragLeave, rowDragOver, rowDrop }} onParent={onParent} />}
         {entries.length === 0 && <p className="px-4 py-8 text-center text-xs text-muted-foreground">{emptyLabel}</p>}
         {entries.map(entry => {
           const { icon: Icon, tone } = iconFor(entry)
@@ -307,4 +312,42 @@ function hashPath(path: string) {
   let hash = 5381
   for (let index = 0; index < path.length; index++) hash = ((hash << 5) + hash + path.charCodeAt(index)) | 0
   return (hash >>> 0).toString(36)
+}
+
+type RowDragHandler = (event: DragEvent, entry: FileEntry) => void
+
+/** The ".." row: opens the parent folder and accepts drops like any folder. */
+function ParentRow({
+  path,
+  dropTarget,
+  handlers,
+  onParent,
+}: {
+  path: string
+  dropTarget: string | null
+  handlers: { rowDragEnter: RowDragHandler; rowDragLeave: RowDragHandler; rowDragOver: RowDragHandler; rowDrop: RowDragHandler }
+  onParent: () => void
+}) {
+  const entry: FileEntry = { name: '..', path, type: 'dir', size: 0, mode: '', mtime: 0, hidden: false }
+  return (
+    <div
+      role="option"
+      aria-selected={false}
+      aria-label="Dossier parent"
+      data-parent-row=""
+      title={path}
+      onClick={onParent}
+      onDragEnter={event => handlers.rowDragEnter(event, entry)}
+      onDragLeave={event => handlers.rowDragLeave(event, entry)}
+      onDragOver={event => handlers.rowDragOver(event, entry)}
+      onDrop={event => handlers.rowDrop(event, entry)}
+      className={cn(
+        'mx-1 flex min-h-9 cursor-pointer items-center gap-2 rounded px-2 text-[13px] text-muted-foreground select-none hover:bg-[var(--surface-hover)] hover:text-foreground md:min-h-7',
+        dropTarget === path && 'bg-primary/15 ring-1 ring-primary ring-inset',
+      )}
+    >
+      <CornerLeftUp size={15} className="shrink-0" aria-hidden />
+      <span className="font-mono">..</span>
+    </div>
+  )
 }

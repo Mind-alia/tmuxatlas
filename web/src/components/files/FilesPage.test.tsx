@@ -91,8 +91,9 @@ async function renderPage() {
 describe('FilesPage', () => {
   it('lists folders first and hides dotfiles until asked', async () => {
     await renderPage()
-    const names = screen.getAllByRole('option').map(option => option.getAttribute('data-path'))
-    expect(names).toEqual(['/home/me/projects', '/home/me/logo.svg', '/home/me/notes.txt'])
+    const names = screen.getAllByRole('option').map(option => option.getAttribute('data-path') ?? option.textContent)
+    expect(names).toEqual(['..', '/home/me/projects', '/home/me/logo.svg', '/home/me/notes.txt'])
+    expect(screen.queryByRole('button', { name: 'Dossier parent' })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Afficher les fichiers cachés' }))
     expect(screen.getByRole('option', { name: /\.bashrc/ })).toBeInTheDocument()
     expect(screen.getByText('vps-1')).toBeInTheDocument()
@@ -141,6 +142,12 @@ describe('FilesPage', () => {
     })
     expect(image.getAttribute('src')).toContain('/api/files/raw?path=%2Fhome%2Fme%2Flogo.svg')
     expect(calls.some(call => call.url.startsWith('/api/files/content'))).toBe(false)
+  })
+
+  it('opens the parent folder from the .. row', async () => {
+    await renderPage()
+    await userEvent.click(screen.getByRole('option', { name: 'Dossier parent' }))
+    await waitFor(() => expect(calls.some(call => call.url === `/api/files/list?path=${encodeURIComponent('/home')}`)).toBe(true))
   })
 
   it('navigates into folders and keeps the folder in the URL', async () => {

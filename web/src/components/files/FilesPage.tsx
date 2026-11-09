@@ -10,7 +10,6 @@ import {
 } from 'react'
 import {
   ArrowLeft,
-  ArrowUp,
   ChevronRight,
   CloudUpload,
   Copy,
@@ -679,16 +678,6 @@ export function FilesPage({
           <IconButton aria-label="Dossier personnel" title="Dossier personnel" size="sm" className={toolbarButton} onClick={() => void loadDir(listing?.home || '')}>
             <House size={15} aria-hidden />
           </IconButton>
-          <IconButton
-            aria-label="Dossier parent"
-            title="Dossier parent (Retour arrière)"
-            size="sm"
-            className={toolbarButton}
-            disabled={!listing?.parent}
-            onClick={() => listing?.parent && void loadDir(listing.parent, { select: listing.path })}
-          >
-            <ArrowUp size={15} aria-hidden />
-          </IconButton>
           <IconButton aria-label="Actualiser" title="Actualiser" size="sm" className={toolbarButton} onClick={() => void loadDir(listingDir, { quiet: true, select: selected ?? undefined })}>
             <RefreshCw size={14} className={loading ? 'animate-spin' : undefined} aria-hidden />
           </IconButton>
@@ -824,6 +813,7 @@ export function FilesPage({
             onContextMenu={(entry, x, y) => setContextMenu({ entry, x, y })}
             onMove={(from, toDir) => void move(from, toDir)}
             onDropFiles={uploadDropped}
+            parentPath={listing?.parent}
             onParent={() => listing?.parent && void loadDir(listing.parent, { select: listing.path })}
             emptyLabel={filter ? 'Aucun élément ne correspond au filtre.' : 'Ce dossier est vide. Glissez des fichiers ici pour les envoyer.'}
           />
