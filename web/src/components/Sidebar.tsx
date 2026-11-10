@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { cn } from '../lib/utils'
 import { postRuntimeMutation } from '../lib/runtimeApi'
 import { parseSessionKey, type Session } from '../hooks/useSessions'
@@ -533,7 +534,7 @@ export function Sidebar({
           )}
         </nav>
 
-        {contextMenu && (
+        {contextMenu && createPortal(
           <div
             ref={menuRef}
             role="menu"
@@ -582,7 +583,8 @@ export function Sidebar({
                 Cet hôte ne permet pas de supprimer la session en toute sécurité.
               </p>
             )}
-          </div>
+          </div>,
+          document.body,
         )}
       </aside>
 

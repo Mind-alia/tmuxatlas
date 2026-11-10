@@ -173,6 +173,15 @@ describe('state-driven Sidebar', () => {
     })
   })
 
+  it('opens the session menu outside the sidebar so it overlays the terminal', () => {
+    renderSidebar()
+    const first = screen.getByRole('button', { name: /Ouvrir la session work sur Duplicate Host, En attente/ })
+    fireEvent.contextMenu(first, { clientX: 20, clientY: 20 })
+    const menu = screen.getByRole('menu')
+    expect(menu.parentElement).toBe(document.body)
+    expect(menu.closest('aside')).toBeNull()
+  })
+
   it('makes detach an explicit browser-only action without a runtime mutation', async () => {
     const detach = vi.fn()
     renderSidebar({ onDetachSession: detach })
