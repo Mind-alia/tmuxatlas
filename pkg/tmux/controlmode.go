@@ -29,6 +29,16 @@ func ControlSessionName() string {
 	return controlSessionName
 }
 
+// DictationSessionPrefix starts the names of the hidden sessions where TmuxAtlas
+// runs an agent only for its dictation (see pkg/dictation).
+const DictationSessionPrefix = "tmuxatlas-dictation-"
+
+// IsInternalSession reports whether a session belongs to TmuxAtlas itself: it
+// is never listed, attached, owned or acted on by users.
+func IsInternalSession(name string) bool {
+	return name == controlSessionName || strings.HasPrefix(name, DictationSessionPrefix)
+}
+
 // Notification represents a parsed control mode notification
 type Notification struct {
 	Type string   // e.g. "sessions-changed", "window-add", "exit"

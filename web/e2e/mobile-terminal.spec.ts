@@ -152,7 +152,7 @@ async function openSession(
   let navigation: Locator
   if ((viewport?.width ?? 0) < 1024) {
     const sessions = page.getByRole('button', { name: 'Sessions', exact: true })
-    const back = page.getByRole('button', { name: 'Retour aux sessions' })
+    const back = page.getByRole('button', { name: /^Changer de session/ })
     await expect(sessions.or(back)).toBeVisible()
     if (await sessions.isVisible()) await sessions.click()
     else await back.click()
@@ -171,9 +171,11 @@ async function openSession(
 }
 
 async function expandComposer(page: Page): Promise<Locator> {
-  const expand = page.getByRole('button', { name: 'Composer un message' })
-  if (await expand.getAttribute('aria-expanded') !== 'true') await expand.click()
   const textarea = page.getByRole('textbox', { name: /^Brouillon pour / })
+  // The open Composer replaces the toolbar and its button.
+  if (!await textarea.isVisible()) {
+    await page.getByRole('button', { name: 'Composer un message' }).click()
+  }
   await expect(textarea).toBeVisible()
   return textarea
 }
@@ -487,7 +489,7 @@ test('Drawer, Palette, Terminal toolbar and Composer stay within mobile visual v
     })
 
     if (size.width < 768) {
-      await page.getByRole('button', { name: 'Retour aux sessions' }).click()
+      await page.getByRole('button', { name: /^Changer de session/ }).click()
       const drawer = page.getByRole('dialog', { name: 'Sessions de l’espace de travail' })
       await expectInsideVisualViewport(
         drawer,
@@ -530,16 +532,6 @@ test('Drawer, Palette, Terminal toolbar and Composer stay within mobile visual v
       safeArea,
       { right: true, left: true },
     )
-    const textarea = await expandComposer(page)
-    const sendButton = page.getByRole('button', { name: /^Envoyer la commande à / })
-    const sendSize = await sendButton.evaluate(element => {
-      const rect = element.getBoundingClientRect()
-      return { width: rect.width, height: rect.height }
-    })
-    expect(sendSize.width).toBeGreaterThanOrEqual(44)
-    expect(sendSize.height).toBeGreaterThanOrEqual(44)
-
-    await textarea.focus()
     await setMockVisualViewport(page, {
       width: size.width - 8,
       height: size.keyboardHeight,
@@ -552,6 +544,19 @@ test('Drawer, Palette, Terminal toolbar and Composer stay within mobile visual v
       safeArea,
       { right: true, bottom: true, left: true },
     )
+
+    // The Composer takes the toolbar's place while it is open.
+    const textarea = await expandComposer(page)
+    await expect(toolbar).toBeHidden()
+    const sendButton = page.getByRole('button', { name: /^Envoyer la commande à / })
+    const sendSize = await sendButton.evaluate(element => {
+      const rect = element.getBoundingClientRect()
+      return { width: rect.width, height: rect.height }
+    })
+    expect(sendSize.width).toBeGreaterThanOrEqual(44)
+    expect(sendSize.height).toBeGreaterThanOrEqual(44)
+
+    await textarea.focus()
     await expectInsideVisualViewport(
       textarea.locator('..').locator('..'),
       `${size.width}×${size.height} Composer with software keyboard`,
@@ -560,7 +565,7 @@ test('Drawer, Palette, Terminal toolbar and Composer stay within mobile visual v
     )
 
     if (size.width < 768) {
-      await page.getByRole('button', { name: 'Retour aux sessions' }).click()
+      await page.getByRole('button', { name: /^Changer de session/ }).click()
       const drawer = page.getByRole('dialog', { name: 'Sessions de l’espace de travail' })
       await expectInsideVisualViewport(
         drawer,
@@ -588,7 +593,8 @@ test('Drawer, Palette, Terminal toolbar and Composer stay within mobile visual v
       offsetLeft: 0,
       offsetTop: 0,
     })
-    await page.getByRole('button', { name: 'Replier', exact: true }).click()
+    await page.getByRole('button', { name: 'Fermer le compositeur' }).click()
+    await expect(toolbar).toBeVisible()
   }
 
   await page.setViewportSize({ width: 390, height: 844 })

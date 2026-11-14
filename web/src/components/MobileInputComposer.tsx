@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CompositionEvent, type KeyboardEvent } from 'react'
+import { ArrowUp, X } from 'lucide-react'
 import { MAX_TERMINAL_COMMAND_BODY_BYTES, terminalCommandBodyByteLength } from '../lib/terminalInput'
 
 interface MobileInputComposerProps {
@@ -36,8 +37,10 @@ export function MobileInputComposer({
     const textarea = textareaRef.current
     if (!textarea) return
     textarea.style.height = 'auto'
-    const lineHeight = 22
-    textarea.style.height = `${Math.max(lineHeight, Math.min(textarea.scrollHeight || lineHeight, lineHeight * 3))}px`
+    // Three lines of 22px plus the vertical padding and border, then the field scrolls.
+    const minHeight = 44
+    const maxHeight = 22 * 3 + 24
+    textarea.style.height = `${Math.max(minHeight, Math.min((textarea.scrollHeight || 0) + 2, maxHeight))}px`
   }, [draft, expanded])
 
   useLayoutEffect(() => {
@@ -60,6 +63,12 @@ export function MobileInputComposer({
     const frame = window.requestAnimationFrame(() => textareaRef.current?.focus())
     return () => window.cancelAnimationFrame(frame)
   }, [expanded])
+
+  useEffect(() => {
+    if (!feedback) return
+    const timer = window.setTimeout(() => setFeedback(''), 2500)
+    return () => window.clearTimeout(timer)
+  }, [feedback])
 
   const toggle = () => {
     if (controlledExpanded !== undefined) onClose?.()
@@ -115,8 +124,11 @@ export function MobileInputComposer({
     composingRef.current = false
   }
 
+  // The byte budget only matters near its limit: below it the counter is noise on a phone.
+  const nearLimit = byteLength > MAX_TERMINAL_COMMAND_BODY_BYTES * 0.9
+
   return (
-    <div className="bg-card">
+    <div className="mobile-composer bg-card">
       {controlledExpanded === undefined && (
         <button
           type="button"
@@ -130,19 +142,47 @@ export function MobileInputComposer({
         </button>
       )}
       {expanded && (
-        <div className="border-t border-border p-2">
-          {controlledExpanded !== undefined && (
-            <button type="button" onClick={onClose} className="min-h-11 text-xs">
-              Replier
-            </button>
+        <div className="border-t border-border px-1.5 py-1.5">
+          {(error || tooLarge || feedback || nearLimit) && (
+            <div className="flex min-w-0 items-center justify-between gap-2 px-2 pb-1 text-2xs">
+              {error || tooLarge ? (
+                <p className="min-w-0 text-destructive" role="alert">
+                  {error || `Le brouillon dépasse ${MAX_TERMINAL_COMMAND_BODY_BYTES.toLocaleString()} octets UTF-8.`}
+                </p>
+              ) : feedback ? (
+                <p className="min-w-0 truncate text-success" role="status">
+                  {feedback}
+                </p>
+              ) : (
+                <span />
+              )}
+              {nearLimit && (
+                <span className={tooLarge ? 'shrink-0 text-destructive' : 'shrink-0 text-muted-foreground'}>
+                  {byteLength.toLocaleString()} / {MAX_TERMINAL_COMMAND_BODY_BYTES.toLocaleString()} octets
+                </span>
+              )}
+            </div>
           )}
-          <div className="flex items-end gap-2">
+          <div className="flex items-end gap-1.5">
+            {controlledExpanded !== undefined && (
+              <button
+                type="button"
+                aria-label="Fermer le compositeur"
+                title="Fermer le compositeur"
+                onMouseDown={event => event.preventDefault()}
+                onClick={onClose}
+                className="ui-focus-ring grid h-11 w-11 shrink-0 place-items-center rounded-full text-muted-foreground hover:text-foreground"
+              >
+                <X size={18} aria-hidden />
+              </button>
+            )}
             <textarea
               ref={textareaRef}
               rows={1}
               value={draft}
               aria-label={`Brouillon pour ${targetLabel}`}
-              placeholder="Composez votre texte ; Entrée ajoute une ligne"
+              placeholder={`Message pour ${targetLabel.split('/').pop() || targetLabel}`}
+              enterKeyHint="enter"
               autoCorrect="off"
               autoCapitalize="none"
               autoComplete="off"
@@ -163,34 +203,20 @@ export function MobileInputComposer({
               onKeyDown={onKeyDown}
               onCompositionStart={startComposition}
               onCompositionEnd={endComposition}
-              className="min-h-11 max-h-[66px] min-w-0 flex-1 resize-none overflow-y-auto rounded border border-border bg-input px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+              className="min-h-11 max-h-[90px] min-w-0 flex-1 resize-none overflow-y-auto rounded-[1.375rem] border border-border bg-input px-4 py-[11px] text-base leading-[22px] text-foreground outline-none placeholder:text-muted-foreground focus:border-primary md:text-sm"
             />
             <button
               type="button"
               aria-label={`Envoyer la commande à ${targetLabel}`}
+              title="Envoyer (le texte est suivi d’Entrée)"
               disabled={sending || tooLarge}
+              onMouseDown={event => event.preventDefault()}
               onClick={() => void submit()}
-              className="min-h-11 min-w-16 rounded border border-primary/50 bg-primary/15 px-3 text-sm text-primary disabled:opacity-40"
+              className="ui-focus-ring grid h-11 w-11 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground transition-opacity disabled:opacity-35"
             >
-              {sending ? 'Envoi…' : 'Envoyer'}
+              {sending ? <span className="text-2xs">…</span> : <ArrowUp size={20} aria-hidden />}
             </button>
           </div>
-          <div className="mobile-composer-meta mt-1 flex min-w-0 justify-between gap-2 text-2xs text-muted-foreground">
-            <span className="min-w-0">⌘/Ctrl+Entrée envoie ; Entrée ajoute une ligne.</span>
-            <span className={tooLarge ? 'shrink-0 text-destructive' : 'shrink-0'}>
-              {byteLength.toLocaleString()} / {MAX_TERMINAL_COMMAND_BODY_BYTES.toLocaleString()} octets
-            </span>
-          </div>
-          {(error || tooLarge) && (
-            <p className="mt-1 text-xs text-destructive" role="alert">
-              {error || `Le brouillon dépasse ${MAX_TERMINAL_COMMAND_BODY_BYTES.toLocaleString()} octets UTF-8.`}
-            </p>
-          )}
-          {feedback && (
-            <p className="mt-1 text-xs text-success" role="status">
-              {feedback}
-            </p>
-          )}
         </div>
       )}
     </div>

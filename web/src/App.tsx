@@ -7,7 +7,7 @@ import { selectWindow, selectPane, type NewSessionAgent } from './lib/sessionApi
 import { RuntimeAPIError } from './lib/runtimeApi'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
-import { StatusBar } from './components/StatusBar'
+import { useMicStream } from './hooks/useMicStream'
 import { Login } from './components/Login'
 import { StateConnectionNotice } from './components/StateConnectionNotice'
 import { AuthLoadingState, EmptyWorkspaceState, WorkspaceLoadingState } from './components/PageStates'
@@ -224,10 +224,11 @@ function AppInner({
     loadedVersionRef.current !== null && serverVersion !== null && serverVersion !== loadedVersionRef.current
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false)
   const [newSessionModalOpen, setNewSessionModalOpen] = useState(false)
+  const [pendingWallSession, setPendingWallSession] = useState<string | null>(null)
   const terminalContainerRef = useRef<HTMLDivElement>(null)
   const terminalActionsRef = useRef<TerminalCommandActions | null>(null)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [statusBarSlot, setStatusBarSlot] = useState<HTMLElement | null>(null)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(currentView === 'wall')
+  const [headerTalkSlot, setHeaderTalkSlot] = useState<HTMLElement | null>(null)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [terminalFullscreen, setTerminalFullscreen] = useState(false)
   const [zenMode, setZenMode] = useState(false)
@@ -256,10 +257,10 @@ function AppInner({
     () => buildWorkspaceViewModel(sessions, allToolEvents, activity, hosts, resolveOwner),
     [sessions, allToolEvents, activity, hosts, resolveOwner],
   )
-  // The Wall suggests the account's own sessions. Wait for the owner names, or it
-  // would take every session for someone else's and suggest none.
+  // Wait for owner names before initializing the account's Wall.
   const wallReady = !role || !username || usersById.size > 0
   const localHostIds = useMemo(() => new Set(hosts.filter(host => host.local).map(host => host.id)), [hosts])
+  const mic = useMicStream(localHostIds.size > 0, true)
 
   useEffect(() => {
     const metadata = applicationState.projection.metadata?.server as { version?: string } | undefined
@@ -343,8 +344,14 @@ function AppInner({
   useEffect(() => {
     if (!preferencesLoaded || sidebarDefaultAppliedRef.current) return
     sidebarDefaultAppliedRef.current = true
-    setSidebarCollapsed(Boolean(prefs.sidebar.default_collapsed))
-  }, [preferencesLoaded, prefs.sidebar.default_collapsed])
+    setSidebarCollapsed(currentView === 'wall' || Boolean(prefs.sidebar.default_collapsed))
+  }, [currentView, preferencesLoaded, prefs.sidebar.default_collapsed])
+
+  useEffect(() => {
+    if (currentView !== 'wall') return
+    setSidebarCollapsed(true)
+    setMobileSidebarOpen(false)
+  }, [currentView])
 
   // Sync URL -> state on popstate (back/forward)
   useEffect(() => {
@@ -534,6 +541,11 @@ function AppInner({
         })
         const sessKey = `${hostId}/${name}`
         workspacePreferences.recordRecent(sessKey)
+        if (currentView === 'wall') {
+          setPendingWallSession(sessKey)
+          await refresh()
+          return
+        }
         pendingSessionRef.current = sessKey
         navigateTo(sessKey)
         await refresh()
@@ -547,7 +559,7 @@ function AppInner({
         pendingSessionRef.current = null
       }
     },
-    [navigateTo, refresh, refocusTerminal, workspacePreferences],
+    [currentView, navigateTo, refresh, refocusTerminal, workspacePreferences],
   )
 
   const toggleFullscreen = useCallback(() => {
@@ -823,6 +835,10 @@ function AppInner({
             onSettings={navigateToSettings}
             onLogout={onLogout}
             onNewSession={openNewSessionModal}
+            mic={mic}
+            onTalkSlotChange={setHeaderTalkSlot}
+            onHelp={() => setHelpOpen(true)}
+            updateAvailable={updateAvailable}
             events={allToolEvents}
             onJumpToSession={jumpToSession}
             onDismiss={dismissEvent}
@@ -895,16 +911,24 @@ function AppInner({
             ) : currentView === 'wall' ? (
               wallReady && (
                 <WallView
+                  key={role ? username : 'anonymous'}
                   workspace={workspace}
                   owner={role ? username : null}
                   localHosts={localHostIds}
+                  sharedMic={mic}
+                  onNewSession={openNewSessionModal}
+                  pendingSession={pendingWallSession}
+                  onSessionAdded={() => setPendingWallSession(null)}
                   onOpenSession={(key: string) => void jumpToSession(key)}
                 />
               )
             ) : selectedSession && (role !== 'user' || activeSession || selectedSession === pendingSessionRef.current) ? (
               <div className="flex flex-1 flex-col overflow-hidden">
                 {activeHost?.local === true && !zenMode && (
-                  <SessionPanelTabs value={sessionPanel} onChange={setSessionPanel} />
+                  // On a phone the terminal header holds this switch, to leave the terminal its height.
+                  <div className="hidden md:block">
+                    <SessionPanelTabs value={sessionPanel} onChange={setSessionPanel} />
+                  </div>
                 )}
                 <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
               <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
@@ -931,6 +955,13 @@ function AppInner({
                     void selectPane(host, name, pane).catch(err => setRuntimeError(errorMessage(err)))
                   }}
                   onBackToSessions={() => setMobileSidebarOpen(true)}
+                  onHome={() => navigateTo(null)}
+                  onToggleFiles={
+                    activeHost?.local === true
+                      ? () => setSessionPanel(panel => (panel === 'files' ? 'terminal' : 'files'))
+                      : undefined
+                  }
+                  filesOpen={sessionPanel === 'files'}
                   onPreviousSession={() => moveSession(-1)}
                   onNextSession={() => moveSession(1)}
                   attentionCount={attentionCount}
@@ -955,7 +986,9 @@ function AppInner({
                   voiceAllowed
                   claudeActive={talkAgentOf(activePane) === 'claude'}
                   agyActive={talkAgentOf(activePane) === 'agy'}
-                  talkSlot={statusBarSlot}
+                  codexActive={talkAgentOf(activePane) === 'codex'}
+                  talkSlot={headerTalkSlot}
+                  sharedMic={mic}
                   onToggleFullscreen={toggleFullscreen}
                   onToggleZen={toggleZen}
                   onRetry={retryTerminal}
@@ -964,7 +997,8 @@ function AppInner({
                 />
               </div>
                   {sessionPanel === 'files' && activeHost?.local === true && !zenMode && (
-                    <div className="absolute inset-0 z-20 flex bg-background">
+                    // On a phone the terminal header stays above the files, with the switch back.
+                    <div className="absolute inset-x-0 bottom-0 top-11 z-20 flex bg-background md:top-0">
                       <SessionFiles key={selectedSession} hosts={hosts} paneId={activePane?.id} />
                     </div>
                   )}
@@ -1001,26 +1035,12 @@ function AppInner({
           onOverview={() => navigateTo(null)}
           onSessions={() => setMobileSidebarOpen(true)}
           onMonitoring={() => navigateTo(null, 'monitoring')}
+          onWall={() => navigateTo(null, 'wall')}
           onFiles={() => navigateTo(null, 'files')}
           onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}
           onSettings={navigateToSettings}
-        />
-      )}
-      {/* StatusBar - full width */}
-      {!zenMode && (
-        <StatusBar
-          sessionCount={sessions.length}
-          waitingCount={allToolEvents.filter(e => e.status === 'waiting').length}
-          pushState={pushState}
-          version={serverVersion}
-          updateAvailable={updateAvailable}
-          hosts={hosts}
-          agentCount={
-            allToolEvents.length
-          }
-          onHelp={() => setHelpOpen(true)}
-          alignSlotToTerminal={!sidebarCollapsed && !terminalFullscreen}
-          onSlotChange={setStatusBarSlot}
+          onNewSession={openNewSessionModal}
+          onLogout={authMode === 'accounts' ? onLogout : undefined}
         />
       )}
     </div>

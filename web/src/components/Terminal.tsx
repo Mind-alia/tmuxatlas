@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Keyboard, Mic, Pencil } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, CornerDownLeft, Keyboard, KeyboardOff, MessageSquareText, Mic } from 'lucide-react'
 import { useMediaQuery, COMPACT_LAYOUT_QUERY } from '../lib/useMediaQuery'
 import { useHostLabel } from '../lib/hostLabel'
 import type { Window as SessionWindow } from '../hooks/useSessions'
@@ -16,12 +16,13 @@ import { deriveTerminalWorkspaceConnection, type TerminalWorkspaceConnectionStat
 import { useMicStream, type MicState } from '../hooks/useMicStream'
 import { readAgyVoiceStatus } from '../lib/agyVoiceStatus'
 import type { TalkAgent } from '../lib/talkAgent'
-import { TalkButton } from './TalkButton'
+import { RelayTalkButton, TalkButton, type DictationRelay } from './TalkButton'
 import { TerminalCockpit } from './TerminalCockpit'
 import { TerminalContextMenu, type TerminalMenuPosition } from './TerminalContextMenu'
 import { TerminalPasteConfirmation } from './TerminalPasteConfirmation'
 import { TerminalSearchBar } from './TerminalSearchBar'
 import { MobileInputComposer } from './MobileInputComposer'
+import { hideSoftKeyboard, useSoftKeyboardOpen } from '../lib/useSoftKeyboard'
 
 export interface TerminalCommandActions {
   reconnect: () => void
@@ -39,6 +40,9 @@ export interface TerminalProps {
   onSelectWindow?: (index: number) => void
   onSelectPane?: (paneId: string) => void
   onBackToSessions?: () => void
+  onHome?: () => void
+  onToggleFiles?: () => void
+  filesOpen?: boolean
   onPreviousSession?: () => void
   onNextSession?: () => void
   attentionCount?: number
@@ -65,10 +69,12 @@ export interface TerminalProps {
   claudeActive?: boolean
   /** agy runs in the pane this Terminal has active; Talk toggles its F5 dictation. */
   agyActive?: boolean
-  /** Where the talk button renders; it is absent while the status bar is hidden. */
+  /** Codex runs in the pane this Terminal has active; a hidden Claude transcribes for it. */
+  codexActive?: boolean
+  /** Where the talk button renders, in the app header or a Wall tile. */
   talkSlot?: HTMLElement | null
   /**
-   * The Wall's microphone, shared by its tiles. An embedded Terminal opens no
+   * The app microphone, shared across views and Wall tiles. An embedded Terminal opens no
    * microphone of its own, and shows Talk only with this one.
    */
   sharedMic?: { available: boolean; state: MicState }
@@ -82,6 +88,24 @@ export interface TerminalProps {
   onCommandActionsChange?: (actions: TerminalCommandActions | null) => void
   terminalDrafts?: TerminalDraftStore
 }
+
+type MobileKey =
+  | { label: string; content: ReactNode; value: string; wide?: boolean; modifier?: undefined }
+  | { label: string; content: string; modifier: ModifierName; value?: undefined; wide?: undefined }
+
+// Ordered by how often an agent session needs them: what scrolls out of view is rarer.
+const mobileKeys: MobileKey[] = [
+  { label: 'Échap', content: 'Esc', value: terminalKeys.escape, wide: true },
+  { label: 'Ctrl', content: 'Ctrl', modifier: 'ctrl' },
+  { label: 'Flèche haut', content: <ArrowUp size={16} aria-hidden />, value: terminalKeys.up },
+  { label: 'Flèche bas', content: <ArrowDown size={16} aria-hidden />, value: terminalKeys.down },
+  { label: 'Entrée', content: <CornerDownLeft size={16} aria-hidden />, value: terminalKeys.enter },
+  { label: 'Tabulation', content: 'Tab', value: terminalKeys.tab, wide: true },
+  { label: 'Flèche gauche', content: <ArrowLeft size={16} aria-hidden />, value: terminalKeys.left },
+  { label: 'Flèche droite', content: <ArrowRight size={16} aria-hidden />, value: terminalKeys.right },
+  { label: 'Maj+Tabulation', content: '⇧Tab', value: terminalKeys.shiftTab, wide: true },
+  { label: 'Alt', content: 'Alt', modifier: 'alt' },
+]
 
 // F5 as a terminal sends it: agy's /voice key.
 const AGY_DICTATION_KEY = '\x1b[15~'
@@ -105,6 +129,9 @@ export function Terminal({
   onSelectWindow,
   onSelectPane,
   onBackToSessions,
+  onHome,
+  onToggleFiles,
+  filesOpen,
   onPreviousSession,
   onNextSession,
   attentionCount,
@@ -127,6 +154,7 @@ export function Terminal({
   voiceAllowed = true,
   claudeActive,
   agyActive,
+  codexActive,
   talkSlot,
   sharedMic,
   talkLocked = false,
@@ -146,6 +174,7 @@ export function Terminal({
   const hostLabel = resolveHostLabel(hostId, hostName === hostId ? 'Hôte' : hostName || 'Hôte') || 'Hôte'
   const targetLabel = `${hostLabel}/${sessionName}`
   const compact = useMediaQuery(COMPACT_LAYOUT_QUERY)
+  const keyboardOpen = useSoftKeyboardOpen()
   const localTerminalDrafts = useTerminalDrafts()
   const { getDraft, setDraft } = terminalDrafts ?? localTerminalDrafts
   const [modifiers, setModifiers] = useState<ModifierState>(input.snapshot())
@@ -172,6 +201,8 @@ export function Terminal({
     sendInput,
     sendRawInput,
     setVoiceHold,
+    dictate,
+    dictationText,
     readScreen,
     sendCommand,
     copySelection,
@@ -185,19 +216,21 @@ export function Terminal({
     findPrevious,
     clearSearch,
   } = useTerminal(sessionName, hostId, input)
-  const mic = useMicStream(Boolean(hostLocal && !embedded && voiceAllowed))
+  const mic = useMicStream(Boolean(hostLocal && !embedded && voiceAllowed && !sharedMic))
   const toggleMic = useCallback(() => {
     mic.toggle()
     focus()
   }, [focus, mic])
-  const talkAgent: TalkAgent | null = claudeActive ? 'claude' : agyActive ? 'agy' : null
+  const talkAgent: TalkAgent | null = claudeActive ? 'claude' : agyActive ? 'agy' : codexActive ? 'codex' : null
   // The agent a hold started with, so that its release reaches the same agent.
   const heldAgent = useRef<TalkAgent | null>(null)
   const holdSpace = useCallback(
     (on: boolean) => {
       const agent = on ? talkAgent : heldAgent.current
       heldAgent.current = on ? talkAgent : null
-      if (agent === 'agy') {
+      if (agent === 'codex') {
+        // The server holds the hidden Claude's space bar for Codex.
+      } else if (agent === 'agy') {
         // F5 starts agy's dictation and, while it records, inserts the transcript.
         // Reading its footer first keeps a stray F5 from starting or stopping one.
         const status = readAgyVoiceStatus(readScreen())
@@ -216,9 +249,45 @@ export function Terminal({
     },
     [focus, onTalkHold, readScreen, sendRawInput, setVoiceHold, talkAgent],
   )
-  // Embedded on the Wall, Talk follows the Wall's shared microphone.
-  const talkMic = embedded ? sharedMic : mic
-  const showTalk = embedded ? Boolean(sharedMic?.available && hostLocal && voiceAllowed) : !compact && mic.available
+  const talkMic = sharedMic ?? (embedded ? undefined : mic)
+  const showTalk = Boolean(talkMic?.available && hostLocal && voiceAllowed && (embedded || !compact))
+
+  const dictationRelay = useMemo<DictationRelay>(
+    () => ({
+      start: () => dictate('start'),
+      stop: submit => dictate('stop', submit),
+      cancel: () => void dictate('cancel').catch(() => {}),
+    }),
+    [dictate],
+  )
+  // Codex has no dictation: the server transcribes with a hidden Claude.
+  const renderTalk = (
+    disabled: boolean,
+    label?: string,
+    livePlacement: 'above-left' | 'above-right' | 'below-right' = 'above-left',
+  ) =>
+    talkAgent === 'codex' ? (
+      <RelayTalkButton
+        key={targetKey}
+        agentName="Codex"
+        disabled={disabled}
+        relay={dictationRelay}
+        onHold={onTalkHold}
+        targetLabel={label}
+        liveText={dictationText}
+        livePlacement={livePlacement}
+      />
+    ) : (
+      <TalkButton
+        key={targetKey}
+        agent={talkAgent ?? 'claude'}
+        disabled={disabled}
+        onHold={holdSpace}
+        readScreen={readScreen}
+        onSubmit={submitPrompt}
+        targetLabel={label}
+      />
+    )
 
   const submitPrompt = useCallback(() => {
     try {
@@ -254,6 +323,7 @@ export function Terminal({
 
   const cycleModifier = (modifier: ModifierName) => {
     input.cycle(modifier)
+    // A modifier applies to the next typed letter, so it brings the keyboard up.
     focus()
   }
 
@@ -393,25 +463,32 @@ export function Terminal({
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
-    let frame: number | null = null
+    // Fit once the size stops changing. A phone keyboard slides in over many
+    // frames: resizing tmux at each one makes the agent redraw for every
+    // intermediate size while the browser screen still holds the previous one.
+    let timer: number | null = null
     const scheduleFit = () => {
-      if (frame !== null) window.cancelAnimationFrame(frame)
-      frame = window.requestAnimationFrame(() => {
-        frame = null
+      if (timer !== null) window.clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        timer = null
         fit()
-      })
+      }, 120)
     }
     const observer = new ResizeObserver(scheduleFit)
     observer.observe(container)
+    // Font loading and renderer changes can resize the cells without changing
+    // the tile. Refit once those new screen dimensions have been applied.
+    const screen = container.querySelector('.xterm-screen')
+    if (screen) observer.observe(screen)
     window.visualViewport?.addEventListener('resize', scheduleFit)
     window.visualViewport?.addEventListener('scroll', scheduleFit)
     return () => {
       observer.disconnect()
-      if (frame !== null) window.cancelAnimationFrame(frame)
+      if (timer !== null) window.clearTimeout(timer)
       window.visualViewport?.removeEventListener('resize', scheduleFit)
       window.visualViewport?.removeEventListener('scroll', scheduleFit)
     }
-  }, [fit])
+  }, [connect, fit])
 
   useEffect(() => {
     const container = containerRef.current
@@ -529,6 +606,9 @@ export function Terminal({
           hostLabel={hostLabel}
           sessionStatus={sessionStatus}
           onBackToSessions={onBackToSessions}
+          onHome={onHome}
+          onToggleFiles={onToggleFiles}
+          filesOpen={filesOpen}
           onPreviousSession={onPreviousSession}
           onNextSession={onNextSession}
           attentionCount={attentionCount}
@@ -559,15 +639,11 @@ export function Terminal({
       {showTalk &&
         talkSlot &&
         createPortal(
-          <TalkButton
-            key={targetKey}
-            agent={talkAgent ?? 'claude'}
-            disabled={!talkAgent || talkMic?.state !== 'on' || workspaceConnection !== 'connected' || talkLocked}
-            onHold={holdSpace}
-            readScreen={readScreen}
-            onSubmit={submitPrompt}
-            targetLabel={embedded ? targetLabel : undefined}
-          />,
+          renderTalk(
+            !talkAgent || talkMic?.state !== 'on' || workspaceConnection !== 'connected' || talkLocked,
+            embedded ? targetLabel : undefined,
+            embedded || sharedMic ? 'below-right' : 'above-left',
+          ),
           talkSlot,
         )}
       {!embedded && zenMode && mic.state !== 'off' && (
@@ -615,10 +691,11 @@ export function Terminal({
           setContextMenu({ x: event.clientX, y: event.clientY })
         }}
       >
+        {/* FitAddon measures this box, so its spacing must use offsets rather than padding. */}
         <div
           ref={containerRef}
           data-terminal-surface
-          className="absolute inset-0 overflow-hidden pl-1 md:pl-2 md:pt-1"
+          className="absolute inset-y-0 left-1 right-0 overflow-hidden md:left-2 md:top-1"
           onClick={embedded ? focus : undefined}
         />
         {workspaceConnection !== 'connected' && (
@@ -659,8 +736,8 @@ export function Terminal({
       </div>
 
       {!embedded && compact && (
-        <div className="shrink-0 pb-[var(--safe-area-inset-bottom)]">
-          {composerOpen && (
+        <div className="mobile-terminal-bar shrink-0 border-t border-border bg-card pb-[var(--safe-area-inset-bottom)]">
+          {composerOpen ? (
             <MobileInputComposer
               key={targetKey}
               targetKey={targetKey}
@@ -669,86 +746,95 @@ export function Terminal({
               onDraftChange={setDraft}
               onSend={sendComposerCommand}
               expanded
-              onClose={() => setComposerOpen(false)}
+              onClose={() => {
+                setComposerOpen(false)
+                focus()
+              }}
             />
-          )}
-          <div className="flex h-11 items-center" role="toolbar" aria-label="Touches du terminal">
-            <div className="scrollbar-none flex min-w-0 flex-1 overflow-x-auto">
-              {(
-                [
-                  ['Échap', 'Esc', terminalKeys.escape],
-                  ['Tabulation', 'Tab', terminalKeys.tab],
-                  ['Flèche gauche', <ArrowLeft size={16} />, terminalKeys.left],
-                  ['Flèche haut', <ArrowUp size={16} />, terminalKeys.up],
-                  ['Flèche bas', <ArrowDown size={16} />, terminalKeys.down],
-                  ['Flèche droite', <ArrowRight size={16} />, terminalKeys.right],
-                ] as const
-              ).map(([label, content, value]) => (
-                <button
-                  key={label}
-                  type="button"
-                  aria-label={label}
-                  className="grid h-11 min-w-11 place-items-center font-mono text-xs"
-                  onClick={() => {
-                    sendInput(value)
-                    focus()
-                  }}
-                >
-                  {content}
-                </button>
-              ))}
-              {(['ctrl', 'alt'] as const).map(modifier => (
-                <button
-                  key={modifier}
-                  type="button"
-                  aria-label={`Modificateur ${modifier}`}
-                  aria-pressed={modifiers[modifier] !== 'off'}
-                  className="h-11 min-w-11 font-mono text-xs aria-pressed:text-primary"
-                  onClick={() => cycleModifier(modifier)}
-                >
-                  {modifier === 'ctrl' ? 'Ctrl' : 'Alt'}
-                </button>
-              ))}
-              <button
-                type="button"
-                aria-label="Afficher le clavier"
-                className="grid h-11 min-w-11 place-items-center"
-                onClick={focus}
-              >
-                <Keyboard size={16} />
-              </button>
-              <button
-                type="button"
-                aria-label="Composer un message"
-                aria-expanded={composerOpen}
-                className="grid h-11 min-w-11 place-items-center"
-                onClick={() => setComposerOpen(value => !value)}
-              >
-                <Pencil size={16} />
-              </button>
-            </div>
-            {mic.available && (
-              <div className="flex shrink-0 items-center bg-card">
-                <button
-                  type="button"
-                  aria-label={mic.state === 'off' ? 'Activer le micro' : 'Désactiver le micro'}
-                  aria-pressed={mic.state !== 'off'}
-                  className="grid h-11 w-11 place-items-center"
-                  onClick={toggleMic}
-                >
-                  <Mic size={16} />
-                </button>
-                <TalkButton
-                  key={targetKey}
-                  agent={talkAgent ?? 'claude'}
-                  disabled={!talkAgent || mic.state !== 'on' || workspaceConnection !== 'connected'}
-                  onHold={holdSpace}
-                  readScreen={readScreen}
-                  onSubmit={submitPrompt}
-                />
+          ) : (
+            <div className="flex h-11 items-center" role="toolbar" aria-label="Touches du terminal">
+              <div className="mobile-terminal-keys scrollbar-none flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1.5">
+                {mobileKeys.map(key =>
+                  key.modifier ? (
+                    <button
+                      key={key.label}
+                      type="button"
+                      aria-label={`Modificateur ${key.modifier}`}
+                      aria-pressed={modifiers[key.modifier] !== 'off'}
+                      data-mode={modifiers[key.modifier]}
+                      title={
+                        modifiers[key.modifier] === 'locked'
+                          ? `${key.content} verrouillé : touchez pour relâcher`
+                          : `${key.content} pour la prochaine touche ; deux fois pour verrouiller`
+                      }
+                      className="mobile-key mobile-key--modifier"
+                      onMouseDown={event => event.preventDefault()}
+                      onClick={() => cycleModifier(key.modifier)}
+                    >
+                      {key.content}
+                    </button>
+                  ) : (
+                    <button
+                      key={key.label}
+                      type="button"
+                      aria-label={key.label}
+                      className={key.wide ? 'mobile-key mobile-key--wide' : 'mobile-key'}
+                      onMouseDown={event => event.preventDefault()}
+                      onClick={() => {
+                        sendInput(key.value)
+                        if (keyboardOpen) focus()
+                      }}
+                    >
+                      {key.content}
+                    </button>
+                  ),
+                )}
               </div>
-            )}
-          </div>
+              <div className="flex shrink-0 items-center gap-0.5 border-l border-border pl-1 pr-1">
+                <button
+                  type="button"
+                  aria-label={keyboardOpen ? 'Masquer le clavier' : 'Afficher le clavier'}
+                  aria-pressed={keyboardOpen}
+                  title={keyboardOpen ? 'Masquer le clavier' : 'Afficher le clavier'}
+                  className="mobile-bar-action"
+                  onMouseDown={event => event.preventDefault()}
+                  onClick={() => (keyboardOpen ? hideSoftKeyboard() : focus())}
+                >
+                  {keyboardOpen ? <KeyboardOff size={18} aria-hidden /> : <Keyboard size={18} aria-hidden />}
+                </button>
+                <button
+                  type="button"
+                  aria-label="Composer un message"
+                  aria-expanded={composerOpen}
+                  title="Écrire un message complet avant de l’envoyer"
+                  className="mobile-bar-action"
+                  onClick={() => setComposerOpen(true)}
+                >
+                  <MessageSquareText size={18} aria-hidden />
+                </button>
+                {talkMic?.available && hostLocal && voiceAllowed && (
+                  <>
+                    {!sharedMic && (
+                      <button
+                        type="button"
+                        aria-label={mic.state === 'off' ? 'Activer le micro' : 'Désactiver le micro'}
+                        aria-pressed={mic.state !== 'off'}
+                        className="mobile-bar-action"
+                        onClick={toggleMic}
+                      >
+                        <Mic size={18} aria-hidden />
+                      </button>
+                    )}
+                    {renderTalk(
+                      !talkAgent || talkMic.state !== 'on' || workspaceConnection !== 'connected',
+                      undefined,
+                      'above-right',
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
       {(toolbarError || toolbarFeedback) && (

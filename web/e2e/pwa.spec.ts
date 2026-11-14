@@ -159,7 +159,9 @@ test('shows manual Add to Home Screen guidance on Apple mobile browsers', async 
   })
   const page = await context.newPage()
   await page.goto(baseURL)
-  await page.getByTitle('Réglages').click()
+  // Phones reach Settings from the bottom navigation's More sheet.
+  await page.getByRole('navigation', { name: 'Navigation mobile' }).getByRole('button', { name: 'Plus' }).click()
+  await page.getByRole('button', { name: 'Réglages' }).click()
 
   await expect(page.getByTestId('pwa-ios-guidance')).toContainText('touchez Partager')
   await expect(page.getByTestId('pwa-ios-guidance')).toContainText('Sur l’écran d’accueil')

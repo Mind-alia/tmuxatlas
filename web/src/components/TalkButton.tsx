@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowUp, Square } from 'lucide-react'
 import { agyPromptHasText, readAgyVoiceStatus } from '../lib/agyVoiceStatus'
 import { readClaudeVoiceStatus } from '../lib/claudeVoiceStatus'
-import type { TalkAgent } from '../lib/talkAgent'
+import type { DictatingAgent } from '../lib/talkAgent'
 
 const POLL_MS = 100
 const RELEASE_SETTLE_MS = 300
@@ -20,7 +20,7 @@ interface Voice {
   transcribed?: (rows: string[]) => boolean
 }
 
-const voices: Record<TalkAgent, Voice> = {
+const voices: Record<DictatingAgent, Voice> = {
   claude: { name: 'Claude', hint: 'Maintient la barre espace jusqu’à l’arrêt ou l’envoi', read: readClaudeVoiceStatus },
   agy: {
     name: 'agy',
@@ -47,7 +47,7 @@ export function TalkButton({
   onSubmit,
   targetLabel,
 }: {
-  agent?: TalkAgent
+  agent?: DictatingAgent
   disabled: boolean
   onHold: (on: boolean) => void
   readScreen: () => string[]
@@ -168,6 +168,165 @@ export function TalkButton({
         title="Arrêter et envoyer le texte"
         className={`${ROUND} bg-blue-600 text-white hover:opacity-90`}
         onClick={() => setPhase('sending')}
+      >
+        <ArrowUp aria-hidden="true" size={16} />
+      </button>
+    </div>
+  )
+}
+
+/** A dictation the server runs for an agent without its own (see pkg/dictation). */
+export interface DictationRelay {
+  start: () => Promise<void>
+  /** Types the transcript in the pane, and presses Enter when submit is true. */
+  stop: (submit: boolean) => Promise<void>
+  cancel: () => void
+}
+
+type RelayPhase = 'idle' | 'starting' | 'holding' | 'sending'
+
+const livePlacements = {
+  'above-left': 'bottom-full mb-2 left-0',
+  'above-right': 'bottom-full mb-2 right-0',
+  'below-right': 'top-full mt-2 right-0',
+}
+
+/**
+ * Talk for an agent without dictation, such as Codex: a hidden Claude Code
+ * transcribes, and the server types its transcript in this pane.
+ */
+export function RelayTalkButton({
+  agentName,
+  disabled,
+  relay,
+  onHold,
+  targetLabel,
+  liveText = '',
+  livePlacement = 'above-left',
+}: {
+  agentName: string
+  disabled: boolean
+  relay: DictationRelay
+  /** Reports when this dictation starts and ends, as the Wall needs. */
+  onHold?: (on: boolean) => void
+  targetLabel?: string
+  /** The transcript as Claude writes it, shown while the person speaks. */
+  liveText?: string
+  /** Where the transcript shows: below the app or Wall tile header,
+   * above the mobile toolbar. */
+  livePlacement?: 'above-left' | 'above-right' | 'below-right'
+}) {
+  const [phase, setPhase] = useState<RelayPhase>('idle')
+  const [notice, setNotice] = useState('')
+  const latest = useRef({ relay, onHold })
+  useEffect(() => {
+    latest.current = { relay, onHold }
+  }, [relay, onHold])
+  const phaseRef = useRef<RelayPhase>('idle')
+  const move = (next: RelayPhase) => {
+    phaseRef.current = next
+    setPhase(next)
+  }
+
+  // Leaving the page or losing the target while recording drops the dictation.
+  useEffect(() => {
+    if (!disabled) return
+    if (phaseRef.current === 'starting' || phaseRef.current === 'holding') latest.current.relay.cancel()
+    if (phaseRef.current !== 'idle') latest.current.onHold?.(false)
+    phaseRef.current = 'idle'
+    setPhase('idle')
+  }, [disabled])
+  useEffect(
+    () => () => {
+      if (phaseRef.current === 'starting' || phaseRef.current === 'holding') latest.current.relay.cancel()
+      if (phaseRef.current !== 'idle') latest.current.onHold?.(false)
+    },
+    [],
+  )
+
+  const finish = (message: string) => {
+    setNotice(message)
+    move('idle')
+    latest.current.onHold?.(false)
+  }
+  const start = () => {
+    setNotice('')
+    move('starting')
+    onHold?.(true)
+    relay.start().then(
+      () => {
+        if (phaseRef.current === 'starting') move('holding')
+      },
+      (error: Error) => {
+        if (phaseRef.current === 'starting') finish(error.message)
+      },
+    )
+  }
+  const stop = (submit: boolean) => {
+    if (phaseRef.current === 'starting') {
+      relay.cancel()
+      finish('')
+      return
+    }
+    move('sending')
+    relay.stop(submit).then(
+      () => finish(''),
+      (error: Error) => finish(error.message),
+    )
+  }
+
+  if (phase === 'idle') {
+    return (
+      <>
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label={`Talk : parler à ${agentName}${targetLabel ? ` dans ${targetLabel}` : ''}`}
+          title={`Claude transcrit ta voix, puis le texte est tapé dans ${agentName}`}
+          className="min-h-11 shrink-0 rounded border border-border px-2 text-muted-foreground hover:text-foreground disabled:opacity-40 md:min-h-8"
+          onClick={start}
+        >
+          Talk
+        </button>
+        {notice && (
+          <span role="alert" title={notice} className="ml-2 min-w-0 truncate font-normal text-destructive">
+            {notice}
+          </span>
+        )}
+      </>
+    )
+  }
+
+  const busy = phase === 'sending'
+  return (
+    <div role="group" aria-label="Dictée" aria-busy={phase !== 'holding'} className="relative flex items-center gap-2">
+      {phase === 'starting' && <span className="text-xs text-muted-foreground">Préparation…</span>}
+      {phase !== 'starting' && (
+        <p
+          aria-live="polite"
+          aria-label="Transcription en direct"
+          className={`absolute z-30 max-h-48 w-max max-w-[min(36rem,85vw)] overflow-y-auto whitespace-pre-wrap break-words rounded border border-border bg-card px-3 py-2 text-left text-sm font-normal text-foreground shadow-lg ${livePlacements[livePlacement]}`}
+        >
+          {liveText || <span className="text-muted-foreground">Je t’écoute…</span>}
+        </p>
+      )}
+      <button
+        type="button"
+        disabled={busy}
+        aria-label="Arrêter la dictée et modifier le texte"
+        title={phase === 'starting' ? 'Annuler la dictée' : 'Arrêter et modifier le texte'}
+        className={`${ROUND} border border-border bg-muted text-foreground hover:opacity-80`}
+        onClick={() => stop(false)}
+      >
+        <Square aria-hidden="true" size={14} />
+      </button>
+      <button
+        type="button"
+        disabled={phase !== 'holding'}
+        aria-label="Arrêter la dictée et envoyer le texte"
+        title="Arrêter et envoyer le texte"
+        className={`${ROUND} bg-blue-600 text-white hover:opacity-90`}
+        onClick={() => stop(true)}
       >
         <ArrowUp aria-hidden="true" size={16} />
       </button>

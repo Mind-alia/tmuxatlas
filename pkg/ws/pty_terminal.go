@@ -1,7 +1,9 @@
 package ws
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"sync"
@@ -24,6 +26,19 @@ type PTYTerminalHandler struct {
 	// OnSessionUse reports that a browser tab, identified by the id of its
 	// microphone, is working in a tmux session.
 	OnSessionUse func(session, micID string)
+
+	// StartDictation transcribes a tab's microphone for an agent without
+	// dictation of its own; nil disables it.
+	// partial receives the transcript while the person speaks.
+	StartDictation func(ctx context.Context, session, micID string, partial func(string)) (DictationTake, error)
+}
+
+// DictationTake is one dictation started by StartDictation.
+type DictationTake interface {
+	// Finish stops recording and returns the transcript, "" when nothing was heard.
+	Finish(ctx context.Context) (string, error)
+	// Cancel stops recording and drops the transcript.
+	Cancel()
 }
 
 // NewPTYTerminalHandler creates a new PTY-based terminal handler
@@ -42,13 +57,17 @@ type resizeMsg struct {
 	Data  string `json:"data"`
 	Final bool   `json:"final"`
 	On    bool   `json:"on"`
+	// Action and Submit drive a dictation: start, stop (submitting the
+	// transcript or not) or cancel.
+	Action string `json:"action"`
+	Submit bool   `json:"submit"`
 }
 
 // HandleSession handles a WebSocket connection for an entire tmux session via PTY.
 // Query params: name=<session>, cols=<cols>, rows=<rows>
 func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Request) {
 	sessionName := r.URL.Query().Get("name")
-	if sessionName == "" || sessionName == tmux.ControlSessionName() {
+	if sessionName == "" || tmux.IsInternalSession(sessionName) {
 		http.Error(w, "missing session name", http.StatusBadRequest)
 		return
 	}
@@ -116,6 +135,14 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 	var writeMu sync.Mutex
 	var images clipboardimage.Receiver
 	hold := newVoiceHold(ptySess)
+	dictation := &dictationState{}
+	defer dictation.cancel()
+	sendJSON := func(value any) {
+		data, _ := json.Marshal(value)
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_ = conn.WriteMessage(websocket.TextMessage, data)
+	}
 	sendResult := func(err error) {
 		message := ""
 		if err != nil {
@@ -177,6 +204,9 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 					sendResult(err)
 				}
 			}
+			if msg.Type == "dictation" {
+				dictation.handle(h, msg, sessionName, micID, ptySess, sendJSON)
+			}
 			if msg.Type == "voice-hold" {
 				if msg.On {
 					useSession()
@@ -204,4 +234,130 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 	ptySess.Close()
 	<-done
 	log.Info("session ws client disconnected")
+}
+
+// dictationState holds the dictation of one Terminal connection. generation
+// changes with each start, stop and cancel, so a dictation that finishes
+// starting after one of them is cancelled instead of left recording.
+type dictationState struct {
+	mu         sync.Mutex
+	take       DictationTake
+	generation int
+}
+
+// takeOver removes the current dictation and invalidates any start in progress.
+func (d *dictationState) takeOver() DictationTake {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.generation++
+	previous := d.take
+	d.take = nil
+	return previous
+}
+
+func (d *dictationState) cancel() {
+	if take := d.takeOver(); take != nil {
+		take.Cancel()
+	}
+}
+
+func (d *dictationState) begin() int {
+	d.cancel()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.generation
+}
+
+// started keeps take if nothing happened since begin, and cancels it otherwise.
+func (d *dictationState) started(generation int, take DictationTake) bool {
+	d.mu.Lock()
+	current := generation == d.generation
+	if current {
+		d.take = take
+	}
+	d.mu.Unlock()
+	if !current {
+		take.Cancel()
+	}
+	return current
+}
+
+// handle runs a dictation message off the read loop, since starting the
+// transcribing agent can take seconds. The transcript is typed in the pane the
+// Terminal shows, and Enter follows when the message asks to submit it.
+func (d *dictationState) handle(h *PTYTerminalHandler, msg resizeMsg, session, micID string,
+	pty io.Writer, send func(any)) {
+	reply := func(err error) {
+		message := ""
+		if err != nil {
+			message = err.Error()
+		}
+		send(map[string]string{"type": "dictation", "action": msg.Action, "error": message})
+	}
+	switch msg.Action {
+	case "start":
+		if h.StartDictation == nil || micID == "" {
+			reply(errDictationUnavailable)
+			return
+		}
+		generation := d.begin()
+		go func() {
+			partial := func(text string) {
+				send(map[string]string{"type": "dictation", "action": "partial", "text": text})
+			}
+			take, err := h.StartDictation(context.Background(), session, micID, partial)
+			if err == nil && !d.started(generation, take) {
+				err = errNoDictation
+			}
+			reply(err)
+		}()
+	case "stop":
+		take := d.takeOver()
+		if take == nil {
+			reply(errNoDictation)
+			return
+		}
+		go func() {
+			text, err := take.Finish(context.Background())
+			if err == nil && text == "" {
+				err = errNothingTranscribed
+			}
+			if err == nil {
+				_, err = pty.Write([]byte(sanitizeTranscript(text)))
+			}
+			if err == nil && msg.Submit {
+				// Let the agent take the text in before Enter submits it.
+				time.Sleep(150 * time.Millisecond)
+				_, err = pty.Write([]byte("\r"))
+			}
+			reply(err)
+		}()
+	case "cancel":
+		d.cancel()
+	}
+}
+
+var (
+	errDictationUnavailable = dictationError("La dictée n’est pas disponible pour ce terminal.")
+	errNoDictation          = dictationError("Aucune dictée en cours.")
+	errNothingTranscribed   = dictationError("Claude n’a rien transcrit. Rien n’a été envoyé. Vérifiez que la dictée de Claude est activée pour ce compte (/voice hold).")
+)
+
+type dictationError string
+
+func (e dictationError) Error() string { return string(e) }
+
+// sanitizeTranscript keeps a transcript to text: no control character can
+// reach the pane as a key press.
+func sanitizeTranscript(text string) string {
+	var out []rune
+	for _, r := range text {
+		if r == '\t' || r == '\n' {
+			r = ' '
+		}
+		if r >= 0x20 && r != 0x7f && !(r >= 0x80 && r < 0xa0) {
+			out = append(out, r)
+		}
+	}
+	return string(out)
 }

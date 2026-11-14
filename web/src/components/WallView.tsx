@@ -1,89 +1,115 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChevronDown, Maximize2, Mic, Plus, X } from 'lucide-react'
-import { useMicStream } from '../hooks/useMicStream'
+import { ChevronDown, Maximize2, Plus, X } from 'lucide-react'
+import type { useMicStream } from '../hooks/useMicStream'
 import { getBrandStorage, setBrandStorage } from '../lib/brandStorage'
 import { activePaneOf, talkAgentOf } from '../lib/talkAgent'
 import { useHostLabel } from '../lib/hostLabel'
 import { isAttentionStatus, type WorkspaceViewModel } from '../workspace/model'
-import { IconButton, StatusIcon } from './ui'
+import { IconButton, Menu, MenuItem, StatusIcon } from './ui'
 import { Terminal } from './Terminal'
 
-const storageKey = 'wall-targets:v1'
+const legacyStorageKey = 'wall-targets:v1'
+interface WallChoices {
+  targets: string[]
+  omitted: string[]
+}
+const sessionKeys = (value: unknown): string[] =>
+  Array.isArray(value) ? [...new Set(value.filter((key): key is string => typeof key === 'string'))] : []
 type WallSession = WorkspaceViewModel['sessions'][number]
 const noLocalHosts: ReadonlySet<string> = new Set()
 
-
 /**
- * Up to four live sessions side by side. Until the account chooses its tiles,
- * the Wall suggests its own sessions; any session can then be added.
+ * Start with every session owned by the account, preserving manual choices.
+ * New sessions can then be added with one click, with no limit on tile count.
  */
 export function WallView({
   workspace,
   owner,
   localHosts = noLocalHosts,
   onOpenSession,
+  sharedMic,
+  onNewSession,
+  pendingSession,
+  onSessionAdded,
 }: {
   workspace: WorkspaceViewModel
   /** The signed-in account; without one, every session counts as its own. */
   owner?: string | null
   /** Hosts served by this page's machine, where the virtual microphone lives. */
   localHosts?: ReadonlySet<string>
+  sharedMic?: ReturnType<typeof useMicStream>
+  onNewSession?: () => void
+  pendingSession?: string | null
+  onSessionAdded?: () => void
   onOpenSession: (key: string) => void
 }) {
   const hostLabel = useHostLabel()
-  const needsSuggestions = useRef(false)
+  const storageKey = owner ? `wall-targets:v2:${owner}` : 'wall-targets:v2'
+  const needsDefaults = useRef(false)
   const isOwn = (session: WallSession) => !owner || session.ownerName === owner
-  const ownSessions = workspace.sessions.filter(isOwn)
-  const suggestions = () =>
-    [...ownSessions]
-      .sort(
-        (a, b) =>
-          Number(isAttentionStatus(b.status)) - Number(isAttentionStatus(a.status)) ||
-          (Date.parse(b.lastActivity ?? '') || 0) - (Date.parse(a.lastActivity ?? '') || 0),
-      )
-      .slice(0, 2)
-      .map(session => session.key)
-  const [targets, setTargets] = useState<string[]>(() => {
+  const ownSessions = workspace.sessions.filter(isOwn).sort(
+    (a, b) =>
+      Number(isAttentionStatus(b.status)) - Number(isAttentionStatus(a.status)) ||
+      (Date.parse(b.lastActivity ?? '') || 0) - (Date.parse(a.lastActivity ?? '') || 0),
+  )
+  const addOwnSessions = (choices: WallChoices): WallChoices => ({
+    ...choices,
+    targets: [...new Set([
+      ...choices.targets.filter(Boolean),
+      ...ownSessions.filter(session => !choices.omitted.includes(session.key)).map(session => session.key),
+    ])],
+  })
+  const [choices, setChoices] = useState<WallChoices>(() => {
+    let saved: WallChoices = { targets: [], omitted: [] }
     try {
-      const saved = getBrandStorage(storageKey)
-      if (saved !== null) {
-        const parsed: unknown = JSON.parse(saved)
-        if (Array.isArray(parsed)) {
-          return [...new Set(parsed.filter((value): value is string => typeof value === 'string'))].slice(0, 4)
+      const stored = getBrandStorage(storageKey)
+      if (stored !== null) {
+        const parsed: unknown = JSON.parse(stored)
+        if (parsed && typeof parsed === 'object' && 'targets' in parsed && 'omitted' in parsed) {
+          saved = { targets: sessionKeys(parsed.targets), omitted: sessionKeys(parsed.omitted).filter(Boolean) }
         }
+      } else {
+        // Keep existing tile choices when upgrading the Wall.
+        saved.targets = sessionKeys(JSON.parse(getBrandStorage(legacyStorageKey) ?? '[]'))
       }
     } catch {
       /* Stockage indisponible. */
     }
-    needsSuggestions.current = ownSessions.length === 0
-    return suggestions()
+    needsDefaults.current = ownSessions.length === 0
+    return addOwnSessions(saved)
   })
+  const { targets } = choices
   const [active, setActive] = useState<string | null>(null)
   useEffect(() => {
-    if (!needsSuggestions.current || ownSessions.length === 0) return
-    needsSuggestions.current = false
-    setTargets(suggestions())
+    if (!needsDefaults.current || ownSessions.length === 0) return
+    needsDefaults.current = false
+    setChoices(addOwnSessions)
   }, [workspace.sessions, owner])
   useEffect(() => {
-    setTargets(previous => {
-      const next = previous.filter(key => !key || workspace.byTarget.has(key))
-      return next.length === previous.length ? previous : next
+    // An empty initial projection does not mean saved sessions have disappeared.
+    if (needsDefaults.current && workspace.sessions.length === 0) return
+    setChoices(previous => {
+      const next = previous.targets.filter(key => !key || workspace.byTarget.has(key))
+      return next.length === previous.targets.length ? previous : { ...previous, targets: next }
     })
   }, [workspace.byTarget])
   useEffect(() => {
-    if (needsSuggestions.current) return
+    if (needsDefaults.current) return
     try {
-      setBrandStorage(storageKey, JSON.stringify(targets))
+      setBrandStorage(storageKey, JSON.stringify(choices))
     } catch {
       /* Stockage indisponible. */
     }
-  }, [targets])
-  // One microphone for the whole Wall, opened while a tile shows a local session.
-  const voiceTiles = targets.some(key => {
-    const session = workspace.byTarget.get(key)
-    return Boolean(session && localHosts.has(session.hostId))
-  })
-  const mic = useMicStream(voiceTiles)
+  }, [choices, storageKey])
+  useEffect(() => {
+    if (!pendingSession || !workspace.byTarget.has(pendingSession)) return
+    needsDefaults.current = false
+    setChoices(previous => ({
+      targets: [...new Set([...previous.targets.filter(Boolean), pendingSession])],
+      omitted: previous.omitted.filter(key => key !== pendingSession),
+    }))
+    onSessionAdded?.()
+  }, [pendingSession, workspace.byTarget, onSessionAdded])
   // The tile holding Claude's talk key: the others wait, so that one voice reaches one Claude.
   const [talking, setTalking] = useState<string | null>(null)
   const [talkSlots, setTalkSlots] = useState<Record<string, HTMLElement | null>>({})
@@ -121,9 +147,15 @@ export function WallView({
     </option>
   )
   const choose = (update: (previous: string[]) => string[]) => {
-    // A choice ends the suggestions, so it is saved even before the account owns a session.
-    needsSuggestions.current = false
-    setTargets(update)
+    needsDefaults.current = false
+    setChoices(previous => {
+      const next = update(previous.targets)
+      // Remember removed/replaced tiles so reopening respects the account's choices.
+      const omitted = new Set(previous.omitted)
+      previous.targets.filter(key => key && !next.includes(key)).forEach(key => omitted.add(key))
+      next.forEach(key => omitted.delete(key))
+      return { targets: next, omitted: [...omitted] }
+    })
   }
   const select = (index: number, key: string) =>
     choose(previous => {
@@ -133,32 +165,29 @@ export function WallView({
       return next
     })
   return (
-    <section className="flex min-h-0 flex-1 flex-col gap-3 p-3">
-      <header className="flex items-center justify-between gap-2">
-        <h1 className="text-2xl">Mur</h1>
-        <div className="flex min-w-0 items-center gap-1">
-          {mic.error && (
-            <span role="alert" className="min-w-0 truncate text-xs text-destructive">
-              {mic.error}
-            </span>
+    <section aria-label="Mur de sessions" className="relative flex min-h-0 flex-1 flex-col gap-3 p-3">
+      {(available.length > 0 || onNewSession) && (
+        <Menu
+          label="Ajouter une session au mur"
+          className="wall-add-menu absolute bottom-6 right-6 z-30"
+          trigger={<Plus size={22} aria-hidden />}
+        >
+          <div className="px-3 pb-2 pt-1 text-xs font-semibold text-muted-foreground">Ajouter au mur</div>
+          <div className="max-h-[min(50dvh,24rem)] overflow-y-auto">
+            {[...availableOwn, ...availableOthers].map(session => (
+              <MenuItem key={session.key} onSelect={() => select(targets.length, session.key)}>
+                <StatusIcon status={session.status} />
+                <span className="min-w-0 truncate">{label(session)}</span>
+              </MenuItem>
+            ))}
+          </div>
+          {onNewSession && (
+            <MenuItem className="mt-1 border-t border-border text-primary" onSelect={onNewSession}>
+              <Plus size={16} aria-hidden />Créer une session
+            </MenuItem>
           )}
-          {mic.available && (
-            <IconButton
-              aria-label={mic.state === 'off' ? 'Activer le micro' : 'Désactiver le micro'}
-              aria-pressed={mic.state !== 'off'}
-              className={mic.state === 'off' ? undefined : 'text-primary'}
-              onClick={mic.toggle}
-            >
-              <Mic size={16} />
-            </IconButton>
-          )}
-          {targets.length < 4 && available.length > 0 && (
-            <IconButton aria-label="Ajouter une tuile" onClick={() => choose(previous => [...previous, ''])}>
-              <Plus size={16} />
-            </IconButton>
-          )}
-        </div>
-      </header>
+        </Menu>
+      )}
       {targets.length > 2 && (
         <p className="text-xs text-muted-foreground md:hidden">
           Au-delà de deux tuiles, la lecture est moins confortable sur téléphone.
@@ -170,7 +199,7 @@ export function WallView({
         </div>
       ) : (
         <div
-          className={`grid min-h-0 flex-1 auto-rows-[minmax(18rem,1fr)] grid-cols-1 gap-3 overflow-auto md:auto-rows-fr md:grid-cols-2 ${targets.length === 1 ? 'md:grid-cols-1' : targets.length === 3 ? 'md:grid-cols-3' : ''}`}
+          className={`grid min-h-0 flex-1 auto-rows-[minmax(18rem,1fr)] grid-cols-1 gap-3 overflow-auto md:grid-cols-2 ${targets.length === 1 ? 'md:grid-cols-1' : targets.length === 3 ? 'md:grid-cols-3' : ''}`}
         >
           {(targets.length ? targets : ['']).map((key, index) => {
             const session = workspace.byTarget.get(key)
@@ -235,8 +264,9 @@ export function WallView({
                     voiceAllowed
                     claudeActive={talkAgentOf(activePaneOf(session.source)) === 'claude'}
                     agyActive={talkAgentOf(activePaneOf(session.source)) === 'agy'}
+                    codexActive={talkAgentOf(activePaneOf(session.source)) === 'codex'}
                     talkSlot={talkSlots[key]}
-                    sharedMic={mic}
+                    sharedMic={sharedMic}
                     talkLocked={talking !== null && talking !== key}
                     onTalkHold={talkHold(key)}
                   />

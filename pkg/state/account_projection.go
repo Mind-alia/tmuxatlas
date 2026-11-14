@@ -49,7 +49,7 @@ func (p Projection) ForAccount(accountID string) AccountProjection {
 	}
 	owned := make(map[SessionKey]bool)
 	for key, session := range p.Sessions {
-		if session.Name == "tmuxatlas-ctrl" {
+		if tmux.IsInternalSession(session.Name) {
 			continue
 		}
 		// The owner is a label, not an access right: every signed-in account sees

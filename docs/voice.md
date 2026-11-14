@@ -22,22 +22,32 @@ Set `TMUXATLAS_VOICE=on` for the TmuxAtlas service and restart it. At startup, a
 - moves each new recorder to the right tab's microphone
 - unloads `module-suspend-on-idle`, which would clip the start of dictation
 - unloads `module-stream-restore`, which would start a recorder on another tab's microphone
-- creates `~/.asoundrc` so ALSA clients use PulseAudio; an existing file that routes elsewhere is left alone and reported as an error in the Terminal toolbar
+- creates `~/.asoundrc` so ALSA clients use PulseAudio; an existing file that routes elsewhere is left alone and reported as an error beside the header's microphone indicator
 
 Run the agent as the same user as TmuxAtlas, since PulseAudio and `~/.asoundrc` are per user.
 
 ## Usage
 
-The microphone turns on when you open a local session; the browser asks for permission once. It belongs to that tab: another person connecting does not affect it. **● Mic on** turns it off, and this browser remembers that choice until you turn it back on. If the stream is interrupted, click **Mic** to restart it.
+The microphone turns on when Atlas connects to its local host; the browser asks for permission once. It belongs to that tab: another person connecting does not affect it. **Micro actif** in the app header shows that it is running. It stays active as you navigate between views, sharing one stream with the Terminal and every Wall tile. If the stream is interrupted, click **Réessayer le micro** in the header to restart it.
 
 Claude Code needs voice enabled in hold mode, its default. Run `/voice hold` once if it is not; the setting persists.
 
-1. Click **Talk** in the status bar below the Terminal, or in a tile header on the Wall. It is active only while Claude Code or agy runs in the active pane. For Claude, TmuxAtlas holds the space bar until you stop, so you can release the button while you speak. For agy, it presses `F5`, which starts agy's dictation, and `F5` again when you stop.
+1. Click **Talk** in the app header above the Terminal, or in a tile header on the Wall. It is active only while Claude Code or agy runs in the active pane. For Claude, TmuxAtlas holds the space bar until you stop, so you can release the button while you speak. For agy, it presses `F5`, which starts agy's dictation, and `F5` again when you stop.
 2. When you finish, click one of the two buttons that replace **Talk**:
    - The **square** stops recording and leaves the transcription in the prompt, so you can edit it and press Enter.
    - The **arrow** stops recording and sends the prompt once the agent has inserted the transcription. If it was not listening or could not transcribe, nothing is sent.
 
 agy is found through its process tree, so Talk also works when a launcher starts it and the pane shows another command, such as `python3`. agy allows one dictation stream at a time per account.
+
+## Codex: dictation through a hidden Claude
+
+Codex has no dictation into its prompt, so **Talk** borrows Claude Code's. When Codex runs in the active pane:
+
+1. TmuxAtlas starts, once, a hidden tmux session named `tmuxatlas-dictation-…` running `claude` in its own empty folder (`~/.local/share/tmuxatlas/dictation`). It answers the account menu of a launcher such as ai-accounts with its default, and Claude's folder trust dialog with yes. With `TMUXATLAS_DICTATION_PERSON` set, TmuxAtlas starts that hidden Claude as soon as it starts itself, and keeps it running, even across its own restarts, so dictations start at once. Otherwise the first dictation of a person waits a few seconds while Claude starts.
+2. The tab's microphone is routed to that session, and TmuxAtlas holds its space bar while you speak. The transcript Claude writes as you speak shows live next to **Talk**.
+3. When you stop, it reads the transcript from the hidden prompt, clears that prompt, and types the text in Codex. The **square** leaves it to edit; the **arrow** also presses Enter.
+
+Nothing is ever submitted in the hidden Claude, so it runs no turn. Its account is the session's person (its `@ai-person` tmux option), or always `TMUXATLAS_DICTATION_PERSON` when set, for example `Aris`. That account needs Claude's voice in hold mode (`/voice hold`). One dictation runs at a time per account. Another person's hidden session stops after 30 minutes without dictation, and at the next start of TmuxAtlas. Hidden sessions never appear in TmuxAtlas.
 
 ## Limits
 
@@ -55,6 +65,6 @@ Audio is forwarded to the host in real time while the microphone is on, whether 
 |---|---|
 | Dictation is silent while **Mic** is on | `pactl list short source-outputs` while recording: the recorder should be on an `atlas_mic_….monitor` source |
 | `/voice` cannot open an audio device | `pactl info` shows `Default Source: atlas_mic.monitor`, and `~/.asoundrc` contains `pcm.!default { type pulse }` |
-| No microphone button | `curl localhost:7654/api/voice` returns `"enabled":true`, and the session is on the local host |
+| No microphone indicator | `curl localhost:7654/api/voice` returns `"enabled":true`, and Atlas has connected to its local host |
 | Recording is silent | `rec -q test.wav trim 0 3` while **Mic** is on, then `sox test.wav -n stat` |
 | Wrong language | Change the dictation language in Claude Code with `/config` |

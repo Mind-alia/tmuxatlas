@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,11 +27,13 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/agentcheck"
 	"github.com/LosFurina/tmuxatlas/pkg/auth"
 	"github.com/LosFurina/tmuxatlas/pkg/common"
+	"github.com/LosFurina/tmuxatlas/pkg/dictation"
 	"github.com/LosFurina/tmuxatlas/pkg/files"
 	"github.com/LosFurina/tmuxatlas/pkg/httpguard"
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
 	"github.com/LosFurina/tmuxatlas/pkg/ingress"
 	"github.com/LosFurina/tmuxatlas/pkg/monitor"
+	"github.com/LosFurina/tmuxatlas/pkg/paths"
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
 	"github.com/LosFurina/tmuxatlas/pkg/preferences"
 	"github.com/LosFurina/tmuxatlas/pkg/socket"
@@ -900,6 +903,7 @@ func Run(ctx context.Context, opts *Options) error {
 		ptyHandler = ws.NewPTYTerminalHandler(opts.Client.TmuxPath(), opts.ActivityTracker)
 		if browserMic != nil {
 			ptyHandler.OnSessionUse = browserMic.UseSession
+			ptyHandler.StartDictation = startDictation(ctx, opts.Client.TmuxPath(), browserMic)
 		}
 	}
 
@@ -1155,5 +1159,26 @@ func fileBodyLimit(explorer *files.Handler) func(http.Handler) http.Handler {
 				globalNext.ServeHTTP(w, r)
 			}
 		})
+	}
+}
+
+// startDictation lends Claude's dictation to Terminals whose agent has none,
+// through hidden sessions that live as long as this server.
+func startDictation(ctx context.Context, tmuxPath string, mic *voice.Mic) func(context.Context, string, string, func(string)) (ws.DictationTake, error) {
+	dir, err := paths.DataDir()
+	if err != nil {
+		logrus.WithError(err).Warn("dictation relay unavailable")
+		return nil
+	}
+	relay := dictation.New(tmuxPath, filepath.Join(dir, "dictation"), mic.UseSession)
+	relay.Person = strings.TrimSpace(os.Getenv("TMUXATLAS_DICTATION_PERSON"))
+	relay.Prune(ctx)
+	go relay.Warm(ctx)
+	return func(ctx context.Context, session, micID string, partial func(string)) (ws.DictationTake, error) {
+		take, err := relay.Start(ctx, session, micID, partial)
+		if err != nil {
+			return nil, err
+		}
+		return take, nil
 	}
 }

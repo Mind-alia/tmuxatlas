@@ -20,7 +20,7 @@ func (executor tmuxRuntimeExecutor) Execute(_ context.Context, operation string,
 	if operation == "new" {
 		return newSession(executor.client, target, payload)
 	}
-	if target.Session == "tmuxatlas-ctrl" {
+	if tmux.IsInternalSession(target.Session) {
 		return nil, RuntimeError{Code: ErrorNotFound}
 	}
 	switch operation {

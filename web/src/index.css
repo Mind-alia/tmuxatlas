@@ -1,5 +1,30 @@
 @import "tailwindcss";
 
+.wall-add-menu > button {
+  width: 3rem;
+  height: 3rem;
+  border: 1px solid color-mix(in oklch, var(--primary) 65%, var(--border));
+  border-radius: 9999px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: var(--elevation-md);
+  transition: transform var(--motion-fast), box-shadow var(--motion-fast);
+}
+
+.wall-add-menu > button:hover,
+.wall-add-menu > button[aria-expanded="true"] {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  transform: scale(1.06);
+  box-shadow: var(--elevation-lg);
+}
+
+.wall-add-menu .ui-menu__content {
+  top: auto;
+  bottom: calc(100% + 0.75rem);
+  width: min(20rem, calc(100vw - 3rem));
+}
+
 @font-face {
   font-family: 'Symbols Nerd Font Mono';
   src: url('/fonts/symbols-nerd-font-mono-subset.woff2') format('woff2');
@@ -903,5 +928,97 @@ select optgroup {
     content: '';
     position: absolute;
     inset: -8px 0 0;
+  }
+}
+
+/* Phone key bar: keys read as keycaps, the actions on the right as plain icons. */
+.mobile-terminal-keys {
+  /* The fade on the right edge shows that more keys scroll into view. */
+  mask-image: linear-gradient(to right, #000 calc(100% - 1.5rem), transparent);
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 1.5rem), transparent);
+  padding-inline-end: 1.5rem;
+  scroll-padding-inline-end: 1.5rem;
+}
+
+.mobile-key {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  block-size: 2.25rem;
+  min-inline-size: 2.25rem;
+  padding-inline: 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 0.5rem);
+  background: var(--secondary);
+  color: var(--foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  line-height: 1;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--border) 80%, transparent);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+.mobile-key--wide { min-inline-size: 2.75rem; }
+
+.mobile-key:active { background: color-mix(in srgb, var(--primary) 22%, var(--secondary)); }
+
+.mobile-key--modifier[data-mode='once'] {
+  border-color: color-mix(in srgb, var(--primary) 60%, transparent);
+  color: var(--primary);
+}
+
+.mobile-key--modifier[data-mode='locked'] {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.mobile-bar-action {
+  display: grid;
+  block-size: 2.75rem;
+  inline-size: 2.75rem;
+  place-items: center;
+  border-radius: 9999px;
+  color: var(--muted-foreground);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-bar-action:active,
+.mobile-bar-action[aria-pressed='true'] {
+  color: var(--primary);
+}
+
+.mobile-bar-action[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+/* The keyboard covers the home indicator and the navigation bar: their inset would only push the bars under it. */
+html[data-visual-keyboard-open] {
+  --safe-area-inset-bottom: 0px;
+}
+
+/* The session tabs give way to the terminal while the phone keyboard is open. */
+@media (max-width: 767px) {
+  html[data-visual-keyboard-open] .mobile-hide-with-keyboard { display: none; }
+}
+
+/* A header menu opens as a full-width panel under the bar on phones. */
+@media (max-width: 767px) {
+  .ui-menu__content.ui-menu__content--phone-sheet {
+    position: fixed;
+    inset-inline: calc(0.5rem + var(--safe-area-inset-left)) calc(0.5rem + var(--safe-area-inset-right));
+    inset-block-start: calc(var(--visual-viewport-offset-top) + var(--safe-area-inset-top) + 3.25rem);
+  }
+}
+
+/* iOS zooms into any field under 16px when it takes focus, and stays zoomed. */
+@media (max-width: 767px) and (pointer: coarse) {
+  input:not([type='checkbox'], [type='radio'], [type='range'], [type='color']),
+  textarea:not(.xterm-helper-textarea),
+  select {
+    font-size: max(16px, 1em);
   }
 }

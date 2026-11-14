@@ -235,6 +235,15 @@ account, of an account whose password was reset (for example with
 `tmuxatlas users bootstrap-admin --force`) and of a removed passkey. Deleting
 the file signs everyone out.
 
+For a local Linux development build, `scripts/restart-server.sh` restarts the
+installed user service, waits for its healthcheck, and checks that the tmux
+server, existing sessions, and pane processes survived. Install the new binary
+at the service's executable path first. The script requires `KillMode=process`,
+which the installer sets so restarting Atlas preserves tmux and running agents.
+Existing installations can add `[Service]` and `KillMode=process` with
+`systemctl --user edit tmuxatlas.service`, followed by
+`systemctl --user daemon-reload`, before using the script.
+
 An immutable Docker deployment must be updated by pulling a new image and
 recreating the container. Inside a container, `tmuxatlas update` and recovery
 mutations fail closed; `tmuxatlas update --check` remains available. See

@@ -51,6 +51,9 @@ func TestAgentServiceTemplatesAreHeadless(t *testing.T) {
 				t.Fatal(err)
 			}
 			rendered := output.String()
+			if name == "systemd" && !strings.Contains(rendered, "\nKillMode=process\n") {
+				t.Fatal("restarting the agent must preserve tmux and its pane processes")
+			}
 			for _, required := range []string{"agent", "TMUXATLAS_HUB", "https://hub.example.com", "TMUXATLAS_ROLE"} {
 				if !strings.Contains(rendered, required) {
 					t.Fatalf("rendered service does not contain %q:\n%s", required, rendered)
@@ -87,7 +90,7 @@ func TestHubServiceTemplatesUsePureHubCommand(t *testing.T) {
 			rendered := output.String()
 			requiredValues := []string{"TMUXATLAS_ROLE", "hub"}
 			if name == "systemd" {
-				requiredValues = append(requiredValues, "tmuxatlas hub")
+				requiredValues = append(requiredValues, "tmuxatlas hub", "\nKillMode=process\n")
 			} else {
 				requiredValues = append(requiredValues, "<string>/home/user/.local/bin/tmuxatlas</string>", "<string>hub</string>")
 			}

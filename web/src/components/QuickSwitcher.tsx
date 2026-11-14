@@ -257,7 +257,7 @@ export function QuickSwitcher({
       initialFocusRef={inputRef}
       className="command-palette-dialog"
     >
-      <div data-command-palette className="flex min-h-0 flex-1 flex-col">
+      <div data-command-palette className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="border-b border-border p-3 sm:px-4">
           <input
             ref={inputRef}
@@ -270,7 +270,7 @@ export function QuickSwitcher({
             value={query}
             onChange={event => setQuery(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Rechercher une commande, une session ou un agent…"
+            placeholder="Commande, session ou agent…"
             className="h-11 w-full border-none bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
           />
         </div>
@@ -359,7 +359,7 @@ export function QuickSwitcher({
             </div>
           ))}
         </div>
-        <div className="flex gap-4 border-t border-border px-4 py-2 text-2xs text-muted-foreground">
+        <div className="hidden gap-4 border-t border-border px-4 py-2 text-2xs text-muted-foreground [@media(pointer:fine)]:flex">
           <span>↑↓ Naviguer</span>
           <span>↵ Exécuter</span>
           <span>Échap Fermer</span>

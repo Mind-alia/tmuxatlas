@@ -549,6 +549,9 @@ func agentPaneLister(client *tmux.Client) toolevents.PaneLister {
 		}
 		result := make([]toolevents.WatchedPane, 0, len(panes))
 		for _, pane := range panes {
+			if tmux.IsInternalSession(pane.Session) {
+				continue // a hidden dictation agent is no agent of the user
+			}
 			result = append(result, toolevents.WatchedPane{
 				ID: pane.ID, Session: pane.Session, Window: pane.Window,
 				PID: pane.PID, CurrentCommand: pane.CurrentCommand,

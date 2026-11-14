@@ -95,6 +95,10 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
 
   const [imagePasteStatus, setImagePasteStatus] = useState('')
   const imageUploadRef = useRef(false)
+  // Dictation requests waiting for the server's answer, by action.
+  const dictationRef = useRef(new Map<string, { resolve: () => void; reject: (error: Error) => void }>())
+  // The transcript of the dictation in progress, as Claude writes it.
+  const [dictationText, setDictationText] = useState('')
   const [ptyState, setPtyState] = useState<PtyConnectionState>('disconnected')
   const [hasSelection, setHasSelection] = useState(false)
   const [isAtBottom, setIsAtBottom] = useState(true)
@@ -236,6 +240,28 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
     }
   }, [])
 
+  /**
+   * Drives a dictation the server transcribes for an agent without its own:
+   * start, stop (typing the transcript, and Enter when submit), or cancel.
+   */
+  const dictate = useCallback((action: 'start' | 'stop' | 'cancel', submit = false): Promise<void> => {
+    const socket = wsRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('Le terminal est déconnecté.'))
+    }
+    try {
+      socket.send(JSON.stringify({ type: 'dictation', action, submit }))
+    } catch {
+      return Promise.reject(new Error('Le terminal est déconnecté.'))
+    }
+    if (action === 'start') setDictationText('')
+    if (action === 'cancel') return Promise.resolve()
+    return new Promise((resolve, reject) => {
+      dictationRef.current.get(action)?.reject(new Error('Demande remplacée.'))
+      dictationRef.current.set(action, { resolve, reject })
+    })
+  }, [])
+
   /** Returns the rows currently on screen. */
   const readScreen = useCallback((): string[] => {
     const term = termRef.current
@@ -354,6 +380,7 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
       termRef.current = term
       fitAddonRef.current = fitAddon
       term.open(container)
+      ;(container as unknown as { __term: unknown }).__term = term // DEBUG
       term.textarea?.setAttribute('aria-label', 'Saisie du terminal')
       // Les appareils tactiles conservent le moteur DOM, plus stable pour leur saisie.
       if (window.matchMedia?.('(pointer: fine) and (min-width: 768px)').matches) {
@@ -419,18 +446,19 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
         layoutCleanupRef.current.push(() => window.clearTimeout(timer))
       }
 
-      void ensureTerminalFont(prefs.terminal.font_family).then(loaded => {
+      const fontReady = ensureTerminalFont(prefs.terminal.font_family).then(loaded => {
         if (!loaded || terminalGenerationRef.current !== terminalGeneration || termRef.current !== term) {
           return
         }
         // xterm ignores an identical value, and WebGL keeps the glyphs it already
         // drew with a fallback font: force a new measure and redraw every glyph.
+        ;(window as unknown as { __fontlog: unknown[] }).__fontlog ??= [];(window as unknown as { __fontlog: unknown[] }).__fontlog.push([sessionName, performance.now()]) // DEBUG
         term.options.fontFamily = 'monospace'
         term.options.fontFamily = fontFamily
         term.clearTextureAtlas()
         doFit()
         term.refresh(0, term.rows - 1)
-      })
+      }, () => {})
 
       terminalDisposablesRef.current.push(
         term.onSelectionChange(() => setHasSelection(term.hasSelection())),
@@ -502,6 +530,8 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
         () => container.removeEventListener('keydown', flushPendingClipboard, true),
       )
 
+      // True while the first socket waits for the layout: see openFirst below.
+      let settling = true
       const openSocket = () => {
         if (terminalGenerationRef.current !== terminalGeneration || termRef.current !== term || document.hidden) {
           return
@@ -548,7 +578,18 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
           if (!isCurrent()) return
           if (typeof event.data === 'string') {
             try {
-              const message = JSON.parse(event.data) as { type?: string; error?: string }
+              const message = JSON.parse(event.data) as { type?: string; error?: string; action?: string; text?: string }
+              if (message.type === 'dictation' && message.action === 'partial') {
+                setDictationText(message.text || '')
+                return
+              }
+              if (message.type === 'dictation') {
+                const pending = dictationRef.current.get(message.action || '')
+                dictationRef.current.delete(message.action || '')
+                if (message.error) pending?.reject(new Error(message.error))
+                else pending?.resolve()
+                return
+              }
               if (message.type === 'image-result') {
                 imageUploadRef.current = false
                 setImagePasteStatus(
@@ -571,6 +612,8 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
         socket.onclose = () => {
           if (!isCurrent()) return
           wsRef.current = null
+          for (const pending of dictationRef.current.values()) pending.reject(new Error('Le terminal est déconnecté.'))
+          dictationRef.current.clear()
           if (imageUploadRef.current) {
             imageUploadRef.current = false
             setImagePasteStatus('Échec du collage de l’image : Terminal déconnecté.')
@@ -591,6 +634,7 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
       openSocketRef.current = openSocket
       const reconnectWhenVisible = () => {
         if (
+          settling ||
           document.hidden ||
           terminalGenerationRef.current !== terminalGeneration ||
           activeTargetKeyRef.current !== targetKey
@@ -610,7 +654,29 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
         () => window.removeEventListener('pageshow', reconnectWhenVisible),
       )
 
-      openSocket()
+      // tmux attaches at the size the socket URL carries. Measured before the
+      // font loads and the page settles (on a phone, rows came out at 57
+      // instead of 37), it resizes the window twice while the agent draws, and
+      // the browser screen keeps lines tmux believes gone. Open once the font
+      // is ready and the layout has had two frames, or after a short wait.
+      const openFirst = () => {
+        if (!settling || terminalGenerationRef.current !== terminalGeneration || termRef.current !== term) return
+        settling = false
+        // A manual reconnect may already have opened one.
+        const socket = wsRef.current
+        if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return
+        doFit()
+        openSocket()
+      }
+      const fallbackTimer = window.setTimeout(openFirst, 1500)
+      layoutCleanupRef.current.push(() => window.clearTimeout(fallbackTimer))
+      void fontReady.then(() => {
+        const first = window.requestAnimationFrame(() => {
+          const second = window.requestAnimationFrame(openFirst)
+          layoutCleanupRef.current.push(() => window.cancelAnimationFrame(second))
+        })
+        layoutCleanupRef.current.push(() => window.cancelAnimationFrame(first))
+      })
     },
     [
       cleanupTerminal,
@@ -857,6 +923,8 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
     sendRawInput,
     sendCommand,
     setVoiceHold,
+    dictate,
+    dictationText,
     readScreen,
     imagePasteStatus,
     captureConnection,

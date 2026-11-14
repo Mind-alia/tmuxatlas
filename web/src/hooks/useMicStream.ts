@@ -60,10 +60,10 @@ function rememberMicTurnedOff(off: boolean) {
 
 /**
  * Streams the browser microphone to the host's virtual microphone. It starts on
- * its own unless this browser turned it off, and all capture stops on stop(),
- * failure or unmount.
+ * its own unless this browser turned it off. The app's alwaysOn stream ignores
+ * that saved preference and only stops on failure, loss of access or unmount.
  */
-export function useMicStream(allowed: boolean) {
+export function useMicStream(allowed: boolean, alwaysOn = false) {
   const [enabled, setEnabled] = useState(false)
   const [state, setState] = useState<MicState>('off')
   const [error, setError] = useState('')
@@ -194,15 +194,19 @@ export function useMicStream(allowed: boolean) {
   }, [])
 
   const toggle = useCallback(() => {
+    if (alwaysOn) {
+      if (state === 'off') void start()
+      return
+    }
     rememberMicTurnedOff(state !== 'off')
     if (state === 'off') void start()
     else stop()
-  }, [start, state, stop])
+  }, [alwaysOn, start, state, stop])
 
   useEffect(() => {
     if (!allowed) stop()
-    else if (enabled && !isMicTurnedOff()) void start()
-  }, [allowed, enabled, start, stop])
+    else if (enabled && (alwaysOn || !isMicTurnedOff())) void start()
+  }, [allowed, alwaysOn, enabled, start, stop])
 
   useEffect(() => stop, [stop])
 

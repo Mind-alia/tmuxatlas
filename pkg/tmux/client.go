@@ -173,7 +173,7 @@ func (c *Client) ListSessions() ([]*Session, error) {
 			continue
 		}
 
-		if parts[1] == "tmuxatlas-ctrl" {
+		if IsInternalSession(parts[1]) {
 			continue
 		}
 

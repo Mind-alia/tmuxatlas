@@ -3,8 +3,10 @@ import {
   ArrowDown,
   ArrowLeft,
   Bell,
+  ChevronDown,
   Clipboard,
   Copy,
+  FolderOpen,
   Maximize,
   Mic,
   MoreHorizontal,
@@ -48,7 +50,13 @@ interface Props {
   onToggleFullscreen?: () => void
   onToggleZen?: () => void
   onMore: (button: HTMLButtonElement) => void
+  /** Opens the session drawer to switch session (phone layout). */
   onBackToSessions?: () => void
+  /** Leaves the terminal for the home page and its navigation (phone layout). */
+  onHome?: () => void
+  /** Switches between the terminal and the session files (phone layout). */
+  onToggleFiles?: () => void
+  filesOpen?: boolean
   onPreviousSession?: () => void
   onNextSession?: () => void
   attentionCount?: number
@@ -132,11 +140,27 @@ export function TerminalCockpit(p: Props) {
         }}
       >
         <div className="md:hidden">
-          {p.onBackToSessions && action('Retour aux sessions', <ArrowLeft size={16} />, p.onBackToSessions)}
+          {p.onHome && action('Retour à l’accueil', <ArrowLeft size={18} />, p.onHome)}
         </div>
         <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
           <span className="hidden truncate text-muted-foreground md:inline">{p.hostLabel} /</span>
-          <span className="truncate">{p.sessionName}</span>
+          {p.onBackToSessions ? (
+            <>
+              <button
+                type="button"
+                aria-label={`Changer de session (actuelle : ${p.sessionName})`}
+                title="Changer de session"
+                onClick={p.onBackToSessions}
+                className="ui-focus-ring -ml-1 flex min-h-11 min-w-0 items-center gap-1 rounded px-1 md:hidden"
+              >
+                <span className="truncate font-medium">{p.sessionName}</span>
+                <ChevronDown size={16} aria-hidden className="shrink-0 text-muted-foreground" />
+              </button>
+              <span className="hidden truncate md:inline">{p.sessionName}</span>
+            </>
+          ) : (
+            <span className="truncate">{p.sessionName}</span>
+          )}
           <OwnerPicker
             hostId={p.hostId ?? ''}
             session={p.sessionName}
@@ -189,16 +213,33 @@ export function TerminalCockpit(p: Props) {
           </Tooltip>
         </div>
         <div className="flex items-center md:hidden">
-          {p.onOpenAlerts &&
-            action(
-              `Alertes (${p.attentionCount ?? 0})`,
-              <>
-                <Bell size={16} />
-                {Boolean(p.attentionCount) && <span className="text-xs">{p.attentionCount}</span>}
-              </>,
-              p.onOpenAlerts,
-            )}
-          {action('Plus', <MoreHorizontal size={16} />, () => setSheet(true))}
+          {p.onOpenAlerts && Boolean(p.attentionCount) && (
+            <Tooltip content="Sessions à traiter">
+              <button
+                type="button"
+                aria-label={`Alertes (${p.attentionCount})`}
+                onClick={p.onOpenAlerts}
+                className="ui-focus-ring flex min-h-11 min-w-11 items-center justify-center gap-1 rounded text-warning"
+              >
+                <Bell size={16} aria-hidden />
+                <span className="text-xs tabular-nums">{p.attentionCount}</span>
+              </button>
+            </Tooltip>
+          )}
+          {p.onToggleFiles && (
+            <Tooltip content={p.filesOpen ? 'Revenir au terminal' : 'Fichiers de la session'}>
+              <button
+                type="button"
+                aria-label="Fichiers de la session"
+                aria-pressed={Boolean(p.filesOpen)}
+                onClick={p.onToggleFiles}
+                className="mobile-bar-action"
+              >
+                <FolderOpen size={18} aria-hidden />
+              </button>
+            </Tooltip>
+          )}
+          {action('Plus', <MoreHorizontal size={18} />, () => setSheet(true))}
         </div>
       </div>
       <Sheet open={sheet} onOpenChange={setSheet} title="Actions du terminal" closeLabel="Fermer">

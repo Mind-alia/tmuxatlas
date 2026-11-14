@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react'
-import { Bell, LogOut, PanelLeft, Plus, Search, Settings } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Bell, CircleHelp, LogOut, Mic, MicOff, PanelLeft, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
+import type { useMicStream } from '../hooks/useMicStream'
 import type { AccountRole, AuthMode } from '../hooks/useAuth'
 import type { ToolEvent } from '../hooks/useToolEvents'
 import { usePreferences } from '../hooks/usePreferences'
@@ -24,6 +25,10 @@ interface TopBarProps {
   onSettings: () => void
   onLogout?: () => void
   onNewSession?: () => void
+  mic?: ReturnType<typeof useMicStream>
+  onTalkSlotChange?: (slot: HTMLElement | null) => void
+  onHelp?: () => void
+  updateAvailable?: boolean
   events: ToolEvent[]
   onJumpToSession: (session: string, windowIndex?: number, pane?: string) => void
   onDismiss: (evt: ToolEvent) => void
@@ -56,6 +61,10 @@ export function TopBar({
   onSettings,
   onLogout,
   onNewSession,
+  mic,
+  onTalkSlotChange,
+  onHelp,
+  updateAvailable,
   events,
   onJumpToSession,
   onDismiss,
@@ -64,6 +73,11 @@ export function TopBar({
   const actionable = events.filter(event => event.status === 'waiting' || event.status === 'error')
   const { prefs } = usePreferences()
   const timers = useRef<Map<string, number>>(new Map())
+  const [dismissedMicError, setDismissedMicError] = useState('')
+  // A new attempt shows its error again, even when the message is the same.
+  useEffect(() => {
+    if (mic?.state === 'starting') setDismissedMicError('')
+  }, [mic?.state])
   useEffect(() => {
     const seconds = prefs.agent_banner.auto_dismiss_seconds
     if (seconds <= 0) return
@@ -102,6 +116,7 @@ export function TopBar({
       ? 'text-warning'
       : 'text-muted-foreground'
   const openSidebarLabel = 'Afficher la barre latérale'
+  const micLabel = mic?.state === 'on' ? 'Micro actif' : mic?.state === 'starting' ? 'Connexion du micro' : 'Réessayer le micro'
 
   return (
     <header className="flex min-h-12 shrink-0 items-center gap-1 border-b border-border bg-card px-2 pt-[var(--safe-area-inset-top)] font-sans text-sm md:gap-3 md:px-4">
@@ -121,14 +136,55 @@ export function TopBar({
             type="button"
             onClick={action}
             aria-current={currentView === view ? 'page' : undefined}
-            className={`${button} ${currentView === view ? 'bg-secondary text-foreground' : ''}`}
+            className={`ui-focus-ring flex min-h-10 items-center justify-center rounded-md border px-3 transition-colors ${
+              currentView === view
+                ? 'border-primary/40 bg-primary/15 text-base font-semibold text-primary shadow-sm'
+                : 'border-transparent text-sm text-muted-foreground hover:bg-secondary hover:text-foreground'
+            }`}
           >
             {label}
           </button>
         ))}
       </nav>
       <div className="flex-1" />
-      <div className="hidden items-center md:flex">
+      <span ref={onTalkSlotChange} className="hidden shrink-0 items-center empty:hidden md:flex" />
+      {mic?.available && (
+        <div className="relative flex shrink-0 items-center">
+          <button
+            type="button"
+            disabled={mic.state !== 'off'}
+            onClick={mic.toggle}
+            aria-label={micLabel}
+            title={mic.error || 'Le micro reste actif pour la dictée'}
+            className={`ui-focus-ring flex min-h-8 min-w-8 items-center justify-center gap-2 rounded-full px-2 text-xs ${mic.state === 'on' ? 'bg-success/10 text-success' : mic.error ? 'bg-destructive/10 text-destructive' : 'text-muted-foreground'}`}
+          >
+            {mic.state === 'off' ? <MicOff size={16} aria-hidden /> : <Mic size={16} aria-hidden />}
+            <span className="hidden xl:inline">{mic.state === 'on' ? 'Micro actif' : mic.state === 'starting' ? 'Connexion…' : 'Réessayer'}</span>
+          </button>
+          {mic.error && dismissedMicError !== mic.error && (
+            <span
+              role="alert"
+              className="fixed inset-x-2 top-[calc(var(--visual-viewport-offset-top)+var(--safe-area-inset-top)+3.25rem)] z-50 flex items-start gap-2 rounded-md border border-destructive/30 bg-card p-3 text-xs text-destructive shadow-lg md:absolute md:inset-x-auto md:right-0 md:top-full md:mt-2 md:w-64"
+            >
+              <span className="min-w-0 flex-1">{mic.error}</span>
+              <button
+                type="button"
+                aria-label="Masquer l’erreur du micro"
+                className="ui-focus-ring -m-2 grid min-h-9 min-w-9 shrink-0 place-items-center rounded text-muted-foreground hover:text-foreground"
+                onClick={() => setDismissedMicError(mic.error)}
+              >
+                <X size={14} aria-hidden />
+              </button>
+            </span>
+          )}
+        </div>
+      )}
+      {updateAvailable && (
+        <button type="button" className={`${button} text-warning`} onClick={() => window.location.reload()} aria-label="Installer la mise à jour" title="Recharger pour installer la mise à jour">
+          <RefreshCw size={16} aria-hidden />
+        </button>
+      )}
+      {currentView !== 'wall' && onNewSession && (
         <button
           type="button"
           className={button}
@@ -138,6 +194,8 @@ export function TopBar({
         >
           <Plus size={16} aria-hidden />
         </button>
+      )}
+      <div className="hidden items-center md:flex">
         {/* The Sidebar holds this toggle on desktop; it is only needed here where the Sidebar is off-screen. */}
         <button
           type="button"
@@ -151,6 +209,7 @@ export function TopBar({
       </div>
       <Menu
         label={`Alertes (${actionable.length})`}
+        contentClassName="ui-menu__content--phone-sheet"
         trigger={
           <span className={`flex items-center gap-1 tabular-nums ${alertColor}`}>
             <Bell size={16} aria-hidden />
@@ -158,7 +217,7 @@ export function TopBar({
           </span>
         }
       >
-        <div className="max-h-[60vh] w-[min(22rem,calc(100vw-2rem))] overflow-y-auto p-2">
+        <div className="max-h-[60vh] w-full overflow-y-auto p-2 md:w-[min(22rem,calc(100vw-2rem))]">
           {actionable.length === 0 && <p className="p-2 text-xs text-muted-foreground">Aucune alerte</p>}
           {actionable.map((event, index) => (
             <div
@@ -224,9 +283,10 @@ export function TopBar({
           </Kbd>
         </span>
       </button>
+      {/* On a phone, Settings and Log out live in the bottom navigation's More sheet. */}
       <button
         type="button"
-        className={button}
+        className={`${button} hidden md:flex`}
         onClick={onSettings}
         aria-label="Réglages"
         title="Réglages"
@@ -234,8 +294,13 @@ export function TopBar({
       >
         <Settings size={16} aria-hidden />
       </button>
+      {onHelp && (
+        <button type="button" className={`${button} hidden lg:flex`} onClick={onHelp} aria-label="Raccourcis clavier" title="Raccourcis clavier">
+          <CircleHelp size={16} aria-hidden />
+        </button>
+      )}
       {authMode === 'accounts' && onLogout && (
-        <button type="button" className={button} onClick={onLogout} aria-label="Se déconnecter" title="Se déconnecter">
+        <button type="button" className={`${button} hidden md:flex`} onClick={onLogout} aria-label="Se déconnecter" title="Se déconnecter">
           <LogOut size={16} aria-hidden />
           <span className="hidden lg:inline">Se déconnecter</span>
         </button>

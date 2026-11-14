@@ -22,6 +22,8 @@ test.beforeAll(async () => {
     XDG_CONFIG_HOME: join(testHome, '.config'),
     XDG_DATA_HOME: join(testHome, '.local', 'share'),
     XDG_STATE_HOME: join(testHome, '.local', 'state'),
+    // The notify socket lives here: sharing it would replace, then remove, the running service's socket.
+    XDG_RUNTIME_DIR: join(testHome, 'runtime'),
     TMUX_TMPDIR: tmuxTmpDir,
     TMUXATLAS_AUTH: 'accounts',
   }

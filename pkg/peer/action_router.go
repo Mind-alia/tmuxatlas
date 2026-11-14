@@ -46,7 +46,7 @@ func (router *ActionRouter) Execute(ctx context.Context, operation string, targe
 	if router.manager == nil {
 		return ActionResponse{}, RuntimeError{RequestID: requestID, Code: ErrorPeerOffline}
 	}
-	if target.Session == "tmuxatlas-ctrl" {
+	if tmux.IsInternalSession(target.Session) {
 		return ActionResponse{}, RuntimeError{RequestID: requestID, Code: ErrorNotFound}
 	}
 	if operation == "rename" {

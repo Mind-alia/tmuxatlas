@@ -255,6 +255,171 @@ test('Chromium Workspace covers navigation, Terminal tools, recovery, feedback, 
 })
 
 
+test('Wall fills every session, adds a chosen session and remembers manual choices', async ({ page }) => {
+  const state = await installWorkspaceMocks(page)
+  await capturePTY(page)
+  await page.goto(`${baseURL}/wall`)
+  await expect(page.getByRole('button', { name: 'Déplier la barre latérale', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Déplier la barre latérale', exact: true }).click()
+  const navigation = page.getByRole('navigation', { name: 'Navigation principale' })
+  await navigation.getByRole('button', { name: 'Vue d’ensemble', exact: true }).click()
+  await navigation.getByRole('button', { name: 'Mur', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Déplier la barre latérale', exact: true })).toBeVisible()
+  const pickers = page.getByRole('combobox', { name: 'Changer de session' })
+  await expect(pickers).toHaveCount(4)
+  const removed = await pickers.first().inputValue()
+  await page.getByRole('button', { name: 'Retirer', exact: true }).first().click()
+  await expect(pickers).toHaveCount(3)
+  await page.reload()
+  await expect(pickers).toHaveCount(3)
+  await page.getByRole('button', { name: 'Ajouter une session au mur' }).click()
+  await page.getByRole('menuitem').filter({ hasText: removed.split('/').at(-1) }).first().click()
+  await expect(pickers).toHaveCount(4)
+  await expect(pickers.last()).toHaveValue(removed)
+
+  const snapshot = workspaceSnapshot()
+  snapshot.revision++
+  Object.assign(snapshot.state.sessions, {
+    'session/host-alpha/new': {
+      key: 'session/host-alpha/new', host_key: 'host/host-alpha', host_id: 'host-alpha',
+      name: 'new', attached: false, last_activity: '2026-07-27T04:00:00Z',
+    },
+  })
+  state.sockets.at(-1)?.send(JSON.stringify(snapshot))
+  const add = page.getByRole('button', { name: 'Ajouter une session au mur' })
+  await expect(add).toBeVisible()
+  await expect(pickers).toHaveCount(4)
+  await add.click()
+  await page.getByRole('menuitem', { name: 'Alpha / new' }).click()
+  await expect(pickers).toHaveCount(5)
+  await expect(pickers.last()).toHaveValue('host-alpha/new')
+  await expect(page.getByRole('combobox', { name: 'Choisir une session', exact: true })).toHaveCount(0)
+})
+
+test('Wall keeps one live header microphone across views and creates a tile from its floating menu', async ({ page }, testInfo) => {
+  const state = await installWorkspaceMocks(page)
+  await capturePTY(page)
+  await page.route('**/api/voice', route => route.fulfill({ json: { enabled: true, ready: true } }))
+  await page.addInitScript(() => {
+    localStorage.setItem('tmuxatlas.mic.off', '1')
+    const micWindow = window as typeof window & { micRequests: number }
+    micWindow.micRequests = 0
+    navigator.mediaDevices.getUserMedia = async () => {
+      micWindow.micRequests++
+      return new AudioContext().createMediaStreamDestination().stream
+    }
+  })
+  const microphones: WebSocketRoute[] = []
+  let closed = 0
+  await page.routeWebSocket('**/ws/mic?*', socket => {
+    microphones.push(socket)
+    socket.onClose(() => closed++)
+  })
+  await page.goto(`${baseURL}/wall`)
+  await expect(page.getByRole('button', { name: 'Micro actif', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Micro actif', exact: true })).toBeDisabled()
+  await expect(page.locator('.app-shell > footer')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Mur', exact: true })).toHaveCount(0)
+
+  const navigation = page.getByRole('navigation', { name: 'Navigation principale' })
+  for (const label of ['Vue d’ensemble', 'Monitoring', 'Fichiers', 'Mur']) {
+    await navigation.getByRole('button', { name: label, exact: true }).click()
+    await expect(navigation.getByRole('button', { name: label, exact: true })).toHaveAttribute('aria-current', 'page')
+    await expect(page.getByRole('button', { name: 'Micro actif', exact: true })).toBeVisible()
+  }
+  await page.getByRole('button', { name: 'Ouvrir la session work sur Alpha, En attente' }).click()
+  await expect(page.locator('.app-shell > div > header').getByRole('button', { name: /Talk/ })).toBeVisible()
+  await navigation.getByRole('button', { name: 'Mur', exact: true }).click()
+  expect(microphones).toHaveLength(1)
+  expect(closed).toBe(0)
+  expect(await page.evaluate(() => (window as typeof window & { micRequests: number }).micRequests)).toBe(1)
+
+  await page.route('**/api/session/new', async route => {
+    expect(route.request().postDataJSON()).toMatchObject({ host_id: 'host-alpha', session: 'from-wall' })
+    await route.fulfill({ json: {} })
+    const snapshot = workspaceSnapshot()
+    snapshot.revision++
+    Object.assign(snapshot.state.sessions, {
+      'session/host-alpha/from-wall': {
+        key: 'session/host-alpha/from-wall', host_key: 'host/host-alpha', host_id: 'host-alpha',
+        name: 'from-wall', attached: false, last_activity: '2026-07-27T04:00:00Z',
+      },
+    })
+    state.sendSnapshot = socket => (socket ?? state.sockets.at(-1))?.send(JSON.stringify(snapshot))
+    state.sendSnapshot()
+  })
+  const add = page.getByRole('button', { name: 'Ajouter une session au mur' })
+  await add.click()
+  await page.getByRole('menuitem', { name: 'Créer une session' }).click()
+  const modal = page.getByRole('dialog', { name: 'Nouvelle session' })
+  await modal.getByRole('textbox', { name: 'Nom de la session' }).fill('from-wall')
+  await modal.getByRole('button', { name: 'Créer', exact: true }).click()
+  await expect(page).toHaveURL(`${baseURL}/wall`)
+  await expect(page.getByRole('combobox', { name: 'Changer de session' })).toHaveCount(5)
+  await expect(page.getByRole('combobox', { name: 'Changer de session' }).last()).toHaveValue('host-alpha/from-wall')
+
+  await page.getByRole('button', { name: 'Retirer', exact: true }).last().click()
+  await add.focus()
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('menuitem', { name: 'Alpha / from-wall' })).toBeFocused()
+  await page.screenshot({ path: testInfo.outputPath('wall-menu-desktop.png') })
+  for (const width of [1024, 800, 390]) {
+    await page.setViewportSize({ width, height: 840 })
+    await expect(page.getByRole('menuitem', { name: 'Alpha / from-wall' })).toBeVisible()
+    const bounds = await page.getByRole('menu', { name: 'Ajouter une session au mur' }).boundingBox()
+    expect(bounds!.x).toBeGreaterThanOrEqual(0)
+    expect(bounds!.y).toBeGreaterThanOrEqual(0)
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+  }
+  await page.keyboard.press('Escape')
+  await expect(add).toBeFocused()
+})
+
+for (const scrollback of [5000, 0]) {
+  test(`Wall terminal columns stay visible when tiles and viewport resize (scrollback ${scrollback})`, async ({ page }) => {
+    await installWorkspaceMocks(page)
+    await page.route('**/api/preferences', route => route.fulfill({ json: {
+      ...preferences, terminal: { ...preferences.terminal, scrollback },
+    } }))
+    const pty = await capturePTY(page)
+    await page.setViewportSize({ width: 1633, height: 853 })
+    await page.goto(`${baseURL}/wall`)
+    await expect(page.locator('[data-terminal-surface]')).toHaveCount(4)
+    await page.getByRole('button', { name: 'Retirer', exact: true }).last().click()
+    await expect(page.locator('[data-terminal-surface]')).toHaveCount(3)
+    await page.evaluate(async () => {
+      await document.fonts.ready
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    })
+
+    const assertFits = async () => {
+      await expect.poll(() => page.locator('[data-terminal-surface]').evaluateAll(surfaces =>
+        surfaces.map(surface => {
+          const screen = surface.querySelector('.xterm-screen')!.getBoundingClientRect()
+          const bounds = surface.getBoundingClientRect()
+          return Math.max(0, screen.right - bounds.right, screen.height - bounds.height,
+            bounds.right - window.innerWidth)
+        }),
+      )).toEqual([0, 0, 0])
+    }
+    await assertFits()
+    for (const width of [1100, 800, 390, 1633]) {
+      await page.setViewportSize({ width, height: 840 })
+      await assertFits()
+    }
+    // Resizing the tiles must also update the dimensions sent to the process.
+    const targets = await page.getByRole('combobox', { name: 'Changer de session' })
+      .evaluateAll(pickers => pickers.map(picker => (picker as HTMLSelectElement).value))
+    for (const target of targets) {
+      const connection = pty.connections.find(connection => `${connection.hostId}/${connection.sessionName}` === target)!
+      const columns = pty.textFrames(connection).map(frame => JSON.parse(frame))
+        .filter(frame => frame.type === 'resize').map(frame => frame.cols)
+      expect(new Set(columns).size).toBeGreaterThan(1)
+    }
+  })
+}
+
 test('Atlas routes, AZERTY shortcut and window tabs preserve their targets', async ({ page }) => {
   await installWorkspaceMocks(page)
   const pty = await capturePTY(page)
@@ -264,7 +429,10 @@ test('Atlas routes, AZERTY shortcut and window tabs preserve their targets', asy
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
   })
   await page.goto(`${baseURL}/wall`)
-  await expect(page.getByRole('heading', { name: 'Mur' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Mur de sessions' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Mur' })).toHaveCount(0)
+  await expect(page.locator('.app-shell > footer')).toHaveCount(0)
+  await expect(page.getByRole('navigation', { name: 'Navigation principale' }).getByRole('button', { name: 'Mur', exact: true })).toHaveAttribute('aria-current', 'page')
   await page.getByRole('button', { name: 'Monitoring', exact: true }).click()
   await expect(page).toHaveURL(`${baseURL}/monitoring`)
   await page.goto(`${baseURL}/session/host-beta/work`)

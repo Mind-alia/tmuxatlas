@@ -36,6 +36,16 @@ describe('useMicStream', () => {
     expect(getUserMedia).not.toHaveBeenCalled()
   })
 
+  it('keeps the app microphone enabled even when an older view saved it as off', async () => {
+    localStorage.setItem('tmuxatlas.mic.off', '1')
+    getUserMedia.mockReturnValue(new Promise(() => {}))
+    const { result } = renderHook(() => useMicStream(true, true))
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(1))
+    act(() => result.current.toggle())
+    expect(result.current.state).toBe('starting')
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+  })
+
   it('stays off once turned off, until turned back on', async () => {
     getUserMedia.mockReturnValue(new Promise(() => {}))
     const first = renderHook(() => useMicStream(true))

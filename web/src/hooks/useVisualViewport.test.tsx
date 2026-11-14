@@ -43,4 +43,40 @@ describe('useVisualViewportVariables', () => {
     expect(document.documentElement.style.getPropertyValue('--visual-viewport-height')).toBe('777px')
     expect(document.documentElement.style.getPropertyValue('--visual-viewport-offset-top')).toBe('')
   })
+
+  it('detects a keyboard that shrinks the whole page, as Chrome on Android does', async () => {
+    const viewport = new MockVisualViewport()
+    viewport.offsetTop = 0
+    viewport.height = window.innerHeight
+    Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport })
+    const fullHeight = window.innerHeight
+    const setPageHeight = (height: number) => {
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: height })
+      viewport.height = height
+      act(() => viewport.dispatchEvent(new Event('resize')))
+    }
+    const field = document.createElement('textarea')
+    document.body.append(field)
+    const { unmount } = renderHook(() => useVisualViewportVariables())
+    const root = document.documentElement
+
+    try {
+      expect(root.hasAttribute('data-visual-keyboard-open')).toBe(false)
+      act(() => field.focus())
+      setPageHeight(fullHeight - 300)
+      await waitFor(() => expect(root.hasAttribute('data-visual-keyboard-open')).toBe(true))
+
+      // Chrome hides its address bar: the page grows a little, with no keyboard involved.
+      act(() => field.blur())
+      setPageHeight(fullHeight - 56)
+      await waitFor(() => expect(root.hasAttribute('data-visual-keyboard-open')).toBe(false))
+      act(() => field.focus())
+      setPageHeight(fullHeight - 56)
+      await waitFor(() => expect(root.hasAttribute('data-visual-keyboard-open')).toBe(false))
+    } finally {
+      unmount()
+      field.remove()
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: fullHeight })
+    }
+  })
 })

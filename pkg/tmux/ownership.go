@@ -16,7 +16,7 @@ var ownerPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,128}$`)
 // expected is empty for a claim, or the current owner for a release. force
 // bypasses the owner check for administrative assignments.
 func (c *Client) ChangeOwner(session, expected, owner string, force bool, names ...string) error {
-	if session == "" || session == "tmuxatlas-ctrl" || (owner != "" && !ownerPattern.MatchString(owner)) || (expected != "" && !ownerPattern.MatchString(expected)) {
+	if session == "" || IsInternalSession(session) || (owner != "" && !ownerPattern.MatchString(owner)) || (expected != "" && !ownerPattern.MatchString(expected)) {
 		return errors.New("cible ou propriétaire invalide")
 	}
 	name := owner

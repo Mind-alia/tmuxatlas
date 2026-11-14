@@ -207,6 +207,14 @@ function terminalContainer() {
   return container
 }
 
+/** Connects and lets the first socket open, which waits for the font and two frames. */
+async function connectTerminal(result: { current: { connect: (container: HTMLElement) => void } }, container: HTMLElement) {
+  await act(async () => {
+    result.current.connect(container)
+    await new Promise(resolve => setTimeout(resolve, 0))
+  })
+}
+
 beforeEach(() => {
   FakeWebSocket.sockets = []
   xtermState.terminals = []
@@ -231,8 +239,8 @@ beforeEach(() => {
 describe('useTerminal lifecycle and guarded input', () => {
   it('leaves clipboard shortcuts to the browser instead of sending Ctrl-V to the PTY', async () => {
     const { result, unmount } = renderHook(() => useTerminal('work', 'host-a'))
+    await connectTerminal(result, terminalContainer())
     act(() => {
-      result.current.connect(terminalContainer())
       FakeWebSocket.sockets[0].open()
     })
     const handle = xtermState.terminals[0].customKeyHandler!
@@ -251,8 +259,8 @@ describe('useTerminal lifecycle and guarded input', () => {
   it('sends a pasted clipboard image and reports the server result', async () => {
     const { result } = renderHook(() => useTerminal('work', 'host-a'))
     const container = terminalContainer()
+    await connectTerminal(result, container)
     act(() => {
-      result.current.connect(container)
       FakeWebSocket.sockets[0].open()
     })
     const socket = FakeWebSocket.sockets[0]
@@ -270,9 +278,41 @@ describe('useTerminal lifecycle and guarded input', () => {
     expect(result.current.imagePasteStatus).toBe('Image collée dans le terminal.')
   })
 
-  it('synchronizes a deferred fit when the socket becomes writable', () => {
+  it('attaches tmux at the size measured once the font has loaded', async () => {
+    let fontLoaded!: (loaded: boolean) => void
+    xtermState.ensureTerminalFont.mockReturnValue(new Promise<boolean>(resolve => (fontLoaded = resolve)))
     const { result } = renderHook(() => useTerminal('work', 'host-a'))
     act(() => result.current.connect(terminalContainer()))
+    expect(FakeWebSocket.sockets).toHaveLength(0)
+
+    // The fallback font gave the provisional size; the real one changes it.
+    xtermState.terminals[0].cols = 55
+    xtermState.terminals[0].rows = 37
+    await act(async () => {
+      fontLoaded(true)
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    expect(FakeWebSocket.sockets).toHaveLength(1)
+    expect(FakeWebSocket.sockets[0].url).toContain('cols=55&rows=37')
+  })
+
+  it('attaches anyway when the font never finishes loading', async () => {
+    vi.useFakeTimers()
+    try {
+      xtermState.ensureTerminalFont.mockReturnValue(new Promise<boolean>(() => {}))
+      const { result } = renderHook(() => useTerminal('work', 'host-a'))
+      act(() => result.current.connect(terminalContainer()))
+      expect(FakeWebSocket.sockets).toHaveLength(0)
+      act(() => vi.advanceTimersByTime(1500))
+      expect(FakeWebSocket.sockets).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('synchronizes a deferred fit when the socket becomes writable', async () => {
+    const { result } = renderHook(() => useTerminal('work', 'host-a'))
+    await connectTerminal(result, terminalContainer())
 
     // Simulate a fit that completed after the WebSocket URL was constructed,
     // while onResize could not yet write to the CONNECTING socket.
@@ -290,11 +330,11 @@ describe('useTerminal lifecycle and guarded input', () => {
     expect(result.current.ptyState).toBe('connected')
   })
 
-  it('keeps one xterm and one visibility listener across 100 socket reconnects', () => {
+  it('keeps one xterm and one visibility listener across 100 socket reconnects', async () => {
     const addDocument = vi.spyOn(document, 'addEventListener')
     const removeDocument = vi.spyOn(document, 'removeEventListener')
     const { result, unmount } = renderHook(() => useTerminal('work', 'host-a'))
-    act(() => result.current.connect(terminalContainer()))
+    await connectTerminal(result, terminalContainer())
     expect(xtermState.terminals).toHaveLength(1)
 
     for (let index = 0; index < 100; index++) {
@@ -313,7 +353,7 @@ describe('useTerminal lifecycle and guarded input', () => {
 
   it('loads SearchAddon only after Search is requested', async () => {
     const { result } = renderHook(() => useTerminal('work', 'host-a'))
-    act(() => result.current.connect(terminalContainer()))
+    await connectTerminal(result, terminalContainer())
     expect(xtermState.searchAddons).toHaveLength(0)
     await act(async () => {
       await result.current.ensureSearchAddon()
@@ -328,7 +368,7 @@ describe('useTerminal lifecycle and guarded input', () => {
   it('surfaces a Search load error, retries, and disposes the addon', async () => {
     xtermState.searchConstructError = new Error('Search chunk unavailable.')
     const { result, unmount } = renderHook(() => useTerminal('work', 'host-a'))
-    act(() => result.current.connect(terminalContainer()))
+    await connectTerminal(result, terminalContainer())
 
     await act(async () => {
       await expect(result.current.ensureSearchAddon()).rejects.toThrow('Search chunk unavailable.')
@@ -348,12 +388,12 @@ describe('useTerminal lifecycle and guarded input', () => {
     expect(addon.dispose).toHaveBeenCalledTimes(1)
   })
 
-  it('sends one exact command frame and bypasses modifiers', () => {
+  it('sends one exact command frame and bypasses modifiers', async () => {
     const input = new MobileTerminalInput()
     input.cycle('ctrl')
     const { result } = renderHook(() => useTerminal('work', 'host-a', input))
+    await connectTerminal(result, terminalContainer())
     act(() => {
-      result.current.connect(terminalContainer())
       FakeWebSocket.sockets[0].open()
       result.current.sendCommand(' 你好 "$HOME"\nnext ')
     })
@@ -372,12 +412,12 @@ describe('useTerminal lifecycle and guarded input', () => {
     expect(input.snapshot().alt).toBe('locked')
   })
 
-  it('rejects stale generations and send exceptions without consuming one-shot modifiers', () => {
+  it('rejects stale generations and send exceptions without consuming one-shot modifiers', async () => {
     const input = new MobileTerminalInput()
     input.cycle('ctrl')
     const { result } = renderHook(() => useTerminal('work', 'host-a', input))
+    await connectTerminal(result, terminalContainer())
     act(() => {
-      result.current.connect(terminalContainer())
       FakeWebSocket.sockets[0].open()
     })
     const stale = result.current.captureConnection()!
@@ -395,11 +435,11 @@ describe('useTerminal lifecycle and guarded input', () => {
     expect(input.snapshot().ctrl).toBe('once')
   })
 
-  it('sends zero bytes while closed and keeps one-shot modifiers recoverable', () => {
+  it('sends zero bytes while closed and keeps one-shot modifiers recoverable', async () => {
     const input = new MobileTerminalInput()
     input.cycle('ctrl')
     const { result } = renderHook(() => useTerminal('work', 'host-a', input))
-    act(() => result.current.connect(terminalContainer()))
+    await connectTerminal(result, terminalContainer())
 
     expect(() => result.current.sendCommand('not yet')).toThrow(/déconnecté/i)
     expect(FakeWebSocket.sockets[0].send).not.toHaveBeenCalled()
@@ -411,8 +451,8 @@ describe('useTerminal lifecycle and guarded input', () => {
     const readText = vi.mocked(navigator.clipboard.readText)
     readText.mockResolvedValueOnce('paste exactly')
     const { result } = renderHook(() => useTerminal('work', 'host-a'))
+    await connectTerminal(result, terminalContainer())
     act(() => {
-      result.current.connect(terminalContainer())
       FakeWebSocket.sockets[0].open()
       xtermState.terminals[0].selection = 'selected only'
     })
@@ -439,8 +479,8 @@ describe('useTerminal lifecycle and guarded input', () => {
     })
     vi.mocked(navigator.clipboard.readText).mockReturnValueOnce(readPromise)
     const { result } = renderHook(() => useTerminal('work', 'host-a'))
+    await connectTerminal(result, terminalContainer())
     act(() => {
-      result.current.connect(terminalContainer())
       FakeWebSocket.sockets[0].open()
     })
 
@@ -456,10 +496,10 @@ describe('useTerminal lifecycle and guarded input', () => {
     expect(FakeWebSocket.sockets[1].send.mock.calls.filter(([frame]) => typeof frame !== 'string')).toHaveLength(0)
   })
 
-  it('latches scrollback while output arrives and resumes at the bottom', () => {
+  it('latches scrollback while output arrives and resumes at the bottom', async () => {
     const { result } = renderHook(() => useTerminal('work', 'host-a'))
+    await connectTerminal(result, terminalContainer())
     act(() => {
-      result.current.connect(terminalContainer())
       FakeWebSocket.sockets[0].open()
       xtermState.terminals[0].emitScroll(3)
       FakeWebSocket.sockets[0].message('new output')
@@ -472,12 +512,12 @@ describe('useTerminal lifecycle and guarded input', () => {
     expect(result.current.hasNewOutput).toBe(false)
   })
 
-  it('isolates captures for same-name sessions on different hosts', () => {
+  it('isolates captures for same-name sessions on different hosts', async () => {
     const { result, rerender } = renderHook(({ host }) => useTerminal('work', host), {
       initialProps: { host: 'host-a' },
     })
+    await connectTerminal(result, terminalContainer())
     act(() => {
-      result.current.connect(terminalContainer())
       FakeWebSocket.sockets[0].open()
     })
     const capture = result.current.captureConnection()!

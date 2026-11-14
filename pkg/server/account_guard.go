@@ -127,7 +127,7 @@ func (p *accountPolicy) closeForChange(w http.ResponseWriter) bool {
 // any account may use any existing session except Atlas's internal one; the
 // pane must still belong to that session.
 func (p *accountPolicy) owns(host, name, pane, _ string) bool {
-	if p.opts.PeerMgr == nil || host == "" || name == "" || name == "tmuxatlas-ctrl" {
+	if p.opts.PeerMgr == nil || host == "" || name == "" || tmux.IsInternalSession(name) {
 		return false
 	}
 	var sessions []*tmux.Session
@@ -209,7 +209,7 @@ func (p *accountPolicy) verifiedProjection(projection state.Projection) state.Pr
 				}
 			}
 			for _, session := range sessions {
-				if session == nil || session.Name == "tmuxatlas-ctrl" {
+				if session == nil || tmux.IsInternalSession(session.Name) {
 					continue
 				}
 				if !host.Local {
@@ -279,7 +279,7 @@ func (p *accountPolicy) watchOwnership(ctx context.Context) {
 				}
 			}
 			for _, session := range sessions {
-				if session != nil && session.Name != "tmuxatlas-ctrl" {
+				if session != nil && !tmux.IsInternalSession(session.Name) {
 					result[state.NewSessionKey(host.ID, session.Name)] = session.Owner
 				}
 			}

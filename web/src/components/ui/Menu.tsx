@@ -20,6 +20,8 @@ export interface MenuProps {
   children: ReactNode
   align?: 'start' | 'end'
   className?: string
+  /** Extra classes for the popup, such as a full-width layout on phones. */
+  contentClassName?: string
   open?: boolean
   onOpenChange?: (open: boolean) => void
 }
@@ -33,6 +35,7 @@ export function Menu({
   align = 'end',
   children,
   className,
+  contentClassName,
   label,
   onOpenChange,
   open: controlledOpen,
@@ -109,7 +112,7 @@ export function Menu({
           id={menuId}
           role="menu"
           aria-label={label}
-          className="ui-menu__content"
+          className={cn('ui-menu__content', contentClassName)}
           data-align={align}
         >
           <MenuContext.Provider value={{ close }}>{children}</MenuContext.Provider>

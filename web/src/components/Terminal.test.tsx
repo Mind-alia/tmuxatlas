@@ -38,6 +38,8 @@ const terminal = {
   findPrevious: vi.fn<() => Promise<boolean>>(),
   clearSearch: vi.fn(),
   setVoiceHold: vi.fn<(on: boolean) => boolean>(),
+  dictate: vi.fn<(action: 'start' | 'stop' | 'cancel', submit?: boolean) => Promise<void>>(),
+  dictationText: '',
   readScreen: vi.fn<() => string[]>(() => []),
 }
 
@@ -349,7 +351,7 @@ describe('Claude talk button', () => {
     slot.remove()
   })
 
-  it('renders in the status bar slot rather than the Terminal toolbar', () => {
+  it('renders in the app header slot', () => {
     render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} claudeActive />)
     expect(slot).toContainElement(talk())
     expect(document.querySelector('.terminal-cockpit')).not.toContainElement(talk())
@@ -513,6 +515,72 @@ describe('Claude talk button', () => {
       expect(screen.queryByRole('button', { name: /Talk/ })).toBeNull()
       view.rerender(<Terminal embedded sessionName="s" hostId="h" talkSlot={slot} claudeActive sharedMic={shared} />)
       expect(screen.queryByRole('button', { name: /Talk/ })).toBeNull()
+    })
+  })
+
+  describe('with Codex', () => {
+    const codexTalk = () => screen.getByRole('button', { name: 'Talk : parler à Codex' })
+    const deferred = () => {
+      let resolve!: () => void
+      let reject!: (error: Error) => void
+      const promise = new Promise<void>((ok, fail) => {
+        resolve = ok
+        reject = fail
+      })
+      return { promise, resolve, reject }
+    }
+
+    beforeEach(() => {
+      terminal.dictate.mockReset()
+      terminal.setVoiceHold.mockClear()
+    })
+
+    it('asks the server to transcribe, then to type and submit the transcript', async () => {
+      const started = deferred()
+      const stopped = deferred()
+      terminal.dictate.mockReturnValueOnce(started.promise).mockReturnValueOnce(stopped.promise)
+      render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} codexActive />)
+      fireEvent.click(codexTalk())
+      expect(terminal.dictate).toHaveBeenLastCalledWith('start')
+      expect(screen.getByText('Préparation…')).toBeInTheDocument()
+      expect(send()).toBeDisabled()
+      await act(async () => started.resolve())
+      expect(send()).toBeEnabled()
+      fireEvent.click(send())
+      expect(terminal.dictate).toHaveBeenLastCalledWith('stop', true)
+      await act(async () => stopped.resolve())
+      expect(codexTalk()).toBeEnabled()
+      expect(terminal.setVoiceHold).not.toHaveBeenCalled()
+    })
+
+    it('shows the transcript live while the person speaks', async () => {
+      terminal.dictate.mockResolvedValue(undefined)
+      terminal.dictationText = ''
+      const view = render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} codexActive />)
+      await act(async () => fireEvent.click(codexTalk()))
+      const live = () => screen.getByLabelText('Transcription en direct')
+      expect(live().textContent).toBe('Je t’écoute…')
+      terminal.dictationText = 'Ouais, Codex, là je te parle'
+      view.rerender(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} codexActive />)
+      expect(live().textContent).toBe('Ouais, Codex, là je te parle')
+      await act(async () => fireEvent.click(stop()))
+      expect(screen.queryByLabelText('Transcription en direct')).toBeNull()
+      terminal.dictationText = ''
+    })
+
+    it('shows why the dictation could not start', async () => {
+      terminal.dictate.mockRejectedValueOnce(new Error('Aris n’a pas de compte Claude pour la dictée.'))
+      render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} codexActive />)
+      await act(async () => fireEvent.click(codexTalk()))
+      expect(screen.getByRole('alert').textContent).toContain('pas de compte Claude')
+    })
+
+    it('cancels the dictation when the Terminal goes away', async () => {
+      terminal.dictate.mockResolvedValue(undefined)
+      const view = render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} codexActive />)
+      await act(async () => fireEvent.click(codexTalk()))
+      view.unmount()
+      expect(terminal.dictate).toHaveBeenLastCalledWith('cancel')
     })
   })
 

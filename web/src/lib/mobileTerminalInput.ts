@@ -64,6 +64,8 @@ export class MobileTerminalInput {
 export const terminalKeys = {
   escape: '\x1b',
   tab: '\t',
+  shiftTab: '\x1b[Z',
+  enter: '\r',
   up: '\x1b[A',
   down: '\x1b[B',
   right: '\x1b[C',
