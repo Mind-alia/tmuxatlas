@@ -38,6 +38,7 @@ const terminal = {
   findPrevious: vi.fn<() => Promise<boolean>>(),
   clearSearch: vi.fn(),
   setVoiceHold: vi.fn<(on: boolean) => boolean>(),
+  claimSize: vi.fn(),
   dictate: vi.fn<(action: 'start' | 'stop' | 'cancel', submit?: boolean) => Promise<void>>(),
   dictationText: '',
   readScreen: vi.fn<() => string[]>(() => []),
@@ -168,6 +169,37 @@ describe('Terminal workspace controls', () => {
     expect(confirmation).toHaveTextContent('Coller plusieurs lignes')
     fireEvent.click(within(confirmation).getByRole('button', { name: 'Coller dans le terminal' }))
     expect(terminal.commitClipboardPaste).toHaveBeenCalledWith(expect.objectContaining({ text: 'one\ntwo' }))
+  })
+
+  it('gives tmux windows its size when the tab comes back or its terminal is touched', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      terminal.claimSize.mockClear()
+      render(<Terminal sessionName="one" hostId="host-a" />)
+      act(() => {
+        window.dispatchEvent(new Event('focus'))
+      })
+      expect(terminal.claimSize).toHaveBeenCalledTimes(1)
+      // A burst of events claims once.
+      fireEvent.pointerDown(document.querySelector('[data-terminal-surface]')!)
+      expect(terminal.claimSize).toHaveBeenCalledTimes(1)
+      vi.setSystemTime(Date.now() + 1000)
+      fireEvent.pointerDown(document.querySelector('[data-terminal-surface]')!)
+      expect(terminal.claimSize).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('claims the size from a Wall tile only when it is touched', () => {
+    terminal.claimSize.mockClear()
+    render(<Terminal embedded sessionName="one" hostId="host-a" />)
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(terminal.claimSize).not.toHaveBeenCalled()
+    fireEvent.pointerDown(document.querySelector('[data-terminal-surface]')!)
+    expect(terminal.claimSize).toHaveBeenCalledTimes(1)
   })
 
   it('exposes a single 44px mobile toolbar', () => {

@@ -135,6 +135,8 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 	var writeMu sync.Mutex
 	var images clipboardimage.Receiver
 	hold := newVoiceHold(ptySess)
+	claim := newSizeClaim(ptySess.Claim)
+	defer claim.stop()
 	dictation := &dictationState{}
 	defer dictation.cancel()
 	sendJSON := func(value any) {
@@ -214,6 +216,9 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 				} else {
 					hold.Stop()
 				}
+			}
+			if msg.Type == "use" {
+				claim.request()
 			}
 			if msg.Type == "resize" && msg.Cols > 0 && msg.Rows > 0 {
 				if err := ptySess.Resize(msg.Cols, msg.Rows); err != nil {
@@ -361,3 +366,37 @@ func sanitizeTranscript(text string) string {
 	}
 	return string(out)
 }
+
+// sizeClaim makes a tab's tmux client the one its windows take their size
+// from when the person turns to that tab. Requests run one at a time off the
+// read loop, and a burst of them collapses into a single tmux call.
+type sizeClaim struct {
+	pending chan struct{}
+	done    chan struct{}
+}
+
+func newSizeClaim(claim func() error) *sizeClaim {
+	c := &sizeClaim{pending: make(chan struct{}, 1), done: make(chan struct{})}
+	go func() {
+		for {
+			select {
+			case <-c.done:
+				return
+			case <-c.pending:
+				if err := claim(); err != nil {
+					logrus.WithError(err).Debug("could not give the tab its size")
+				}
+			}
+		}
+	}()
+	return c
+}
+
+func (c *sizeClaim) request() {
+	select {
+	case c.pending <- struct{}{}:
+	default:
+	}
+}
+
+func (c *sizeClaim) stop() { close(c.done) }

@@ -201,6 +201,7 @@ export function Terminal({
     sendInput,
     sendRawInput,
     setVoiceHold,
+    claimSize,
     dictate,
     dictationText,
     readScreen,
@@ -459,6 +460,37 @@ export function Terminal({
       if (timer !== null) window.clearTimeout(timer ?? undefined)
     }
   }, [fit, focus, embedded])
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    // tmux sizes the windows for the client that typed last: after a phone typed,
+    // a computer would keep its narrow width. Turning to this tab, or touching its
+    // terminal, hands the windows back to this screen.
+    let last = 0
+    const claim = () => {
+      const now = Date.now()
+      if (document.hidden || now - last < 500) return
+      last = now
+      claimSize()
+    }
+    const onVisibility = () => {
+      if (!document.hidden) claim()
+    }
+    container.addEventListener('pointerdown', claim, { passive: true })
+    container.addEventListener('focusin', claim)
+    // A Wall tile claims only when touched: the page coming back would make every tile claim at once.
+    if (!embedded) {
+      window.addEventListener('focus', claim)
+      document.addEventListener('visibilitychange', onVisibility)
+    }
+    return () => {
+      container.removeEventListener('pointerdown', claim)
+      container.removeEventListener('focusin', claim)
+      window.removeEventListener('focus', claim)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [claimSize, embedded])
 
   useEffect(() => {
     const container = containerRef.current

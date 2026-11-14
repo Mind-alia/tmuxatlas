@@ -241,6 +241,20 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
   }, [])
 
   /**
+   * Gives tmux windows this Terminal's size. tmux follows the client that typed
+   * last, so a phone that typed keeps a computer's view narrow until this runs.
+   */
+  const claimSize = useCallback((): void => {
+    const socket = wsRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) return
+    try {
+      socket.send(JSON.stringify({ type: 'use' }))
+    } catch {
+      /* the Terminal reports the disconnect */
+    }
+  }, [])
+
+  /**
    * Drives a dictation the server transcribes for an agent without its own:
    * start, stop (typing the transcript, and Enter when submit), or cancel.
    */
@@ -923,6 +937,7 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
     sendRawInput,
     sendCommand,
     setVoiceHold,
+    claimSize,
     dictate,
     dictationText,
     readScreen,

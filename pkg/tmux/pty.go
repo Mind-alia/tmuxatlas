@@ -22,9 +22,10 @@ var (
 
 // PTYSession wraps a PTY running `tmux attach-session`
 type PTYSession struct {
-	cmd   *exec.Cmd
-	ptyFd *os.File
-	close sync.Once
+	cmd      *exec.Cmd
+	ptyFd    *os.File
+	tmuxPath string
+	close    sync.Once
 }
 
 // NewPTYSession spawns `tmux attach-session -t <session>` in a PTY
@@ -72,8 +73,9 @@ func NewPTYSession(tmuxPath, sessionName string, cols, rows uint16) (*PTYSession
 	}).Info("started PTY session")
 
 	return &PTYSession{
-		cmd:   cmd,
-		ptyFd: f,
+		cmd:      cmd,
+		ptyFd:    f,
+		tmuxPath: tmuxPath,
 	}, nil
 }
 
@@ -85,6 +87,41 @@ func (p *PTYSession) Read(buf []byte) (int, error) {
 // Write writes to the PTY master fd
 func (p *PTYSession) Write(data []byte) (int, error) {
 	return p.ptyFd.Write(data)
+}
+
+// Claim makes this client the one the session's windows take their size from.
+// With window-size latest, tmux follows the client that typed or resized last:
+// a phone that typed keeps the windows at its width on a computer that only
+// looks. Switching the client to the session it already shows makes it the
+// latest one, without sending a key to the program in the pane.
+func (p *PTYSession) Claim() error {
+	if p.cmd.Process == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, p.tmuxPath, "list-clients", "-F", "#{client_pid} #{client_tty} #{session_id}").Output()
+	if err != nil {
+		return fmt.Errorf("tmux list-clients: %w", err)
+	}
+	tty, session, ok := clientOfPID(string(out), p.cmd.Process.Pid)
+	if !ok {
+		return fmt.Errorf("tmux client of process %d not found", p.cmd.Process.Pid)
+	}
+	return exec.CommandContext(ctx, p.tmuxPath, "switch-client", "-c", tty, "-t", session).Run()
+}
+
+// clientOfPID finds the tty and session of the tmux client run by pid in
+// list-clients lines formatted as "#{client_pid} #{client_tty} #{session_id}".
+func clientOfPID(listing string, pid int) (tty, session string, ok bool) {
+	want := fmt.Sprint(pid)
+	for _, line := range strings.Split(listing, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == want {
+			return fields[1], fields[2], true
+		}
+	}
+	return "", "", false
 }
 
 // Resize changes the PTY window size
