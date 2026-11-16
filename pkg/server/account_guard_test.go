@@ -63,7 +63,7 @@ func TestAccountPolicyFailsClosed(t *testing.T) {
 	}
 }
 
-func TestAccountPolicyRejectsRevokedRequestWaitingForLock(t *testing.T) {
+func TestAccountPolicyRejectsRequestRevokedAfterAuthentication(t *testing.T) {
 	store := accounts.OpenStore(filepath.Join(t.TempDir(), "users.json"))
 	hash, err := bcrypt.GenerateFromPassword([]byte("mot de passe"), bcrypt.MinCost)
 	if err != nil {
@@ -83,27 +83,24 @@ func TestAccountPolicyRejectsRevokedRequestWaitingForLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := newAccountPolicy(&Options{})
-	identified := make(chan struct{})
-	result := make(chan int, 1)
-	handler := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		close(identified)
-		policy.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusNoContent)
-		})).ServeHTTP(w, r)
+	reached := false
+	guarded := policy.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
 	}))
-	policy.mu.Lock()
-	go func() {
-		request := httptest.NewRequest(http.MethodGet, "/api/preferences", nil)
+	handler := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sessions.Revoke(token) // revoked between authentication and the policy
+		guarded.ServeHTTP(w, r)
+	}))
+	for _, path := range []string{"/api/preferences", "/ws/events"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.AddCookie(&http.Cookie{Name: "tmuxatlas_session", Value: token})
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
-		result <- response.Code
-	}()
-	<-identified
-	sessions.Revoke(token)
-	policy.mu.Unlock()
-	if status := <-result; status != http.StatusUnauthorized {
-		t.Fatalf("requête révoquée autorisée : %d", status)
+		if response.Code != http.StatusUnauthorized || reached {
+			t.Fatalf("%s: requête révoquée autorisée : %d", path, response.Code)
+		}
+		token, _ = sessions.CreateForAccount(user.ID)
 	}
 }
 

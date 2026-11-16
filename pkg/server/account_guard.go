@@ -88,14 +88,17 @@ var accountOtherRoutes = map[string]string{
 	"POST /api/*": "denied", "PUT /api/*": "denied", "TRACE /api/*": "denied",
 }
 
-// accountPolicy serializes ownership changes with target checks and websocket
-// registration. Connections are cancelled before ownership can change.
+// accountPolicy checks guest requests and tracks guest WebSocket connections.
+// Its mutex only guards the connection table: it is never held while a
+// handler runs or while a peer is asked anything, so a slow or silent peer
+// cannot stall other requests.
 type accountPolicy struct {
 	opts        *Options
 	router      runtimeActionExecutor
 	mu          sync.Mutex
 	connections map[uint64]accountConnection
 	nextID      uint64
+	owners      *ownerCache
 }
 
 type accountConnection struct {
@@ -107,57 +110,31 @@ type accountConnection struct {
 }
 
 func newAccountPolicy(opts *Options) *accountPolicy {
-	return &accountPolicy{opts: opts, connections: make(map[uint64]accountConnection)}
+	return &accountPolicy{opts: opts, connections: make(map[uint64]accountConnection), owners: newOwnerCache(ownerCacheTTL, ownerRate, ownerBurst)}
 }
 
 // remoteOwner asks the agent for current ownership instead of trusting a
-// potentially delayed discovery snapshot. Older agents fail closed.
+// potentially delayed discovery snapshot. Older agents fail closed. Answers
+// are cached briefly and calls are rate limited per host (see ownerCache).
 func (p *accountPolicy) remoteOwner(host, name string) (tmux.Owner, bool) {
 	if p.router == nil {
 		return "", false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	result, err := p.router.Execute(ctx, "owner", peer.SessionTarget{HostID: host, Session: name}, json.RawMessage(`{}`))
-	if err != nil {
-		return "", false
-	}
-	var response struct {
-		Owner tmux.Owner `json:"owner"`
-	}
-	if json.Unmarshal(result.Result, &response) != nil {
-		return "", false
-	}
-	return response.Owner, true
-}
-
-func (p *accountPolicy) closeConnections() bool {
-	connections := make([]accountConnection, 0, len(p.connections))
-	for id, connection := range p.connections {
-		connection.cancel()
-		connections = append(connections, connection)
-		delete(p.connections, id)
-	}
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
-	for _, connection := range connections {
-		select {
-		case <-connection.done:
-		case <-timer.C:
-			return false
+	return p.owners.get(host, name, func() (tmux.Owner, bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		result, err := p.router.Execute(ctx, "owner", peer.SessionTarget{HostID: host, Session: name}, json.RawMessage(`{}`))
+		if err != nil {
+			return "", false
 		}
-	}
-	return true
-}
-
-// closeForChange runs only after the route's Origin and CSRF checks pass.
-// The policy mutex is held by Middleware for the duration of the handler.
-func (p *accountPolicy) closeForChange(w http.ResponseWriter) bool {
-	if p.closeConnections() {
-		return true
-	}
-	http.Error(w, "fermeture des connexions expirée", http.StatusServiceUnavailable)
-	return false
+		var response struct {
+			Owner tmux.Owner `json:"owner"`
+		}
+		if json.Unmarshal(result.Result, &response) != nil {
+			return "", false
+		}
+		return response.Owner, true
+	})
 }
 
 // guestMayUseHost reports whether a guest may use a host: it must be granted
@@ -273,6 +250,12 @@ func (p *accountPolicy) owns(host, name, pane, _ string) bool {
 // filtering. An unavailable host fails closed rather than exposing its cache.
 func (p *accountPolicy) verifiedProjection(projection state.Projection) state.Projection {
 	owners := make(map[state.SessionKey]tmux.Owner)
+	// Only the hosts left in the projection, i.e. those the account may see,
+	// are asked: a guest never makes the hub wait for someone else's peer.
+	visible := make(map[string]bool)
+	for _, session := range projection.Sessions {
+		visible[session.HostID] = true
+	}
 	type remoteTarget struct {
 		host string
 		name string
@@ -285,7 +268,7 @@ func (p *accountPolicy) verifiedProjection(projection state.Projection) state.Pr
 	var remote []remoteTarget
 	if p.opts.PeerMgr != nil {
 		for _, host := range p.opts.PeerMgr.StateHostSnapshots() {
-			if !host.Online {
+			if !host.Online || !visible[host.ID] {
 				continue
 			}
 			sessions := host.Sessions
@@ -355,27 +338,23 @@ func (p *accountPolicy) watchOwnership(ctx context.Context) {
 	if p.opts.PeerMgr == nil {
 		return
 	}
-	read := func() map[state.SessionKey]tmux.Owner {
-		result := make(map[state.SessionKey]tmux.Owner)
-		for _, host := range p.opts.PeerMgr.StateHostSnapshots() {
-			if !host.Online {
-				continue
-			}
-			sessions := host.Sessions
-			if host.Local && p.opts.Client != nil {
-				var err error
-				sessions, err = p.opts.Client.ListSessions()
-				if err != nil {
-					continue
-				}
-			}
-			for _, session := range sessions {
-				if session != nil && session.Name != "tmuxatlas-ctrl" {
-					result[state.NewSessionKey(host.ID, session.Name)] = session.Owner
-				}
+	// Only sessions with an open guest terminal are checked, outside the
+	// lock: asking a silent peer must not block requests or other checks.
+	localSessions := func() (map[string]bool, bool) {
+		if p.opts.Client == nil {
+			return nil, false
+		}
+		sessions, err := p.opts.Client.ListSessions()
+		if err != nil {
+			return nil, false
+		}
+		names := make(map[string]bool, len(sessions))
+		for _, session := range sessions {
+			if session != nil && session.Name != "tmuxatlas-ctrl" {
+				names[session.Name] = true
 			}
 		}
-		return result
+		return names, true
 	}
 	changes := p.opts.PeerMgr.Subscribe()
 	defer p.opts.PeerMgr.Unsubscribe(changes)
@@ -392,20 +371,31 @@ func (p *accountPolicy) watchOwnership(ctx context.Context) {
 		case <-ticker.C:
 		}
 		p.mu.Lock()
-		current := read()
+		watched := make([]accountConnection, 0, len(p.connections))
 		for _, connection := range p.connections {
-			if connection.session == "" {
-				continue
+			if connection.session != "" {
+				watched = append(watched, connection)
 			}
-			_, exists := current[state.NewSessionKey(connection.host, connection.session)]
-			if !p.opts.PeerMgr.IsLocal(connection.host) {
+		}
+		p.mu.Unlock()
+		var local map[string]bool
+		localRead, localOK := false, false
+		for _, connection := range watched {
+			exists := false
+			if p.opts.PeerMgr.IsLocal(connection.host) {
+				if !localRead {
+					local, localOK = localSessions()
+					localRead = true
+				}
+				// An unreadable local tmux keeps terminals, as before.
+				exists = !localOK || local[connection.session]
+			} else {
 				_, exists = p.remoteOwner(connection.host, connection.session)
 			}
 			if !exists {
 				connection.cancel()
 			}
 		}
-		p.mu.Unlock()
 	}
 }
 
@@ -422,24 +412,16 @@ func (p *accountPolicy) Middleware(next http.Handler) http.Handler {
 			http.Error(w, "accès interdit", http.StatusForbidden)
 			return
 		}
-		p.mu.Lock()
-		select {
-		case <-identity.Done:
-			p.mu.Unlock()
+		if revoked(identity) {
 			http.Error(w, "authentification requise", http.StatusUnauthorized)
 			return
-		default:
 		}
 		path := r.URL.Path
 		if accountQueryHostRoutes[path] || path == "/api/files/hosts" {
 			if user && accountQueryHostRoutes[path] && !p.guestMayUseHost(identity.User, r.URL.Query().Get("host_id")) {
-				p.mu.Unlock()
 				http.Error(w, "accès interdit", http.StatusForbidden)
 				return
 			}
-			// File operations do not change ownership and can last: they do
-			// not hold the policy lock, which would block every other request.
-			p.mu.Unlock()
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -457,7 +439,6 @@ func (p *accountPolicy) Middleware(next http.Handler) http.Handler {
 				}
 				body, err := io.ReadAll(io.LimitReader(r.Body, 4097))
 				if err != nil || len(body) > 4096 {
-					p.mu.Unlock()
 					http.Error(w, "requête invalide", http.StatusBadRequest)
 					return
 				}
@@ -469,12 +450,10 @@ func (p *accountPolicy) Middleware(next http.Handler) http.Handler {
 					Pane    string `json:"pane"`
 				}
 				if json.Unmarshal(body, &target) != nil {
-					p.mu.Unlock()
 					http.Error(w, "requête invalide", http.StatusBadRequest)
 					return
 				}
 				if target.Host != "" && target.HostID != "" && target.Host != target.HostID {
-					p.mu.Unlock()
 					http.Error(w, "cibles contradictoires", http.StatusBadRequest)
 					return
 				}
@@ -485,39 +464,50 @@ func (p *accountPolicy) Middleware(next http.Handler) http.Handler {
 			}
 			// The host must be granted to the guest; the hub's own host never is.
 			if !p.guestMayUseHost(identity.User, host) || (targeted && !p.owns(host, session, pane, identity.User.ID)) {
-				p.mu.Unlock()
 				http.Error(w, "accès interdit", http.StatusForbidden)
 				return
 			}
 		}
-		if path == "/ws/session" || path == "/ws/events" || path == "/ws/mic" {
-			if user {
-				ctx, cancel := context.WithCancel(r.Context())
-				p.nextID++
-				id := p.nextID
-				done := make(chan struct{})
-				connection := accountConnection{accountID: identity.User.ID, cancel: cancel, done: done}
-				if path == "/ws/session" {
-					connection.host = r.URL.Query().Get("host")
-					connection.session = r.URL.Query().Get("name")
-				}
-				p.connections[id] = connection
+		if user && (path == "/ws/session" || path == "/ws/events" || path == "/ws/mic") {
+			ctx, cancel := context.WithCancel(r.Context())
+			done := make(chan struct{})
+			connection := accountConnection{accountID: identity.User.ID, cancel: cancel, done: done}
+			if path == "/ws/session" {
+				connection.host = r.URL.Query().Get("host")
+				connection.session = r.URL.Query().Get("name")
+			}
+			p.mu.Lock()
+			p.nextID++
+			id := p.nextID
+			p.connections[id] = connection
+			p.mu.Unlock()
+			defer func() {
+				cancel()
+				close(done)
+				p.mu.Lock()
+				delete(p.connections, id)
 				p.mu.Unlock()
-				defer func() {
-					cancel()
-					close(done)
-					p.mu.Lock()
-					delete(p.connections, id)
-					p.mu.Unlock()
-				}()
-				next.ServeHTTP(w, r.WithContext(ctx))
+			}()
+			// Checked again once registered: a revocation that raced with the
+			// checks above still closes this connection.
+			if revoked(identity) {
+				http.Error(w, "authentification requise", http.StatusUnauthorized)
 				return
 			}
-			p.mu.Unlock()
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
-		defer p.mu.Unlock()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// revoked reports whether the session behind identity was revoked after the
+// authentication middleware resolved it.
+func revoked(identity auth.AccountIdentity) bool {
+	select {
+	case <-identity.Done:
+		return true
+	default:
+		return false
+	}
 }
