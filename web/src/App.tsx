@@ -61,12 +61,13 @@ function errorMessage(err: unknown): string {
   return 'L’action sur la session a échoué.'
 }
 
-type View = 'overview' | 'session' | 'settings' | 'setup' | 'monitoring' | 'wall' | 'admin'
+type View = 'overview' | 'session' | 'settings' | 'setup' | 'monitoring' | 'wall' | 'admin' | 'ops'
 
 const AdminPage = lazy(() => import('./components/AdminPage').then(module => ({ default: module.AdminPage })))
 const MonitoringPage = lazy(() =>
   import('./components/monitoring/MonitoringPage').then(module => ({ default: module.MonitoringPage })),
 )
+const OpsPage = lazy(() => import('./components/ops/OpsPage').then(module => ({ default: module.OpsPage })))
 const WallView = lazy(() => import('./components/WallView').then(module => ({ default: module.WallView })))
 const HelpModal = lazy(() => import('./components/HelpModal').then(module => ({ default: module.HelpModal })))
 const NewSessionModal = lazy(() =>
@@ -83,6 +84,7 @@ const Terminal = lazy(() => import('./components/Terminal').then(module => ({ de
 function getViewFromPath(): { view: View; sessionKey: string | null } {
   if (window.location.pathname === '/admin') return { view: 'admin', sessionKey: null }
   if (window.location.pathname === '/monitoring') return { view: 'monitoring', sessionKey: null }
+  if (window.location.pathname === '/ops') return { view: 'ops', sessionKey: null }
   if (window.location.pathname === '/wall') return { view: 'wall', sessionKey: null }
   if (window.location.pathname === '/settings') {
     return { view: 'settings', sessionKey: null }
@@ -350,7 +352,7 @@ function AppInner({
   const navigateTo = useCallback(
     (sessKey: string | null, view?: View) => {
       let path: string
-      if (view === 'monitoring' || view === 'wall' || view === 'admin') {
+      if (view === 'monitoring' || view === 'wall' || view === 'admin' || view === 'ops') {
         path = `/${view}`
       } else if (view === 'settings') {
         path = '/settings'
@@ -413,7 +415,7 @@ function AppInner({
       navigateTo(null)
       return
     }
-    if (role === 'user' && currentView === 'setup') {
+    if (role === 'user' && (currentView === 'setup' || currentView === 'ops')) {
       navigateTo(null)
     }
   }, [currentView, navigateTo, role])
@@ -714,6 +716,8 @@ function AppInner({
       document.title = 'Réglages — Atlas'
     } else if (currentView === 'admin') {
       document.title = 'Administration — Atlas'
+    } else if (currentView === 'ops') {
+      document.title = 'Conteneurs — Atlas'
     } else {
       document.title =
         currentView === 'monitoring' ? 'Monitoring — Atlas' : currentView === 'wall' ? 'Mur — Atlas' : 'Atlas'
@@ -801,6 +805,7 @@ function AppInner({
             onOverview={() => navigateTo(null)}
             onMonitoring={() => navigateTo(null, 'monitoring')}
             onWall={() => navigateTo(null, 'wall')}
+            onOps={role !== 'user' ? () => navigateTo(null, 'ops') : undefined}
             onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}
             onOpenPalette={() => setQuickSwitcherOpen(true)}
             onSettings={navigateToSettings}
@@ -873,6 +878,8 @@ function AppInner({
               />
             ) : currentView === 'monitoring' ? (
               <MonitoringPage hosts={hosts} />
+            ) : currentView === 'ops' && role !== 'user' ? (
+              <OpsPage />
             ) : currentView === 'wall' ? (
               wallReady && (
                 <WallView
@@ -967,6 +974,7 @@ function AppInner({
           onOverview={() => navigateTo(null)}
           onSessions={() => setMobileSidebarOpen(true)}
           onMonitoring={() => navigateTo(null, 'monitoring')}
+          onOps={role !== 'user' ? () => navigateTo(null, 'ops') : undefined}
           onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}
           onSettings={navigateToSettings}
         />
