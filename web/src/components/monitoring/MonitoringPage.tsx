@@ -1,15 +1,29 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { Host } from '../../hooks/useHosts'
 import { useHostLabel } from '../../lib/hostLabel'
 import { toolColors } from '../../theme'
 import { FleetHealth } from '../FleetHealth'
-import { Monitoring } from './Monitoring'
+import { CLIAccountsOverview } from './CLIAccountsPanel'
+import { Monitoring, type MonitoringTab } from './Monitoring'
+import type { MonitorRange } from './types'
+import { useMonitor } from './useMonitor'
 
 type Stats = { panes: number; processes?: { name: string; count: number }[] }
 
-export function MonitoringPage({ hosts }: { hosts: Host[] }) {
+export function MonitoringPage({
+  hosts,
+  onOpenSession,
+}: {
+  hosts: Host[]
+  onOpenSession?: (key: string) => void
+}) {
   const label = useHostLabel()
   const [stats, setStats] = useState<Stats | null>(null)
+  const [range, setRange] = useState<MonitorRange>('1h')
+  const [tab, setTab] = useState<MonitoringTab>('services')
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null)
+  const monitor = useMonitor(range)
+
   useEffect(() => {
     const controller = new AbortController()
     const load = async () => {
@@ -27,6 +41,20 @@ export function MonitoringPage({ hosts }: { hosts: Host[] }) {
       clearInterval(timer)
     }
   }, [])
+
+  const openSessionByName = useCallback(
+    (sessionName: string) => {
+      if (!onOpenSession) return
+      for (const host of hosts) {
+        const match = (host.sessions || []).find(s => s.name === sessionName)
+        if (match) {
+          onOpenSession(match.key || `${host.id}:${match.name}`)
+          return
+        }
+      }
+    },
+    [hosts, onOpenSession],
+  )
 
   const processGroups =
     hosts.length > 1
@@ -50,10 +78,34 @@ export function MonitoringPage({ hosts }: { hosts: Host[] }) {
         ? [{ id: '', name: '', processes: stats.processes, panes: stats.panes }]
         : []
 
+  const cliAccounts = monitor.data?.cli_accounts ?? []
+  const showSideBySide = hosts.length <= 1 && cliAccounts.length > 0
+  const overview =
+    cliAccounts.length > 0 ? (
+      <CLIAccountsOverview
+        accounts={cliAccounts}
+        selectedId={selectedAccountId}
+        onSelectAccount={setSelectedAccountId}
+        onOpenSessionName={onOpenSession ? openSessionByName : undefined}
+      />
+    ) : null
+
   return (
     <main className="flex-1 overflow-y-auto p-4 text-sm sm:p-6">
       <h1 className="mb-5 text-2xl font-medium">Monitoring</h1>
-      <FleetHealth />
+      {showSideBySide ? (
+        <div className="mb-6 grid gap-6 lg:grid-cols-12 lg:items-start">
+          <div className="lg:col-span-4">
+            <FleetHealth compact />
+          </div>
+          <div className="min-w-0 lg:col-span-8">{overview}</div>
+        </div>
+      ) : (
+        <>
+          <FleetHealth />
+          {overview && <div className="mb-6">{overview}</div>}
+        </>
+      )}
       {processGroups.length > 0 && (
         <section className="mb-6">
           <h2 className="mb-3 text-sm font-medium">Processus</h2>
@@ -129,7 +181,13 @@ export function MonitoringPage({ hosts }: { hosts: Host[] }) {
           </div>
         </section>
       )}
-      <Monitoring />
+      <Monitoring
+        monitorState={monitor}
+        range={range}
+        onRangeChange={setRange}
+        tab={tab}
+        onTabChange={setTab}
+      />
     </main>
   )
 }

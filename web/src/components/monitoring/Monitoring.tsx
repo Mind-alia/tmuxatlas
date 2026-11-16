@@ -1,5 +1,6 @@
-import { Check, Circle, TriangleAlert, X } from 'lucide-react'
+import { TriangleAlert } from 'lucide-react'
 import { useMemo, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { A, B, Kpi, Meter, StatusBadge, pctTone, toneColor, type Tone } from './primitives'
 import { MiniTrend, TimeSeriesChart } from './TimeSeriesChart'
 import { useMonitor } from './useMonitor'
 import {
@@ -22,102 +23,6 @@ import type {
   MonitorSSHReport,
   MonitorTimer,
 } from './types'
-
-// Two-series chart palette. Each preset provides its own pair, validated for CVD
-// separation and contrast on its card surface (see --mon-a / --mon-b in theme.ts).
-const A = 'var(--mon-a)'
-const B = 'var(--mon-b)'
-
-type Tone = 'ok' | 'warning' | 'critical' | 'neutral'
-
-const toneColor: Record<Tone, string> = {
-  ok: 'var(--success)',
-  warning: 'var(--warning)',
-  critical: 'var(--destructive)',
-  neutral: 'var(--muted-foreground)',
-}
-const toneIcon = { ok: Check, warning: TriangleAlert, critical: X, neutral: Circle }
-
-function StatusBadge({ tone, label }: { tone: Tone; label: string }) {
-  const Icon = toneIcon[tone]
-  // Healthy is the expected state: it stays quiet so problems stand out.
-  if (tone === 'ok') {
-    return (
-      <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-2xs text-muted-foreground">
-        <Icon size={14} aria-hidden="true" />
-        {label}
-      </span>
-    )
-  }
-  return (
-    <span
-      className="inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-[1px] text-2xs font-medium"
-      style={{ color: toneColor[tone], background: `color-mix(in oklch, ${toneColor[tone]} 12%, transparent)` }}
-    >
-      <Icon size={14} aria-hidden="true" />
-      {label}
-    </span>
-  )
-}
-
-function pctTone(value: number, warn: number, crit: number): Tone {
-  return value >= crit ? 'critical' : value >= warn ? 'warning' : 'ok'
-}
-
-function Meter({ value, tone }: { value: number; tone: Tone }) {
-  return (
-    <div className="h-1 w-full overflow-hidden rounded-full bg-secondary" role="presentation">
-      <div
-        className="h-full rounded-full transition-[width] duration-300"
-        style={{
-          width: `${Math.min(100, Math.max(0, value))}%`,
-          background: tone === 'warning' || tone === 'critical' ? toneColor[tone] : A,
-        }}
-      />
-    </div>
-  )
-}
-
-function Kpi({
-  label,
-  value,
-  tone = 'neutral',
-  badge,
-  meter,
-  facts,
-  children,
-}: {
-  label: string
-  value: string
-  tone?: Tone
-  badge?: string
-  meter?: number
-  facts?: [string, string][]
-  children?: ReactNode
-}) {
-  const alerting = tone === 'warning' || tone === 'critical'
-  return (
-    <div className="flex min-w-0 flex-col gap-2 atlas-surface rounded-lg p-3 font-normal">
-      <div className="flex min-h-5 items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span className="truncate">{label}</span>
-        {alerting && <StatusBadge tone={tone} label={badge ?? (tone === 'critical' ? 'Critique' : 'Élevé')} />}
-      </div>
-      <div className="text-2xl font-semibold leading-none text-foreground">{value}</div>
-      {facts && (meter !== undefined ? <Meter value={meter} tone={tone} /> : <div aria-hidden className="h-1" />)}
-      {facts && (
-        <dl className="flex flex-col gap-1 text-2xs">
-          {facts.map(([name, fact]) => (
-            <div key={name} className="flex items-baseline justify-between gap-2">
-              <dt className="truncate text-muted-foreground">{name}</dt>
-              <dd className="whitespace-nowrap tabular-nums text-foreground">{fact}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
-      {children && <div className="text-2xs leading-relaxed text-muted-foreground">{children}</div>}
-    </div>
-  )
-}
 
 function CoreStrip({ cores }: { cores: number[] }) {
   return (
@@ -869,18 +774,37 @@ function LogsPanel({ data }: { data: MonitorResponse }) {
   )
 }
 
-type Tab = 'services' | 'timers' | 'sites' | 'processes' | 'storage' | 'network' | 'logs'
+export type MonitoringTab = 'services' | 'timers' | 'sites' | 'processes' | 'storage' | 'network' | 'logs'
 
 function column(series: MonitorSample[], key: keyof MonitorSample): number[] {
   return series.map(s => s[key] as number)
 }
 
-export function Monitoring() {
-  const [range, setRange] = useState<MonitorRange>('1h')
-  const [tab, setTab] = useState<Tab>('services')
+export function Monitoring({
+  monitorState,
+  range: controlledRange,
+  onRangeChange,
+  tab: controlledTab,
+  onTabChange,
+}: {
+  monitorState?: ReturnType<typeof useMonitor>
+  range?: MonitorRange
+  onRangeChange?: (range: MonitorRange) => void
+  tab?: MonitoringTab
+  onTabChange?: (tab: MonitoringTab) => void
+} = {}) {
+  const [internalRange, setInternalRange] = useState<MonitorRange>('1h')
+  const [internalTab, setInternalTab] = useState<MonitoringTab>('services')
   const [mineOnly, setMineOnly] = useState(true)
   const [procSort, setProcSort] = useState<'cpu' | 'mem'>('cpu')
-  const { data, series, status, lastUpdate, failed } = useMonitor(range)
+
+  const range = controlledRange ?? internalRange
+  const setRange = onRangeChange ?? setInternalRange
+  const tab = controlledTab ?? internalTab
+  const setTab = onTabChange ?? setInternalTab
+
+  const ownMonitor = useMonitor(range, !monitorState)
+  const { data, series, status, lastUpdate, failed } = monitorState ?? ownMonitor
 
   if (status === 'unavailable') return null
 
@@ -929,7 +853,7 @@ export function Monitoring() {
   const failedTimers = timers.filter(t => t.last && t.result && t.result !== 'success').length
   const stale = failed || Date.now() - lastUpdate > 20000
 
-  const tabs: { id: Tab; label: string; count?: number; alert?: boolean }[] = [
+  const tabs: { id: MonitoringTab; label: string; count?: number; alert?: boolean }[] = [
     { id: 'services', label: 'Services', count: services.filter(s => s.custom).length, alert: failedServices > 0 },
     { id: 'timers', label: 'Tâches planifiées', count: timers.filter(t => t.custom).length, alert: failedTimers > 0 },
     { id: 'sites', label: 'Sites', count: endpoints.length, alert: checked.length > up },

@@ -320,9 +320,10 @@ type Response struct {
 	Listeners   []Listener   `json:"listeners"`
 	Services    []Service    `json:"services"`
 	Timers      []Timer      `json:"timers"`
-	Endpoints   []Endpoint   `json:"endpoints"`
-	Logs        LogStats     `json:"logs"`
-	Alerts      []Alert      `json:"alerts"`
+	Endpoints   []Endpoint        `json:"endpoints"`
+	Logs        LogStats          `json:"logs"`
+	CLIAccounts []CLIAccountUsage `json:"cli_accounts,omitempty"`
+	Alerts      []Alert           `json:"alerts"`
 }
 
 // ring is a fixed-capacity FIFO of samples.
@@ -378,8 +379,10 @@ type Monitor struct {
 	timers      []Timer
 	endpoints   []Endpoint
 	logs        LogStats
+	cliAccounts []CLIAccountUsage
 	collectedAt int64
 
+	cliCollector  *cliAccountsCollector
 	statePath     string
 	extraURLs     []string
 	restoredUsage []usagePoint
@@ -389,10 +392,11 @@ type Monitor struct {
 // discovered from the local Caddy admin API.
 func New(extraURLs []string) *Monitor {
 	m := &Monitor{
-		logger:    logrus.WithField("component", "monitor"),
-		raw:       newRing(rawCapacity),
-		rollup:    newRing(rollupCapacity),
-		extraURLs: extraURLs,
+		logger:       logrus.WithField("component", "monitor"),
+		raw:          newRing(rawCapacity),
+		rollup:       newRing(rollupCapacity),
+		cliCollector: newCLIAccountsCollector(""),
+		extraURLs:    extraURLs,
 	}
 	if dir, err := dataDir(); err == nil {
 		m.statePath = filepath.Join(dir, "monitor-history.json")
@@ -422,6 +426,8 @@ func (m *Monitor) Run(ctx context.Context) {
 		{SampleInterval, m.sample},
 		{15 * time.Second, m.refreshSystemd},
 		{30 * time.Second, m.refreshListeners},
+		{30 * time.Second, m.refreshCLIAccounts},
+		{2 * time.Minute, m.refreshAgyQuotas},
 		{60 * time.Second, m.refreshEndpoints},
 		{5 * time.Minute, m.refreshLogs},
 		{10 * time.Minute, m.refreshHost},
@@ -511,6 +517,44 @@ func (m *Monitor) refreshLogs(ctx context.Context) {
 	m.mu.Unlock()
 }
 
+func (m *Monitor) refreshCLIAccounts(context.Context) {
+	if m.cliCollector == nil {
+		return
+	}
+	accounts := m.cliCollector.collect(time.Now())
+	m.mu.Lock()
+	m.cliAccounts = accounts
+	m.mu.Unlock()
+}
+
+func (m *Monitor) refreshAgyQuotas(ctx context.Context) {
+	if m.cliCollector == nil {
+		return
+	}
+	m.mu.RLock()
+	hints := make(map[string]agyProbeTarget)
+	for _, acc := range m.cliAccounts {
+		if acc.CLI == "agy" {
+			hints[acc.ID] = agyProbeTarget{
+				id:           acc.ID,
+				live:         len(acc.LiveSessions) > 0,
+				lastActivity: acc.LastActivity,
+			}
+		}
+	}
+	m.mu.RUnlock()
+
+	count, errs, skipped := m.cliCollector.refreshAgyQuotas(ctx, time.Now(), hints)
+	if len(errs) > 0 {
+		m.logger.WithFields(logrus.Fields{"accounts": count, "skipped": skipped, "errors": errs}).Warn("agy quota probe warnings")
+	} else if count > 0 {
+		m.logger.WithFields(logrus.Fields{"accounts": count, "skipped": skipped}).Info("refreshed agy quotas")
+	}
+	if count > 0 {
+		m.refreshCLIAccounts(ctx)
+	}
+}
+
 func (m *Monitor) refreshEndpoints(ctx context.Context) {
 	urls := discoverCaddyURLs(ctx)
 	sources := make(map[string]string, len(urls)+len(m.extraURLs))
@@ -582,6 +626,22 @@ func (m *Monitor) Snapshot(rangeSec int64, afterMS int64) Response {
 	resp.Timers = m.timers
 	resp.Endpoints = m.endpoints
 	resp.Logs = m.logs
+	if len(m.cliAccounts) > 0 {
+		nowUnix := now / 1000
+		accounts := make([]CLIAccountUsage, len(m.cliAccounts))
+		for i, acc := range m.cliAccounts {
+			if len(acc.Windows) > 0 {
+				wins := make([]QuotaWindow, len(acc.Windows))
+				for j, w := range acc.Windows {
+					w.Expired = w.ResetsAt > 0 && w.ResetsAt <= nowUnix
+					wins[j] = w
+				}
+				acc.Windows = wins
+			}
+			accounts[i] = acc
+		}
+		resp.CLIAccounts = accounts
+	}
 	resp.Alerts = m.buildAlerts(&resp)
 	return resp
 }

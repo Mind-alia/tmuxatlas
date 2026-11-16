@@ -10,7 +10,7 @@ export type MonitorStatus = 'loading' | 'ready' | 'unavailable' | 'error'
  * points newer than the last one received are requested and appended.
  * Polling pauses while the tab is hidden.
  */
-export function useMonitor(range: MonitorRange) {
+export function useMonitor(range: MonitorRange, enabled = true) {
   const [data, setData] = useState<MonitorResponse | null>(null)
   const [series, setSeries] = useState<MonitorSample[]>([])
   const [status, setStatus] = useState<MonitorStatus>('loading')
@@ -20,6 +20,7 @@ export function useMonitor(range: MonitorRange) {
   const rangeRef = useRef(range)
 
   const fetchOnce = useCallback(async () => {
+    if (!enabled) return
     const currentRange = rangeRef.current
     try {
       const res = await fetch(`/api/monitor?range=${currentRange}&after=${lastT.current}`, { cache: 'no-store' })
@@ -50,9 +51,10 @@ export function useMonitor(range: MonitorRange) {
       setFailed(true)
       setStatus(prev => (prev === 'ready' ? 'ready' : 'error'))
     }
-  }, [])
+  }, [enabled])
 
   useEffect(() => {
+    if (!enabled) return
     rangeRef.current = range
     // The previous series stays on screen until the new range arrives.
     lastT.current = 0
@@ -78,7 +80,7 @@ export function useMonitor(range: MonitorRange) {
       stop()
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [range, fetchOnce])
+  }, [range, fetchOnce, enabled])
 
   return { data, series, status, lastUpdate, failed, refresh: fetchOnce }
 }
