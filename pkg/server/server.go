@@ -718,7 +718,7 @@ func Run(ctx context.Context, opts *Options) error {
 
 			// Voice status — whether the browser microphone can be used on this host
 			r.Get("/voice", func(w http.ResponseWriter, r *http.Request) {
-				status := voiceStatus(opts, browserMic, r.URL.Query().Get("host"))
+				status := voiceStatus(r, opts, browserMic, r.URL.Query().Get("host"))
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Cache-Control", "no-store")
 				json.NewEncoder(w).Encode(status)
