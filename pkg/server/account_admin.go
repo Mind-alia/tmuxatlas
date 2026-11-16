@@ -159,7 +159,7 @@ func handleAdminUserDelete(w http.ResponseWriter, r *http.Request, opts *Options
 func accountAdminOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		identity, ok := auth.AccountFromContext(r.Context())
-		if !ok || identity.User.Role != "admin" {
+		if !ok || !identity.User.IsAdmin() {
 			http.Error(w, "accès interdit", http.StatusForbidden)
 			return
 		}
@@ -184,9 +184,14 @@ func handleAccountOwnership(w http.ResponseWriter, r *http.Request, opts *Option
 	}
 	owner := identity.User.ID
 	ownerName := identity.User.Username
+	// A guest can only take a session for themselves.
+	if !identity.User.IsAdmin() && request.Owner != "" && request.Owner != identity.User.ID {
+		http.Error(w, "accès interdit", http.StatusForbidden)
+		return
+	}
 	// Any account may reassign or release any session. Only a plain claim, with
 	// no explicit owner, is limited to a free session.
-	force := identity.User.Role == "admin" || operation == "release" || request.Owner != ""
+	force := identity.User.IsAdmin() || operation == "release" || request.Owner != ""
 	if request.Owner != "" {
 		owner = request.Owner
 		if operation == "claim" {
@@ -232,11 +237,15 @@ func handleAccountOwnership(w http.ResponseWriter, r *http.Request, opts *Option
 
 // handleAccountDirectory lists the active accounts a session can be given to.
 // It exposes names only: no role, date, hash or disabled account.
-func handleAccountDirectory(w http.ResponseWriter, opts *Options) {
+func handleAccountDirectory(w http.ResponseWriter, r *http.Request, opts *Options) {
 	users, err := opts.AccountsAuth.Store.List()
 	if err != nil {
 		writeAccountError(w, err)
 		return
+	}
+	// A guest does not learn who else has an account.
+	if identity, ok := auth.AccountFromContext(r.Context()); ok && !identity.User.IsAdmin() {
+		users = []accounts.User{identity.User}
 	}
 	type entry struct {
 		ID       string `json:"id"`

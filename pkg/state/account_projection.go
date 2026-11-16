@@ -28,6 +28,49 @@ func minimalHost(host Host) Host {
 	return Host{Key: host.Key, ID: host.ID, DisplayName: host.DisplayName, Online: host.Online, Local: host.Local}
 }
 
+// ForHosts returns a copy of the projection restricted to the hosts allow
+// accepts, including their sessions, windows, panes, events, activity and
+// health. Metadata is dropped.
+func (p Projection) ForHosts(allow func(hostID string) bool) Projection {
+	result := NewProjection()
+	for key, host := range p.Hosts {
+		if allow(host.ID) {
+			result.Hosts[key] = host
+		}
+	}
+	for key, session := range p.Sessions {
+		if allow(session.HostID) {
+			result.Sessions[key] = session
+		}
+	}
+	for key, window := range p.Windows {
+		if _, ok := result.Sessions[window.SessionKey]; ok {
+			result.Windows[key] = window
+		}
+	}
+	for key, pane := range p.Panes {
+		if _, ok := result.Windows[pane.WindowKey]; ok {
+			result.Panes[key] = pane
+		}
+	}
+	for key, event := range p.ToolEvents {
+		if allow(event.HostID) {
+			result.ToolEvents[key] = event
+		}
+	}
+	for key, activity := range p.Activity {
+		if allow(activity.HostID) {
+			result.Activity[key] = activity
+		}
+	}
+	for key, health := range p.Health {
+		if host, ok := p.Hosts[key]; ok && allow(host.ID) {
+			result.Health[key] = health
+		}
+	}
+	return result
+}
+
 // ForAccount builds a fresh projection without retaining references to data
 // belonging to other accounts. An empty account ID never owns a session.
 func (p Projection) ForAccount(accountID string) AccountProjection {

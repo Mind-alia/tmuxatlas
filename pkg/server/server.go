@@ -66,7 +66,11 @@ type Options struct {
 	PTYRelay         *peer.PTYRelay
 	Watcher          *toolevents.Watcher
 	LocalOnly        bool
-	routerObserver   func(chi.Routes)
+	// GuestLocalHost allows granting the hub's own host to a guest. Leave it
+	// off when the hub runs under an account that guests must not reach, such
+	// as a production account (TMUXATLAS_GUEST_LOCAL_HOST=allow).
+	GuestLocalHost bool
+	routerObserver func(chi.Routes)
 }
 
 func writeRuntimeError(w http.ResponseWriter, err error) {
@@ -410,7 +414,7 @@ func Run(ctx context.Context, opts *Options) error {
 				mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).
 					Post("/auth/change-password", opts.AccountsAuth.ChangePassword)
 				r.Get("/accounts/directory", func(w http.ResponseWriter, r *http.Request) {
-					handleAccountDirectory(w, opts)
+					handleAccountDirectory(w, r, opts)
 				})
 				r.With(accountAdminOnly).Get("/admin/users", func(w http.ResponseWriter, r *http.Request) {
 					handleAdminUsers(w, r, opts)
@@ -475,8 +479,8 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
-					json.NewEncoder(w).Encode(accountPolicy.verifiedProjection(snapshot.State).AccountSessionViews(identity.User.ID))
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && !identity.User.IsAdmin() {
+					json.NewEncoder(w).Encode(accountPolicy.verifiedProjection(snapshot.State.ForHosts(accountPolicy.hostFilter(identity.User))).AccountSessionViews(identity.User.ID))
 					return
 				}
 				json.NewEncoder(w).Encode(snapshot.State.SessionViews())
@@ -489,8 +493,8 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
-					json.NewEncoder(w).Encode(accountPolicy.verifiedProjection(snapshot.State).AccountHostViews(identity.User.ID))
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && !identity.User.IsAdmin() {
+					json.NewEncoder(w).Encode(accountPolicy.verifiedProjection(snapshot.State.ForHosts(accountPolicy.hostFilter(identity.User))).AccountHostViews(identity.User.ID))
 					return
 				}
 				json.NewEncoder(w).Encode(snapshot.State.HostViews())
@@ -537,8 +541,8 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 				projection := snapshot.State
-				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
-					projection = accountPolicy.verifiedProjection(projection).OwnedBy(identity.User.ID)
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && !identity.User.IsAdmin() {
+					projection = accountPolicy.verifiedProjection(projection.ForHosts(accountPolicy.hostFilter(identity.User))).OwnedBy(identity.User.ID)
 				}
 				events := projection.ToolEventViews()
 				if session != "" {
@@ -720,8 +724,8 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 				projection := snapshot.State
-				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
-					projection = accountPolicy.verifiedProjection(projection).OwnedBy(identity.User.ID)
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && !identity.User.IsAdmin() {
+					projection = accountPolicy.verifiedProjection(projection.ForHosts(accountPolicy.hostFilter(identity.User))).OwnedBy(identity.User.ID)
 				}
 				snapshots := projection.ActivityViews()
 				w.Header().Set("Content-Type", "application/json")
@@ -794,7 +798,7 @@ func Run(ctx context.Context, opts *Options) error {
 				} else {
 					prefs = preferences.Default()
 				}
-				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && !identity.User.IsAdmin() {
 					prefs = preferences.Default()
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -850,9 +854,7 @@ func Run(ctx context.Context, opts *Options) error {
 	hub := ws.NewHub(opts.StateMgr, opts.Tracker)
 	hub.SetCoordinator(coordinator)
 	if opts.AccountsAuth != nil {
-		hub.SetAccountProjection(func(projection state.Projection, accountID string) state.AccountProjection {
-			return accountPolicy.verifiedProjection(projection).ForAccount(accountID)
-		})
+		hub.SetAccountProjection(accountPolicy.accountProjection)
 	}
 	if opts.ActivityTracker != nil {
 		var peerActivity ws.ActivitySource

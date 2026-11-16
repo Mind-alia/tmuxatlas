@@ -107,7 +107,7 @@ func TestAccountPolicyRejectsRevokedRequestWaitingForLock(t *testing.T) {
 	}
 }
 
-func TestAnyAccountCanUseAnySession(t *testing.T) {
+func TestGuestUsesOnlySessionsOfGrantedHost(t *testing.T) {
 	dir, err := os.MkdirTemp("/tmp", "atlas-accounts-")
 	if err != nil {
 		t.Fatal(err)
@@ -123,11 +123,11 @@ func TestAnyAccountCanUseAnySession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alice, err := store.Create("alice", string(hash), "user")
+	alice, err := store.Create("alice", string(hash), "guest")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bob, err := store.Create("bob", string(hash), "user")
+	bob, err := store.Create("bob", string(hash), "guest")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,35 +153,49 @@ func TestAnyAccountCanUseAnySession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := a.Middleware(newAccountPolicy(&Options{Client: client, StateMgr: manager, PeerMgr: peers}).Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	options := &Options{Client: client, StateMgr: manager, PeerMgr: peers}
+	h := a.Middleware(newAccountPolicy(options).Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})))
-	for _, name := range []string{"alice", "bob"} {
-		for _, operation := range []string{"preview", "rename", "kill", "select-window", "select-pane", "reply", "release"} {
-			method := http.MethodPost
-			url := "/api/session/" + operation
-			body := fmt.Sprintf(`{"host_id":%q,"session":%q}`, peers.LocalID(), name)
-			if operation == "preview" {
-				method = http.MethodGet
-				url += "?host_id=" + peers.LocalID() + "&session=" + name
+	check := func(want int) {
+		t.Helper()
+		for _, name := range []string{"alice", "bob"} {
+			for _, operation := range []string{"preview", "rename", "kill", "select-window", "select-pane", "reply", "release"} {
+				method := http.MethodPost
+				url := "/api/session/" + operation
+				body := fmt.Sprintf(`{"host_id":%q,"session":%q}`, peers.LocalID(), name)
+				if operation == "preview" {
+					method = http.MethodGet
+					url += "?host_id=" + peers.LocalID() + "&session=" + name
+				}
+				r := httptest.NewRequest(method, url, strings.NewReader(body))
+				r.AddCookie(&http.Cookie{Name: "tmuxatlas_session", Value: token})
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, r)
+				if w.Code != want {
+					t.Errorf("%s %s: %d, want %d", name, operation, w.Code, want)
+				}
 			}
-			r := httptest.NewRequest(method, url, strings.NewReader(body))
+			url := "/ws/session?host=" + peers.LocalID() + "&name=" + name
+			r := httptest.NewRequest(http.MethodGet, url, nil)
 			r.AddCookie(&http.Cookie{Name: "tmuxatlas_session", Value: token})
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, r)
-			if w.Code != http.StatusNoContent {
-				t.Errorf("%s %s: %d", name, operation, w.Code)
+			if w.Code != want {
+				t.Errorf("%s pty: %d, want %d", name, w.Code, want)
 			}
 		}
-		url := "/ws/session?host=" + peers.LocalID() + "&name=" + name
-		r := httptest.NewRequest(http.MethodGet, url, nil)
-		r.AddCookie(&http.Cookie{Name: "tmuxatlas_session", Value: token})
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
-		if w.Code != http.StatusNoContent {
-			t.Errorf("%s pty: %d", name, w.Code)
-		}
 	}
+	// No grant: every session of the host is out of reach.
+	check(http.StatusForbidden)
+	if _, err := store.SetAccess(alice.ID, []string{peers.LocalID()}, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	// The hub's own host stays forbidden unless explicitly allowed.
+	check(http.StatusForbidden)
+	options.GuestLocalHost = true
+	// On a granted host the owner is a label: every session can be used.
+	check(http.StatusNoContent)
 	// Atlas's internal session and unknown sessions stay out of reach.
 	for _, name := range []string{"tmuxatlas-ctrl", "inexistante"} {
 		r := httptest.NewRequest(http.MethodGet, "/ws/session?host="+peers.LocalID()+"&name="+name, nil)

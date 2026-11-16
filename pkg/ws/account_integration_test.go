@@ -24,11 +24,14 @@ func accountWebSocketFixture(t *testing.T) (*state.Coordinator, *auth.SessionMan
 	if err != nil {
 		t.Fatal(err)
 	}
-	alice, err := store.Create("alice", string(hash), "user")
+	alice, err := store.Create("alice", string(hash), "guest")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bob, err := store.Create("bob", string(hash), "user")
+	if alice, err = store.SetAccess(alice.ID, []string{"host"}, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	bob, err := store.Create("bob", string(hash), "guest")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +82,11 @@ func TestAccountProjectionKeepsSessionAfterReassign(t *testing.T) {
 	_, initial, err := conn.ReadMessage()
 	if err != nil || !strings.Contains(string(initial), "secret-command") {
 		t.Fatalf("initial: %s, %v", initial, err)
+	}
+	// A guest without the host sees none of it.
+	other := accountWebSocket(t, sessions, bob.ID, endpoint)
+	if _, foreign, err := other.ReadMessage(); err != nil || strings.Contains(string(foreign), "secret") {
+		t.Fatalf("invité sans l'hôte : %s, %v", foreign, err)
 	}
 	session.Owner = tmux.Owner(bob.ID)
 	if _, err := c.Commit(context.Background(), state.Operation{Kind: state.OperationUpsertSession, Session: &session}); err != nil {

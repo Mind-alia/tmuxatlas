@@ -344,6 +344,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		PTYRelay:        ptyRelay,
 		Watcher:         watcher,
 		LocalOnly:       localOnly,
+		GuestLocalHost:  os.Getenv("TMUXATLAS_GUEST_LOCAL_HOST") == "allow",
 		Role:            map[bool]string{true: "hub", false: "standalone"}[pureHub],
 		Deployment:      os.Getenv("TMUXATLAS_DEPLOYMENT"),
 	}
