@@ -209,11 +209,13 @@ func (a *AccountsAuth) Login(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	hash := a.dummyHash
-	if found != nil {
+	if found != nil && found.PasswordHash != "" {
 		hash = found.PasswordHash
 	}
 	valid := accounts.VerifyPassword(hash, request.Password)
-	if !valid || found == nil || found.Disabled {
+	// An account still waiting for its invitation has no password: it is
+	// compared with the dummy hash for timing, and always rejected.
+	if !valid || found == nil || found.Disabled || found.PasswordHash == "" {
 		a.failed(keys...)
 		writeError(w, http.StatusUnauthorized, "identifiants invalides")
 		return
