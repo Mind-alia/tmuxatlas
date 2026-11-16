@@ -76,6 +76,11 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
   const termRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  // The pane reads a line without echo (a password prompt): keystrokes are
+  // held back unless the human explicitly allows them.
+  const passwordPromptRef = useRef(false)
+  const passwordOverrideRef = useRef(false)
+  const [passwordPrompt, setPasswordPrompt] = useState(false)
   const containerRef = useRef<HTMLElement | null>(null)
   const terminalDisposablesRef = useRef<IDisposable[]>([])
   const domCleanupRef = useRef<Array<() => void>>([])
@@ -209,6 +214,9 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
 
   const sendRawInput = useCallback(
     (data: Uint8Array, capture?: TerminalConnectionCapture): boolean => {
+      if (passwordPromptRef.current && !passwordOverrideRef.current) {
+        throw new TerminalInputError('password-prompt', 'Saisie bloquée : le terminal attend un mot de passe.')
+      }
       const expected = capture ?? captureConnection()
       if (!expected) {
         throw new TerminalInputError('not-connected', 'Le terminal est déconnecté.')
@@ -443,6 +451,7 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
         term.onData(data => {
           const socket = wsRef.current
           if (!socket || socket.readyState !== WebSocket.OPEN) return
+          if (passwordPromptRef.current && !passwordOverrideRef.current) return
           const bytes = mobileInput ? mobileInput.encode(data) : new TextEncoder().encode(data)
           try {
             socket.send(bytes)
@@ -548,7 +557,14 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
           if (!isCurrent()) return
           if (typeof event.data === 'string') {
             try {
-              const message = JSON.parse(event.data) as { type?: string; error?: string }
+              const message = JSON.parse(event.data) as { type?: string; error?: string; on?: boolean }
+              if (message.type === 'echo') {
+                const prompt = message.on === false
+                passwordPromptRef.current = prompt
+                if (!prompt) passwordOverrideRef.current = false
+                setPasswordPrompt(prompt)
+                return
+              }
               if (message.type === 'image-result') {
                 imageUploadRef.current = false
                 setImagePasteStatus(
@@ -571,6 +587,9 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
         socket.onclose = () => {
           if (!isCurrent()) return
           wsRef.current = null
+          passwordPromptRef.current = false
+          passwordOverrideRef.current = false
+          setPasswordPrompt(false)
           if (imageUploadRef.current) {
             imageUploadRef.current = false
             setImagePasteStatus('Échec du collage de l’image : Terminal déconnecté.')
@@ -839,8 +858,17 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
     setSearchState(state => ({ ...state, resultIndex: -1, resultCount: 0 }))
   }, [])
 
+  /** Lets keystrokes through until the prompt ends: a deliberate human choice. */
+  const allowPasswordInput = useCallback(() => {
+    passwordOverrideRef.current = true
+    setPasswordPrompt(false)
+    termRef.current?.focus()
+  }, [])
+
   return {
     termRef,
+    passwordPrompt,
+    allowPasswordInput,
     connect,
     disconnect,
     reconnect,
