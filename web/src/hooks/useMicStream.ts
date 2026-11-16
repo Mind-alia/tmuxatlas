@@ -66,7 +66,10 @@ function rememberMicTurnedOff(off: boolean) {
  * unmount. Any stream stops when hostId changes.
  */
 export function useMicStream(allowed: boolean, alwaysOn = false, hostId = '') {
-  const [enabled, setEnabled] = useState(false)
+  // The host whose voice status said enabled: a stale answer for another host
+  // never starts a stream to the new one.
+  const [enabledHost, setEnabledHost] = useState<string | null>(null)
+  const enabled = enabledHost === hostId
   const [state, setState] = useState<MicState>('off')
   const [error, setError] = useState('')
   const stopRef = useRef<(() => void) | null>(null)
@@ -75,13 +78,12 @@ export function useMicStream(allowed: boolean, alwaysOn = false, hostId = '') {
   useEffect(() => {
     if (!allowed) return
     let cancelled = false
-    setEnabled(false)
     fetchVoiceStatus(hostId)
       .then(status => {
-        if (!cancelled) setEnabled(status.enabled)
+        if (!cancelled) setEnabledHost(status.enabled ? hostId : null)
       })
       .catch(() => {
-        if (!cancelled) setEnabled(false)
+        if (!cancelled) setEnabledHost(null)
       })
     return () => {
       cancelled = true
