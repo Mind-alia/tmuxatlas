@@ -16,7 +16,7 @@ refused to `user` accounts by the server, not just hidden in the interface.
 ```
 
 - The hub **never** talks to Docker and never runs anything in the production
-  account. The account that runs the hub must not be in the `docker` group.
+  account. Ideally the account that runs the hub is not in the `docker` group.
 - `docker-snapshot.sh` is the only process that touches the Docker socket. It
   runs a fixed command and reads nothing from TmuxAtlas.
 - The hub only opens the status files read-only. It refuses symlinks,
@@ -50,16 +50,31 @@ enough, and it is the simplest and the safest:
 If the hub ever moves to another machine, the peer option becomes necessary;
 it should then be a separate binary without the PTY and tmux code.
 
+### Where the hub runs today
+
+On the current server the hub (`tmuxatlas server`, port 7654) runs **as
+transcriptflow**, the production account, which is in the `docker` and `sudo`
+groups. The `agents` account only runs a `tmuxatlas agent` peer. So:
+
+- the hub can read the status directory without any group (step 1 below is
+  optional: `install -d -m 0750 /srv/tf-ops` as transcriptflow is enough, or
+  use `~/.local/state/tf-ops`);
+- the ops code still never calls Docker, so moving the hub later to an account
+  without Docker (a dedicated `tfmonitor`, for instance) only needs step 1.
+
+Running the hub in the production account means that a flaw in the hub gives
+Docker, hence root. Moving it is recommended but out of scope here.
+
 ## Installation (by a human, on the production side)
 
 Nothing here is installed by TmuxAtlas. Read `contrib/ops/docker-snapshot.sh`
 before copying it.
 
 ```bash
-# 1. As root: a group for readers, the status directory.
-#    Replace "agents" by the account that runs the hub.
+# 1. As root: a group for readers, the status directory. Only needed when the
+#    hub runs in another account; replace "tfmonitor" by that account.
 sudo groupadd --system tfops
-sudo usermod -aG tfops agents
+sudo usermod -aG tfops tfmonitor
 sudo install -d -o transcriptflow -g tfops -m 2750 /srv/tf-ops
 
 # 2. As transcriptflow: copy a reviewed version of the collector into a path
@@ -75,15 +90,16 @@ loginctl enable-linger transcriptflow   # timers keep running without a session
 # 3. Check
 systemctl --user status tf-ops-docker-snapshot.service
 ls -l /srv/tf-ops                      # containers.json, -rw-r----- transcriptflow tfops
-sudo -u agents cat /srv/tf-ops/containers.json   # readable
-sudo -u agents touch /srv/tf-ops/x               # must fail: Permission denied
+sudo -u tfmonitor cat /srv/tf-ops/containers.json   # readable (if step 1)
+sudo -u tfmonitor touch /srv/tf-ops/x               # must fail: Permission denied
+sudo -u agents cat /srv/tf-ops/containers.json      # must fail: agents is not a reader
 
 # 4. The hub: add to its environment, then restart it.
 TMUXATLAS_OPS_DIR=/srv/tf-ops
 ```
 
 The new group only applies to processes started after `usermod`: restart the
-user manager of the hub's account (`sudo systemctl restart user@$(id -u agents)`)
+user manager of the hub's account (`sudo systemctl restart user@$(id -u tfmonitor)`)
 or reboot.
 
 If the service fails with `218/CAPABILITIES` or `status=226/NAMESPACE`, the
