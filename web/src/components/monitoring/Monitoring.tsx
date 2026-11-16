@@ -28,9 +28,9 @@ import type {
 const A = 'var(--mon-a)'
 const B = 'var(--mon-b)'
 
-type Tone = 'ok' | 'warning' | 'critical' | 'neutral'
+export type Tone = 'ok' | 'warning' | 'critical' | 'neutral'
 
-const toneColor: Record<Tone, string> = {
+export const toneColor: Record<Tone, string> = {
   ok: 'var(--success)',
   warning: 'var(--warning)',
   critical: 'var(--destructive)',
@@ -38,7 +38,7 @@ const toneColor: Record<Tone, string> = {
 }
 const toneIcon = { ok: Check, warning: TriangleAlert, critical: X, neutral: Circle }
 
-function StatusBadge({ tone, label }: { tone: Tone; label: string }) {
+export function StatusBadge({ tone, label }: { tone: Tone; label: string }) {
   const Icon = toneIcon[tone]
   // Healthy is the expected state: it stays quiet so problems stand out.
   if (tone === 'ok') {
@@ -301,14 +301,20 @@ function AlertRow({
   )
 }
 
-function Alerts({ alerts }: { alerts: MonitorAlert[] }) {
+export function Alerts({
+  alerts,
+  okText = 'Aucun problème détecté sur les ressources, services, tâches et sites.',
+}: {
+  alerts: MonitorAlert[]
+  okText?: string
+}) {
   const [open, setOpen] = useState<Set<string>>(new Set())
   if (alerts.length === 0) {
     return (
       <div className="mb-4 flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-lg border border-border bg-card px-3 py-2 text-xs font-normal">
         <StatusBadge tone="ok" label="Tout va bien" />
         <span className="text-muted-foreground">
-          Aucun problème détecté sur les ressources, services, tâches et sites.
+          {okText}
         </span>
       </div>
     )
@@ -391,9 +397,9 @@ function Segmented<T extends string>({
   )
 }
 
-const NUM = 'text-right tabular-nums'
+export const NUM = 'text-right tabular-nums'
 
-function Table({
+export function Table({
   label,
   head,
   numeric = [],
