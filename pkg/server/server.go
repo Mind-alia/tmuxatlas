@@ -29,6 +29,7 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
 	"github.com/LosFurina/tmuxatlas/pkg/ingress"
 	"github.com/LosFurina/tmuxatlas/pkg/monitor"
+	"github.com/LosFurina/tmuxatlas/pkg/ops"
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
 	"github.com/LosFurina/tmuxatlas/pkg/preferences"
 	"github.com/LosFurina/tmuxatlas/pkg/socket"
@@ -209,6 +210,13 @@ func Run(ctx context.Context, opts *Options) error {
 	if opts.Role != "hub" && monitor.Supported() && monitorEnabled(os.Getenv("TMUXATLAS_MONITOR")) {
 		hostMonitor = monitor.New(monitorURLs(os.Getenv("TMUXATLAS_MONITOR_URLS")))
 		go hostMonitor.Run(ctx)
+	}
+	// Ops status (containers, backups) is read from files another account
+	// writes; the hub never talks to Docker itself. See docs/ops.md.
+	var opsMonitor *ops.Monitor
+	if dir := strings.TrimSpace(os.Getenv("TMUXATLAS_OPS_DIR")); dir != "" {
+		opsMonitor = ops.New(dir)
+		go opsMonitor.Run(ctx)
 	}
 	// The browser microphone feeds programs on this host, so it needs local tmux.
 	var browserMic *voice.Mic
@@ -619,6 +627,23 @@ func Run(ctx context.Context, opts *Options) error {
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Cache-Control", "no-store")
 				json.NewEncoder(w).Encode(hostMonitor.Snapshot(rangeSec, after))
+			})
+
+			// Ops endpoint — containers and backups, admin only. The account
+			// policy already refuses it to "user" accounts; the handler checks
+			// again so a future allow-list change cannot expose it.
+			r.Get("/ops", func(w http.ResponseWriter, r *http.Request) {
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role != "admin" {
+					http.Error(w, "accès interdit", http.StatusForbidden)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				if opsMonitor == nil {
+					_ = json.NewEncoder(w).Encode(ops.Response{Alerts: []ops.Alert{}})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(opsMonitor.Snapshot())
 			})
 
 			// Stats endpoint — aggregate overview data
