@@ -18,6 +18,7 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/sudoterm"
 	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
+	"github.com/LosFurina/tmuxatlas/pkg/voice"
 )
 
 func validateHubURL(raw string) error {
@@ -103,6 +104,18 @@ func ExecuteAgent(ctx context.Context, c *cli.Command) error {
 		}
 		peerClient.EnableSudoTerminal(runner, audit)
 		logrus.WithField("audit", auditPath).Warn("sudo terminal enabled: the hub's administrators may open an interactive shell as this account for approved requests")
+	}
+	// The agent's recorders hear only its own user's audio server, so the
+	// microphone of a browser viewing these sessions is relayed here.
+	if voice.Enabled(os.Getenv("TMUXATLAS_VOICE")) {
+		mic := voice.New(client.TmuxPath())
+		go func() {
+			if err := mic.Setup(ctx); err != nil {
+				logrus.WithError(err).Warn("voice setup failed")
+			}
+			mic.Run(ctx)
+		}()
+		peerClient.SetVoice(mic)
 	}
 	go peerClient.Run(ctx)
 	logrus.WithFields(logrus.Fields{
