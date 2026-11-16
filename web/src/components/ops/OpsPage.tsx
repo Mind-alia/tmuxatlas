@@ -1,5 +1,6 @@
 import { Alerts, NUM, StatusBadge, Table, toneColor } from '../monitoring/Monitoring'
 import { formatDuration, formatRelative } from '../monitoring/format'
+import { BackupsPanel } from './BackupsPanel'
 import type { OpsContainer, OpsContainers, OpsResponse } from './types'
 import { useOps } from './useOps'
 
@@ -97,7 +98,8 @@ export function OpsView({ data }: { data: OpsResponse }) {
   const items = data.containers.items ?? []
   return (
     <>
-      <Alerts alerts={data.alerts ?? []} okText="Tous les conteneurs tournent normalement." />
+      <Alerts alerts={data.alerts ?? []} okText="Conteneurs et sauvegardes sont en ordre." />
+      {data.backups && <BackupsPanel backups={data.backups} />}
       <section className="mb-6">
         <h2 className="mb-1 text-sm font-medium">Conteneurs</h2>
         <Freshness containers={data.containers} />
@@ -115,7 +117,7 @@ export function OpsPage() {
   const { data, status, failed } = useOps()
   return (
     <main className="flex-1 overflow-y-auto p-4 text-sm sm:p-6">
-      <h1 className="mb-5 text-2xl font-medium">Conteneurs</h1>
+      <h1 className="mb-5 text-2xl font-medium">Conteneurs et sauvegardes</h1>
       {status === 'loading' && <p className="text-xs text-muted-foreground">Chargement…</p>}
       {status === 'forbidden' && (
         <p className="text-xs text-muted-foreground">Cette page est réservée aux administrateurs.</p>

@@ -77,3 +77,38 @@ describe('Onglet Conteneurs', () => {
     expect(onOps).toHaveBeenCalled()
   })
 })
+
+describe('BackupsPanel', () => {
+  afterEach(cleanup)
+  const run = {
+    job: 'db-nightly', run_id: 'r1', result: 'success' as const, started_at: '', finished_at: '', exit_code: 0,
+    local: { ok: true, file: 'db.sql.zst', size: 2048, sha256: 'abc', retention_days: 3, count: 3 },
+    remote: { provider: 'r2', attempted: true, ok: true, verified: true, rclone_exit_code: 0, retention_days: 14, count: 14 },
+  }
+
+  it('affiche la dernière sauvegarde, la copie R2 et la rétention', () => {
+    render(<OpsView data={response({ backups: {
+      state: 'ok', tone: 'ok', current: run, last_success: run, last_success_at: now - 7200,
+      next_expected_by: now + 3600 * 23, local_retention_days: 3, r2_retention_days: 14, r2_ok: true, r2_verified: true,
+    } })} />)
+    const panel = screen.getByRole('region', { name: 'Sauvegardes' })
+    expect(panel).toHaveTextContent('à jour')
+    expect(panel).toHaveTextContent('il y a 2 h')
+    expect(panel).toHaveTextContent('copiée et vérifiée')
+    expect(panel).toHaveTextContent('3 jours · 3 copies')
+    expect(panel).toHaveTextContent('14 jours · 14 copies')
+    expect(panel).toHaveTextContent('db.sql.zst · 2')
+  })
+
+  it('signale une copie R2 en échec', () => {
+    render(<OpsView data={response({ backups: {
+      state: 'r2-failed', tone: 'critical', reason: 'copie locale faite, mais échec à l’étape r2-upload',
+      current: { ...run, result: 'partial', remote: { ...run.remote, ok: false, verified: false } },
+      local_retention_days: 3, r2_retention_days: 14, r2_ok: false, r2_verified: false,
+    } })} />)
+    const panel = screen.getByRole('region', { name: 'Sauvegardes' })
+    expect(panel).toHaveTextContent('copie R2 en échec')
+    expect(panel).toHaveTextContent('r2-upload')
+    expect(panel).toHaveTextContent('jamais')
+  })
+})
