@@ -99,8 +99,8 @@ beforeEach(() => {
         current = { ...current, status: 'approved' }
         return json({ grant: 'g-1', request_id: 'sudo-1', version: 1, expires_at: '' })
       }
-      if (url.endsWith('/review')) {
-        current = { ...current, status: 'delivered' }
+      if (url.endsWith('/done')) {
+        current = { ...current, status: 'done' }
         return json(current)
       }
       return json({ error: 'inconnu' }, 500)
@@ -132,7 +132,7 @@ describe('SudoPanel', () => {
     expect(screen.getByTestId('sudo-command').textContent).toContain(`${hidden.length} caractères · sha256 ${sha256Hex(hidden).slice(0, 12)}`)
   })
 
-  it('approves the exact version, opens a dedicated terminal and reviews the result', async () => {
+  it('approves the exact version, opens a dedicated terminal and reports only done and a note', async () => {
     render(<SudoPanel hostId="host-agents" sessionName="claude" enabled />)
     const approve = await screen.findByRole('button', { name: /Approuver v1/ })
     await waitFor(() => expect(approve).not.toBeDisabled())
@@ -150,13 +150,12 @@ describe('SudoPanel', () => {
     expect(socket.send).toHaveBeenCalledTimes(2)
     expect(window.localStorage.length).toBe(0)
 
-    current = {
-      ...current,
-      status: 'awaiting_review',
-      capture: { version: 1, command: current.command, exit_code: 0, output: 'jq installé\n', output_truncated: false, redactions: 0, duration: 1 },
-    }
+    current = { ...current, status: 'closed', session: { version: 1, duration: 1 } }
     act(() => socket.onclose?.())
-    fireEvent.click(await screen.findByRole('button', { name: 'Code de sortie seul' }))
-    await waitFor(() => expect(calls.find(call => call.url.endsWith('/review'))?.body).toEqual({ decision: 'exit-code', note: '' }))
+    expect(await screen.findByText(/ni la sortie, ni les frappes/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Refusé' })).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Note pour l’agent'), { target: { value: 'jq installé' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Terminé' }))
+    await waitFor(() => expect(calls.find(call => call.url.endsWith('/done'))?.body).toEqual({ note: 'jq installé' }))
   })
 })

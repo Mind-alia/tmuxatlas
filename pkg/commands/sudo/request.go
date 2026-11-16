@@ -28,10 +28,10 @@ import (
 
 // Exit codes, documented in docs/sudo-terminal.md.
 const (
-	exitDelivered = 0
-	exitNotRun    = 1
-	exitUsage     = 2
-	exitPending   = 75 // EX_TEMPFAIL: still waiting, resume with --wait
+	exitDone    = 0
+	exitNotDone = 1
+	exitUsage   = 2
+	exitPending = 75 // EX_TEMPFAIL: still waiting, resume with --wait
 )
 
 type exitError struct {
@@ -125,10 +125,10 @@ func printView(view sudo.AgentView) {
 func finish(view sudo.AgentView) error {
 	printView(view)
 	switch {
-	case view.Status == sudo.StatusDelivered:
+	case view.Status == sudo.StatusDone:
 		return nil
 	case view.Status.Final():
-		return exitError{code: exitNotRun, message: "demande sudo terminée sans exécution livrée : " + string(view.Status)}
+		return exitError{code: exitNotDone, message: "demande sudo non faite : " + string(view.Status)}
 	default:
 		return exitError{code: exitPending, message: fmt.Sprintf(
 			"toujours en attente d'un administrateur ; relance : tmuxatlas sudo-request --wait %s", view.ID)}
@@ -212,7 +212,7 @@ func run(ctx context.Context, c *cli.Command) error {
 		}
 		return exitError{code: exitUsage, message: err.Error()}
 	}
-	fmt.Fprintf(os.Stderr, "Demande sudo %s envoyée : un administrateur doit l'approuver et taper le mot de passe dans TmuxAtlas.\n", view.ID)
+	fmt.Fprintf(os.Stderr, "Demande sudo %s envoyée : un administrateur doit l'approuver et la lancer lui-même dans TmuxAtlas.\n", view.ID)
 	return wait(ctx, client, view.ID, timeout)
 }
 
@@ -222,13 +222,14 @@ func init() {
 		Usage:     "ask a human to run a command with sudo in TmuxAtlas",
 		ArgsUsage: `-- "<command>"`,
 		Description: `For agents without a TTY. The request opens a Sudo panel in the agent's
-TmuxAtlas session: an administrator may edit the command, approves it, types
-the password in an ephemeral terminal and reviews the output before it is
-sent back. The password never reaches the agent.
+TmuxAtlas session: an administrator may edit the command, approves it, and
+gets an interactive terminal with the command typed at the prompt, not run.
+The human runs it, changes it or types others, then marks the request done or
+refused. The agent receives only {id, status, note}: never the output, the
+keystrokes nor the password.
 
-Exit codes: 0 delivered (the command's own code is in the JSON), 1 not run
-(refused, withheld, expired, cancelled, failed), 75 still pending (resume with
---wait <id>), 2 usage or transport error.
+Exit codes: 0 done, 1 refused, expired or cancelled, 75 still pending (resume
+with --wait <id>), 2 usage or transport error.
 
 Example:
   tmuxatlas sudo-request --reason "install jq" -- "apt-get install -y jq"`,

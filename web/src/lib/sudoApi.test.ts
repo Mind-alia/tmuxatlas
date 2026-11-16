@@ -21,7 +21,7 @@ describe('sudo API helpers', () => {
 
   it('keeps one session and lists open requests first', () => {
     const list = [
-      request('old-done', 'delivered', 'h', 's', '2026-11-16T10:00:00Z'),
+      request('old-done', 'done', 'h', 's', '2026-11-16T10:00:00Z'),
       request('other', 'pending', 'h', 'other', '2026-11-16T11:00:00Z'),
       request('open', 'pending', 'h', 's', '2026-11-16T09:00:00Z'),
       request('other-host', 'pending', 'x', 's', '2026-11-16T12:00:00Z'),

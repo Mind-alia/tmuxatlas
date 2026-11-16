@@ -90,6 +90,9 @@ func ExecuteAgent(ctx context.Context, c *cli.Command) error {
 		if err != nil {
 			return err
 		}
+		if _, err := os.Stat(sudoterm.DefaultConfig().Shell); err != nil {
+			return fmt.Errorf("sudo terminal needs %s: %w", sudoterm.DefaultConfig().Shell, err)
+		}
 		auditPath, err := sudoterm.AuditPath()
 		if err != nil {
 			return err
@@ -99,7 +102,7 @@ func ExecuteAgent(ctx context.Context, c *cli.Command) error {
 			return fmt.Errorf("sudo audit log: %w", err)
 		}
 		peerClient.EnableSudoTerminal(runner, audit)
-		logrus.WithField("audit", auditPath).Warn("sudo terminal enabled: the hub's administrators may run approved sudo commands as this account")
+		logrus.WithField("audit", auditPath).Warn("sudo terminal enabled: the hub's administrators may open an interactive shell as this account for approved requests")
 	}
 	go peerClient.Run(ctx)
 	logrus.WithFields(logrus.Fields{

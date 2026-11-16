@@ -1,17 +1,20 @@
 # Terminal sudo
 
 Un agent (Claude Code) n'a pas de TTY et ne peut pas taper de mot de passe. Quand
-il a besoin de `sudo`, il **demande** : la demande apparaît dans le cockpit de sa
-session, un administrateur peut la modifier, l'approuver, taper lui-même le mot
-de passe dans un terminal éphémère, puis relire ce qui sera renvoyé à l'agent.
+il a besoin de `sudo`, il **propose** une commande : la demande apparaît dans le
+cockpit de sa session ; un administrateur peut la modifier, l'approuver, et
+obtient alors un **terminal interactif** sous son propre compte, où la commande
+proposée attend à l'invite **sans être lancée**. L'humain la relit, la lance, la
+modifie ou tape d'autres commandes, donne lui-même son mot de passe à `sudo`,
+puis indique « Terminé » ou « Refusé ».
 
 Deux garanties :
 
-1. **Rien ne s'exécute sans l'humain.** Seule une version exacte de la commande,
-   approuvée par un administrateur, est lancée, et `sudo` exige le mot de passe
-   tapé en direct (`sudo -k`, refus du `NOPASSWD`).
-2. **L'agent ne voit jamais le mot de passe.** Il ne reçoit que le résultat que
-   l'humain a relu, capturé par des pipes où le mot de passe ne passe pas.
+1. **Rien ne s'exécute sans l'humain.** C'est lui qui appuie sur Entrée dans un
+   shell qu'il contrôle ; la commande proposée n'est qu'un texte pré-rempli.
+2. **L'agent ne voit ni le mot de passe, ni la sortie, ni les frappes.** Il ne
+   reçoit que `{id, status, note}` : `done`, `refused`, `expired` ou
+   `cancelled`, et la note que l'humain a tapée.
 
 ## Topologie visée
 
@@ -29,7 +32,7 @@ en uid 0).
 Claude (agents) ──CLI──▶ socket local du peer agents ──WS /ws/peer──▶ hub (transcriptflow)
                                                                        │  store pkg/sudo
 navigateur admin ◀──/api/sudo, /ws/sudo──▶ hub ──sudo-open──▶ peer sudo (compte admin)
-                                              ◀─/ws/peer-pty──  PTY : sudo -k -- sh -c "<cmd>"
+                                              ◀─/ws/peer-pty──  PTY : bash --noprofile --norc -i
 ```
 
 ## Cycle de vie (`pkg/sudo`)
@@ -38,13 +41,15 @@ navigateur admin ◀──/api/sudo, /ws/sudo──▶ hub ──sudo-open──
 pending ──edit (v+1)──▶ pending
 pending ──approve(version exacte, peer)──▶ approved  (grant à usage unique, 60 s)
 approved ──grant non utilisé──▶ pending
-approved ──redeem (même admin)──▶ running
-running ──capture──▶ awaiting_review
-awaiting_review ──Envoyer / Code de sortie seul──▶ delivered
-awaiting_review ──Rien──▶ withheld
-awaiting_review ──Modifier et relancer (v+1)──▶ pending   (nouvelle approbation)
-Autres fins : refused, cancelled (par l'agent, avant l'exécution), expired, failed
+approved ──redeem (même admin)──▶ running   (terminal ouvert, commande pré-remplie)
+running ──terminal impossible à ouvrir──▶ pending (avec la raison)
+running ──fin du shell, inactivité, durée max──▶ closed
+running | closed ──Terminé──▶ done
+pending | approved | running | closed ──Refusé──▶ refused
+Autres fins : cancelled (par l'agent, avant l'ouverture), expired
 ```
+
+Une décision prise pendant que le terminal est ouvert le ferme.
 
 Durées (défauts, `sudo.DefaultLimits`) :
 
@@ -53,12 +58,14 @@ Durées (défauts, `sudo.DefaultLimits`) :
 | Demande en attente / approuvée | 15 min après création, puis `expired` |
 | Grant (ouvrir le terminal) | 60 s, puis retour en `pending` |
 | Terminal (côté peer) | 15 min au total, 5 min sans frappe ni sortie |
-| Terminal (plafond vu du hub) | 16 min, puis `failed` |
-| Relecture | 30 min, puis `withheld` (rien ne part) |
-| Sortie capturée | 64 Kio, puis tronquée |
+| Terminal (plafond vu du hub) | 16 min, puis `closed` |
+| Décision après fermeture | 30 min, puis `expired` |
 
-Une commande est sur **une seule ligne** : un saut de ligne permettrait de cacher
-une seconde commande sous celle qu'on lit. Les séquences de contrôle sont refusées.
+La commande proposée tient sur **une seule ligne** d'au plus 1000 caractères,
+sans caractère de contrôle (C0, C1, tabulation comprise), de format (bidi,
+largeur nulle, BOM), de séparateur de ligne ou de paragraphe, ni plus de deux
+blancs à la suite : elle est tapée telle quelle dans readline, aucune touche
+spéciale ne peut donc la lancer ou la réécrire. La raison suit les mêmes règles.
 
 ## Côté agent
 
@@ -71,11 +78,10 @@ tmuxatlas sudo-request --reason "installer jq" -- "apt-get install -y jq"
 - Long-poll : attend 8 min par défaut (`--timeout`), sous la limite de 10 min du
   Bash tool. Au-delà : code de sortie **75** et
   `tmuxatlas sudo-request --wait <id>` pour reprendre.
-- Codes de sortie : 0 = résultat livré (le code de la commande est dans le JSON),
-  1 = refusé, retenu, expiré, annulé ou échoué, 75 = toujours en attente,
-  2 = erreur d'usage ou de transport.
-- Sortie : `{id, status, command_requested, command_executed, modified,
-  exit_code, output, output_truncated, note}`.
+- Codes de sortie : 0 = `done`, 1 = `refused`, `expired` ou `cancelled`,
+  75 = toujours en attente, 2 = erreur d'usage ou de transport.
+- Sortie : `{id, status, note}`. Jamais la sortie de la commande : l'agent
+  vérifie lui-même l'effet (`which jq`, `systemctl is-active …`).
 - Ctrl-C (ou `--cancel <id>`) annule une demande qui n'a pas encore démarré.
 
 Seuls les hôtes listés dans `TMUXATLAS_SUDO_REQUESTERS` (ou
@@ -119,12 +125,11 @@ CSRF pour les mutations, plus le contrôle « est admin ») :
 | Route | Rôle |
 |---|---|
 | `GET /api/sudo/requests` | Liste |
-| `GET /api/sudo/requests/{id}` | Détail, avec la capture si elle attend une relecture |
+| `GET /api/sudo/requests/{id}` | Détail (avec la durée et la raison de fermeture du terminal) |
 | `POST /api/sudo/requests/{id}/edit` | `{version, command}` |
-| `POST /api/sudo/requests/{id}/refuse` | `{note}` |
 | `POST /api/sudo/requests/{id}/approve` | `{version, peer}` → `{grant, expires_at}` |
-| `POST /api/sudo/requests/{id}/review` | `{decision: send, exit-code, nothing, note}` |
-| `POST /api/sudo/requests/{id}/rerun` | `{version, command}` |
+| `POST /api/sudo/requests/{id}/done` | `{note}`, terminal ouvert ou fermé |
+| `POST /api/sudo/requests/{id}/refuse` | `{note}`, à tout moment avant une décision |
 | `GET /api/sudo/peers` | Peers sudo disponibles |
 | `GET /ws/sudo` | Terminal ; le grant voyage dans la 1re trame, jamais dans l'URL |
 
@@ -140,12 +145,14 @@ Le panneau Sudo s'ouvre sous le cockpit (`TerminalCockpit`) de la session
 concernée, pour les administrateurs (il interroge `/api/sudo` toutes les 3 s et
 se masque si le serveur refuse) :
 
-1. **Demande** : raison, origine, commande éditable (versionnée, l'original reste
+1. **Demande** : empreinte du demandeur (établie par le hub), raison, origine
+   déclarée, commande entière dans un bloc qui passe à la ligne avec sa
+   longueur et son sha256 court, champ d'édition (versionnée, l'original reste
    affiché), choix du peer sudo, Approuver / Refuser.
 2. **Terminal** : xterm dédié, sans brouillons, sans `localStorage`, sans
    composeur mobile. Un bandeau signale la saisie masquée.
-3. **Relecture** : sortie caviardée et code de sortie. Envoyer / Code de sortie
-   seul / Rien, ou Modifier et relancer.
+3. **Issue** : « Terminé » ou « Refusé », avec une note optionnelle. C'est tout
+   ce que l'agent recevra.
 
 ## Côté peer sudo (`pkg/sudoterm`)
 
@@ -160,33 +167,34 @@ différent de l'hôte d'origine de la demande. Sans cet
 
 Pour chaque ouverture :
 
-1. Contrôle `NOPASSWD` : `sudo -k` puis `sudo -n true` sans terminal. Si ça
-   réussit, aucun mot de passe ne serait demandé : **refus**.
-2. PTY éphémère, hors tmux, environnement assaini (`HISTFILE=/dev/null`, pas de
-   `SSH_AUTH_SOCK`, `PATH` fixe), nouvelle session (`setsid`).
-3. `sudo -k -p "[sudo] mot de passe de %p : " -- /bin/sh -c "<cmd>"` :
-   - stdin et le terminal de contrôle sont le PTY : `sudo` lit le mot de passe
-     sur `/dev/tty` ;
-   - **stdout et stderr sont des pipes**, recopiés à l'écran et dans une capture
-     de 64 Kio. Le mot de passe ne passe jamais par ces pipes.
-4. Les frappes de l'humain sont gardées en mémoire le temps de la commande, puis
-   chaque ligne de 4 caractères ou plus est **caviardée** de la capture (au cas
-   où un programme l'aurait recopiée), et le tampon est effacé.
-5. Avant que `sudo` n'affiche son invite, le terminal imprime la **commande
-   exacte**, sa longueur et les 12 premiers caractères de son sha256 : les mêmes
-   que dans le panneau. On ne tape le mot de passe qu'après avoir vérifié
-   qu'ils correspondent.
-6. L'état de l'écho du PTY est surveillé : quand il est coupé, le navigateur
-   affiche « saisie masquée ».
-7. Fin : kill du groupe de processus, puis `sudo -k`.
-8. La capture part vers le hub en `awaiting_review` : l'agent ne reçoit rien
-   tant que l'humain n'a pas relu.
+1. PTY éphémère, hors tmux, nouvelle session (`setsid`) ; environnement
+   assaini (`PATH` fixe, `HISTFILE=/dev/null`, pas de `SSH_AUTH_SOCK`), shell
+   `bash --noprofile --norc -i` sous le compte de l'admin.
+2. Avant le shell, le terminal imprime :
+   `# Proposé par <empreinte du demandeur> : <commande>`, puis sa longueur et
+   les 12 premiers caractères de son sha256, les mêmes que dans le panneau.
+3. Dès que readline lit la ligne, la commande est **tapée à l'invite sans
+   Entrée** : `sudo <commande>` (ou la commande telle quelle si elle commence
+   déjà par `sudo`). Attention : dans `sudo a && b`, seul `a` passe par sudo ;
+   c'est à l'humain de relire et d'ajuster.
+4. L'humain fait ce qu'il veut dans ce shell ; `sudo` lui demande son mot de
+   passe normalement. Pas de `sudo -k` imposé ni de refus du `NOPASSWD` : c'est
+   l'humain qui tape.
+5. L'état de l'écho du PTY est surveillé : quand il est coupé (invite de mot de
+   passe), le navigateur affiche « saisie masquée ».
+6. Fin : `exit`, fermeture de l'onglet, décision prise dans le panneau,
+   15 min au total ou 5 min sans activité. Le groupe de processus du shell est
+   tué, ainsi que tout processus resté dans sa session (tâches de fond).
+7. Rien n'est capturé : la sortie va à l'écran de l'admin seulement, les
+   frappes au PTY seulement. Le hub n'apprend que la durée et la raison de la
+   fermeture.
 
 Audit faisant foi : `$XDG_STATE_HOME/tmuxatlas/sudo-audit.jsonl` (défaut
 `~/.local/state/tmuxatlas/`, mode 0600) chez le compte de l'admin. Une ligne par
-ouverture, refus ou fin : demande, version, commande et son empreinte sha256,
-approbateur, origine, code de sortie, durée, taille de sortie. **Jamais les
-frappes ni la sortie.** `tmuxatlas sudo-audit` l'affiche. Complément : journald et
+ouverture, refus ou fermeture : demande, version, commande **proposée** et son
+empreinte sha256, demandeur, approbateur, origine, code de sortie du shell,
+durée. **Jamais les frappes ni la sortie**, donc pas non plus les commandes
+réellement tapées : pour celles passées par sudo, voir `auth.log`. `tmuxatlas sudo-audit` l'affiche. Complément : journald et
 `auth.log` de sudo.
 
 ## Frappes vers le terminal d'un agent
@@ -223,16 +231,18 @@ sont toujours celles du peer `agents`.
 | Menace | Parade |
 |---|---|
 | Agent qui lance `sudo` lui-même | `agents` n'a aucun droit sudo. Le hook n'est qu'un rappel. |
-| Agent qui lit le mot de passe | Il n'est tapé que dans le PTY du peer sudo (autre compte Unix) ; capture par pipes, caviardage, relecture. Le hub et le peer ne journalisent jamais de payload PTY. |
-| Agent qui modifie la commande après approbation | Approbation liée à la version ; plus d'édition hors `pending` ; le peer exécute la commande reçue du hub pour cette version. |
+| Agent qui lit le mot de passe | Il n'est tapé que dans le PTY du peer sudo (autre compte Unix). Rien de ce terminal ne revient à l'agent : ni sortie, ni frappes. Le hub et le peer ne journalisent jamais de payload PTY. |
+| Agent qui modifie la commande après approbation | Approbation liée à la version ; plus d'édition hors `pending` ; le peer pré-remplit la commande reçue du hub pour cette version, et rien ne part sans Entrée. |
+| Commande pré-remplie qui se lance seule | Aucun caractère de contrôle accepté : rien dans le texte tapé ne peut valoir Entrée ou une touche d'édition. |
 | Agent qui se fait passer pour le peer sudo | Épinglage `TMUXATLAS_SUDO_PEERS` par empreinte ; refus si le peer sudo est l'hôte d'origine. |
 | Agent qui imite une invite sudo dans son pane | Bandeau permanent « Hôte non fiable » sur tout hôte autre que le hub et les peers sudo épinglés. En aide seulement : blocage des frappes quand l'écho est coupé, contournable par un pane en mode brut. |
 | Commande trompeuse (blancs, bidi, caractères invisibles) | Le hub refuse les catégories Unicode Cc, Cf, Zl, Zp, plus de 2 blancs à la suite et plus de 1000 caractères ; le panneau montre la commande entière avec longueur et sha256 ; le terminal sudo la réimprime avant l'invite. |
 | Rejeu d'une approbation | Grant à usage unique, 60 s, lié à l'admin qui l'a obtenu, transmis dans la 1re trame WebSocket (pas dans l'URL ni les journaux). |
+| Demandes en rafale ou d'origine maquillée | Seuls les hôtes de `TMUXATLAS_SUDO_REQUESTERS` déposent ; 4 ouvertes et 12 par 10 min par hôte ; l'empreinte du demandeur est affichée. |
 | Page tierce qui pilote l'API | `Origin` stricte, CSRF, cookie `SameSite=Strict`. |
-| Cookie admin volé | Il faut encore le mot de passe sudo de l'admin, tapé en direct. Voir « Reste à faire ». |
-| Sortie qui contient un secret | Relecture obligatoire : Envoyer / Code seul / Rien ; sans relecture, rien ne part. |
-| `NOPASSWD` sur le compte admin | Refus d'ouvrir le terminal. |
+| Cookie admin volé | Il ouvre un shell sous le compte de l'admin, limité à 15 min ; `sudo` y demande encore le mot de passe, sauf `NOPASSWD`, désormais accepté. Voir « Reste à faire ». |
+| Sortie qui contient un secret | La sortie ne quitte jamais le navigateur de l'admin. |
+| `NOPASSWD` sur le compte admin | Accepté : c'est l'humain qui tape les commandes. Le shell reste sous son compte, limité en durée. |
 
 **Risque résiduel accepté** : le mot de passe transite en clair dans la mémoire
 du hub (relais des octets du PTY), qui tourne sous `transcriptflow`, lui-même
@@ -243,15 +253,5 @@ lire la mémoire du hub, ni remplacer son binaire, ni modifier sa configuration.
 
 ## Reste à faire
 
-- **Ré-authentification par passkey liée à la commande** (challenge =
-  sha256(id ‖ version ‖ commande ‖ peer ‖ nonce), vérifié par le peer sudo contre
-  des clés épinglées chez l'admin). Non faite : le mode comptes du fork n'a pas
-  de passkeys par compte, et le mode passkey ne sait pas encore produire un
-  challenge choisi. À faire après `feat/comptes-roles`.
-- Shell interactif après la commande (aujourd'hui : seulement la commande,
-  modifiable et relançable).
-- Mode `--tty` sans capture (pour `apt` en plein écran…), avec retour réduit au
-  code de sortie.
-- Choix de l'admin destinataire quand il y en a plusieurs (aujourd'hui : tous
-  les admins voient la demande, le premier qui approuve la prend).
-- Persistance des demandes au redémarrage du hub (aujourd'hui : en mémoire).
+- **Ré-authentification par passkey liée à la demande** avant d'ouvrir le
+  terminal. Non faite : le mode comptes du fork n'a pas de passkeys par compte.
