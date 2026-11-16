@@ -339,3 +339,62 @@ func TestHandleStreamReportsSetupFailure(t *testing.T) {
 		t.Errorf("code = %d", recorder.Code)
 	}
 }
+
+// serveConnPair runs mic.ServeConn on the server end of a WebSocket, as an
+// agent does on the channel it opens to the hub, and returns the hub's end.
+func serveConnPair(t *testing.T, mic *Mic, id string) *websocket.Conn {
+	t.Helper()
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err == nil {
+			mic.ServeConn(conn, id)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return dial(t, server)
+}
+
+func TestServeConn(t *testing.T) {
+	t.Run("plays relayed frames into the tab microphone", func(t *testing.T) {
+		mic := newTestMic(t, &fakePulse{running: true})
+		sink := newFakeSink()
+		mic.start = func(string) (playback, error) { return sink, nil }
+		conn := serveConnPair(t, mic, "tab-0123456789")
+		sendAndWait(t, conn, sink, []byte{5, 6, 7, 8})
+		conn.Close()
+		waitClosed(t, sink)
+	})
+
+	t.Run("reports a setup failure as the close reason", func(t *testing.T) {
+		mic := newTestMic(t, &fakePulse{fail: "pulseaudio --start"})
+		conn := serveConnPair(t, mic, "tab-0123456789")
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, _, err := conn.ReadMessage()
+		var closeErr *websocket.CloseError
+		if !errors.As(err, &closeErr) || closeErr.Code != websocket.CloseInternalServerErr || !strings.Contains(closeErr.Text, "start PulseAudio") {
+			t.Fatalf("close = %v", err)
+		}
+	})
+
+	t.Run("rejects an invalid microphone id", func(t *testing.T) {
+		mic := newTestMic(t, &fakePulse{running: true})
+		conn := serveConnPair(t, mic, "bad id")
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, _, err := conn.ReadMessage()
+		var closeErr *websocket.CloseError
+		if !errors.As(err, &closeErr) || closeErr.Code != websocket.ClosePolicyViolation {
+			t.Fatalf("close = %v", err)
+		}
+	})
+}
+
+func TestTruncateReason(t *testing.T) {
+	long := strings.Repeat("x", 200)
+	if got := truncateReason(long); len(got) > 123 || !strings.HasSuffix(got, "...") {
+		t.Fatalf("truncated reason = %q", got)
+	}
+	if truncateReason("short") != "short" {
+		t.Fatal("short reason changed")
+	}
+}
