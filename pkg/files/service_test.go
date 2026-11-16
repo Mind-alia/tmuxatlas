@@ -264,11 +264,11 @@ func TestHubRefusesReadWrite(t *testing.T) {
 
 func TestDenyMatching(t *testing.T) {
 	for p, want := range map[string]bool{
+		".ssh": true, "a/.ssh/x": true, ".config/tmuxatlas/x": true, ".config/other": false,
+		"app/.env": true, "app/.envrc": true, "cert.pem": true, "environment.txt": false, ".": false,
 		".config/rclone/rclone.conf": true, ".claude/.credentials.json": true, ".bash_history": true,
 		".config/gh/hosts.yml": true, ".npmrc": true, ".local/share/tmuxatlas/x": true, ".local/state/x": true,
 		".local/share/docs": false,
-		".ssh": true, "a/.ssh/x": true, ".config/tmuxatlas/x": true, ".config/other": false,
-		"app/.env": true, "app/.envrc": true, "cert.pem": true, "environment.txt": false, ".": false,
 	} {
 		if got := denied(p, DefaultDeny); got != want {
 			t.Errorf("denied(%q)=%v", p, got)

@@ -42,12 +42,12 @@ type Audience interface {
 // Sender listens for tool events and sends push notifications
 type Sender struct {
 	audience Audience
-	keys    *VAPIDKeys
-	store   *Store
-	tracker *toolevents.Tracker
-	prefs   PreferenceSource
-	logger  *logrus.Entry
-	send    func([]byte, *wp.Subscription, *wp.Options) (*http.Response, error)
+	keys     *VAPIDKeys
+	store    *Store
+	tracker  *toolevents.Tracker
+	prefs    PreferenceSource
+	logger   *logrus.Entry
+	send     func([]byte, *wp.Subscription, *wp.Options) (*http.Response, error)
 }
 
 // NewSender creates a push notification sender
