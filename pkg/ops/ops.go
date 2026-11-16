@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -32,6 +33,7 @@ type Response struct {
 	Dir        string         `json:"dir,omitempty"`
 	CheckedAt  int64          `json:"checked_at,omitempty"`
 	Containers ContainersView `json:"containers"`
+	Backups    BackupView     `json:"backups"`
 	Alerts     []Alert        `json:"alerts"`
 }
 
@@ -45,6 +47,9 @@ type Monitor struct {
 	tracker    *containerTracker
 	containers ContainersSnapshot
 	contErr    error
+	backup     *BackupStatus
+	lastOK     *BackupStatus
+	backupErr  error
 	checkedAt  time.Time
 }
 
@@ -82,9 +87,32 @@ func (m *Monitor) Refresh() {
 	if err == nil && snap.Schema != ContainersSchema {
 		err = fmt.Errorf("%s : schéma %d non pris en charge (attendu %d)", ContainersFile, snap.Schema, ContainersSchema)
 	}
+	backup, backupErr := readBackup(m.src, BackupStatusFile)
+	lastOK, lastErr := readBackup(m.src, LastSuccessFile)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.checkedAt = now
+	// A missing file clears what we knew; any other error keeps the last good
+	// read and is reported.
+	keep := func(dst **BackupStatus, v *BackupStatus, err error) error {
+		switch {
+		case err == nil:
+			*dst = v
+		case errors.Is(err, ErrMissing):
+			*dst = nil
+		default:
+			return err
+		}
+		return nil
+	}
+	bErr := keep(&m.backup, backup, backupErr)
+	if lErr := keep(&m.lastOK, lastOK, lastErr); bErr == nil {
+		bErr = lErr
+	}
+	if bErr != nil && (m.backupErr == nil || bErr.Error() != m.backupErr.Error()) {
+		m.logger.WithError(bErr).Warn("lecture du statut des sauvegardes")
+	}
+	m.backupErr = bErr
 	if err != nil {
 		if m.contErr == nil || err.Error() != m.contErr.Error() {
 			m.logger.WithError(err).Warn("lecture du statut des conteneurs")
@@ -104,7 +132,11 @@ func (m *Monitor) Snapshot() Response {
 	now := m.now()
 	resp := Response{Configured: true, Dir: m.src.Dir(), CheckedAt: m.checkedAt.Unix()}
 	resp.Containers = m.containersView(now)
-	resp.Alerts = containerAlerts(resp.Containers, m.src.Dir())
+	resp.Backups = evaluateBackups(m.backup, m.lastOK, m.backupErr, now)
+	resp.Alerts = append(containerAlerts(resp.Containers, m.src.Dir()), backupAlerts(resp.Backups, m.src.Dir())...)
+	if resp.Alerts == nil {
+		resp.Alerts = []Alert{}
+	}
 	sort.SliceStable(resp.Alerts, func(i, j int) bool {
 		return severityRank[resp.Alerts[i].Severity] < severityRank[resp.Alerts[j].Severity]
 	})
