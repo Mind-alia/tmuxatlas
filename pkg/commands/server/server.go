@@ -203,6 +203,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 	// Initialize web push notifications
 	var pushKeys *webpush.VAPIDKeys
 	var pushStore *webpush.Store
+	var pushSender *webpush.Sender
 	vapidKeys, err := webpush.LoadOrCreateKeys()
 	if err != nil {
 		logrus.WithError(err).Warn("failed to load VAPID keys, push notifications will be unavailable")
@@ -212,7 +213,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		if err != nil {
 			return fmt.Errorf("failed to initialize push subscription store: %w", err)
 		}
-		pushSender := webpush.NewSender(pushKeys, pushStore, tracker, prefStore)
+		pushSender = webpush.NewSender(pushKeys, pushStore, tracker, prefStore)
 		go pushSender.Run(ctx)
 	}
 
@@ -334,6 +335,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		ActivityTracker: actTracker,
 		PushKeys:        pushKeys,
 		PushStore:       pushStore,
+		PushSender:      pushSender,
 		PrefStore:       prefStore,
 		AuthEnabled:     authEnabled,
 		AccountsAuth:    accountAuth,
