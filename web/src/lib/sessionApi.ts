@@ -26,7 +26,7 @@ export interface ProjectDirectory {
   path: string
 }
 
-export type NewSessionAgent = 'claude' | 'codex' | 'opencode' | 'copilot'
+export type NewSessionAgent = 'claude' | 'codex' | 'agy' | 'opencode' | 'copilot'
 
 /** Carries the HTTP status so callers can stop polling a host that lacks the feature (501). */
 export class SessionApiError extends Error {

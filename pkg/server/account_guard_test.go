@@ -114,6 +114,9 @@ func TestAnyAccountCanUseAnySession(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	t.Setenv("TMUX_TMPDIR", dir)
+	// TMUX takes precedence over TMUX_TMPDIR: never touch the caller's server.
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
 	client, err := tmux.NewClient()
 	if err != nil {
 		t.Fatal(err)

@@ -32,6 +32,7 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/httpguard"
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
 	"github.com/LosFurina/tmuxatlas/pkg/ingress"
+	"github.com/LosFurina/tmuxatlas/pkg/loops"
 	"github.com/LosFurina/tmuxatlas/pkg/monitor"
 	"github.com/LosFurina/tmuxatlas/pkg/paths"
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
@@ -359,6 +360,28 @@ func Run(ctx context.Context, opts *Options) error {
 	if files.Enabled(os.Getenv("TMUXATLAS_FILES")) {
 		fileExplorer = files.New()
 	}
+	var loopsMgr *loops.Manager
+	var loopsHandler *loops.Handler
+	if loops.Enabled(os.Getenv("TMUXATLAS_LOOPS")) {
+		if dataDir, dirErr := paths.DataDir(); dirErr == nil {
+			localHostID := ""
+			if opts.PeerMgr != nil {
+				localHostID = opts.PeerMgr.LocalID()
+			}
+			if mgr, mgrErr := loops.NewManager(filepath.Join(dataDir, "loops"), opts.Client, loops.Options{
+				LocalHostID: localHostID,
+				OnSessionCreated: func() {
+					refreshLocalSessionState(opts, localHostID)
+				},
+			}); mgrErr != nil {
+				logrus.WithError(mgrErr).Warn("loops unavailable")
+			} else {
+				loopsMgr = mgr
+				loopsHandler = loops.NewHandler(mgr)
+				defer loopsMgr.Shutdown()
+			}
+		}
+	}
 	publicRouter.Use(fileBodyLimit(fileExplorer))
 	accountPolicy := newAccountPolicy(opts)
 	if actionRouter != nil {
@@ -627,6 +650,26 @@ func Run(ctx context.Context, opts *Options) error {
 				smallFileJSON.Post("/files/create", fileExplorer.Create)
 				smallFileJSON.Post("/files/rename", fileExplorer.Rename)
 				smallFileJSON.Post("/files/delete", fileExplorer.Delete)
+			}
+
+			// Improvement loops & quick chats (claude, codex, agy)
+			if loopsHandler != nil {
+				loopMutations := mutations
+				if opts.AccountsAuth == nil && !opts.AuthEnabled {
+					loopMutations = r.With(originMiddleware)
+				}
+				r.Get("/loops", loopsHandler.List)
+				r.Get("/loops/meta", loopsHandler.Meta)
+				r.Get("/loops/logs", loopsHandler.Logs)
+				loopJSON := loopMutations.With(httpguard.BodyReadDeadline(15*time.Second), httpguard.JSONBody(64<<10))
+				loopJSON.Post("/loops/create", loopsHandler.Create)
+				loopJSON.Post("/loops/update", loopsHandler.Update)
+				loopJSON.Post("/loops/delete", loopsHandler.Delete)
+				loopJSON.Post("/loops/start", loopsHandler.Start)
+				loopJSON.Post("/loops/pause", loopsHandler.Pause)
+				loopJSON.Post("/loops/stop", loopsHandler.Stop)
+				loopJSON.Post("/loops/worker", loopsHandler.WorkerAction)
+				loopJSON.Post("/loops/chat", loopsHandler.Chat)
 			}
 
 			// Voice status — whether the browser microphone can be used on this host

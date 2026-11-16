@@ -9,6 +9,7 @@ export type CommandId =
   | 'navigation.settings'
   | 'navigation.monitoring'
   | 'navigation.wall'
+  | 'navigation.loops'
   | 'navigation.files'
   | 'navigation.admin'
   | 'session.next'
@@ -100,6 +101,14 @@ const definitions: readonly CommandDefinition[] = [
   {
     id: 'navigation.wall',
     label: 'Mur',
+    category: 'Navigation',
+    scope: 'workspace',
+    focusAfterRun: 'none',
+    enablement: always,
+  },
+  {
+    id: 'navigation.loops',
+    label: 'Boucles',
     category: 'Navigation',
     scope: 'workspace',
     focusAfterRun: 'none',

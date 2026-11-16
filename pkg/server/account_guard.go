@@ -31,6 +31,11 @@ var accountUserRoutes = map[string]bool{
 	"GET /api/files/archive": true, "GET /api/files/pane-dir": true, "PUT /api/files/content": true,
 	"POST /api/files/upload": true, "POST /api/files/mkdir": true, "POST /api/files/create": true,
 	"POST /api/files/rename": true, "POST /api/files/delete": true,
+	// Improvement loops & quick chats (claude, codex, agy)
+	"GET /api/loops": true, "GET /api/loops/meta": true, "GET /api/loops/logs": true,
+	"POST /api/loops/create": true, "POST /api/loops/update": true, "POST /api/loops/delete": true,
+	"POST /api/loops/start": true, "POST /api/loops/pause": true, "POST /api/loops/stop": true,
+	"POST /api/loops/worker": true, "POST /api/loops/chat": true,
 }
 
 // Routes outside the user allow-list are recorded explicitly so a router walk

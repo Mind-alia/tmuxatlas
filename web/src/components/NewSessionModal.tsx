@@ -11,8 +11,8 @@ interface NewSessionModalProps {
   onClose: () => void
 }
 
-const agents = ['', 'claude', 'codex', 'opencode', 'copilot'] as const
-const agentLabels = ['Aucun', 'Claude', 'Codex', 'OpenCode', 'Copilot']
+const agents = ['', 'claude', 'codex', 'agy', 'opencode', 'copilot'] as const
+const agentLabels = ['Aucun', 'Claude', 'Codex', 'AGY', 'OpenCode', 'Copilot']
 
 export function NewSessionModal({ hosts, onCreateSession, onClose }: NewSessionModalProps) {
   const hostLabel = useHostLabel()

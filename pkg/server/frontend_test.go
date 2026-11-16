@@ -148,5 +148,8 @@ func TestFrontendHandlerServesShellForSPAPaths(t *testing.T) {
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "TmuxAtlas test shell") {
 			t.Fatalf("%s: status=%d body=%q", requestPath, response.Code, response.Body.String())
 		}
+		if got := response.Header().Get("Cache-Control"); got != "no-cache" {
+			t.Fatalf("%s: Cache-Control=%q, want no-cache", requestPath, got)
+		}
 	}
 }

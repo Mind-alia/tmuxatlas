@@ -46,6 +46,9 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	t.Setenv("TMUX_TMPDIR", dir)
+	// TMUX takes precedence over TMUX_TMPDIR: never touch the caller's server.
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
 	t.Setenv("TMUXATLAS_MONITOR", "off")
 	client, err := tmux.NewClient()
 	if err != nil {

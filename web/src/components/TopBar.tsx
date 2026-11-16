@@ -19,6 +19,7 @@ interface TopBarProps {
   onOverview: () => void
   onMonitoring: () => void
   onWall: () => void
+  onLoops?: () => void
   onFiles?: () => void
   onAdmin?: () => void
   onOpenPalette: () => void
@@ -55,6 +56,7 @@ export function TopBar({
   onOverview,
   onMonitoring,
   onWall,
+  onLoops,
   onFiles,
   onAdmin,
   onOpenPalette,
@@ -106,6 +108,7 @@ export function TopBar({
   const navigation: Array<readonly [string, string, () => void]> = [
     ['overview', 'Vue d’ensemble', onOverview],
     ['wall', 'Mur', onWall],
+    ...(onLoops ? ([['loops', 'Boucles', onLoops]] as const) : []),
     ['monitoring', 'Monitoring', onMonitoring] as const,
     ...(onFiles ? ([['files', 'Fichiers', onFiles]] as const) : []),
     ...(role === 'admin' && onAdmin ? ([['admin', 'Administration', onAdmin]] as const) : []),
