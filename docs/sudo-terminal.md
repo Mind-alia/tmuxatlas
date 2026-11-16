@@ -78,6 +78,15 @@ tmuxatlas sudo-request --reason "installer jq" -- "apt-get install -y jq"
   exit_code, output, output_truncated, note}`.
 - Ctrl-C (ou `--cancel <id>`) annule une demande qui n'a pas encore démarré.
 
+Seuls les hôtes listés dans `TMUXATLAS_SUDO_REQUESTERS` (ou
+`--sudo-requesters`) peuvent déposer une demande : des **empreintes** séparées
+par des virgules. Liste vide = toute demande est refusée (`forbidden`), y
+compris celles des agents qui tournent sur l'hôte du hub (il faut alors y mettre
+l'empreinte du hub). Chaque hôte a au plus 4 demandes ouvertes et 12 demandes
+par tranche de 10 minutes, annulées comprises ; la file entière est plafonnée à
+32. Le panneau affiche l'empreinte du demandeur, seule information établie par
+le hub.
+
 Le rattachement à la conversation reprend `TMUX_PANE` (session, fenêtre, pane),
 le `cwd`, le pid et, si Claude l'exporte, `CLAUDE_SESSION_ID`. Ces champs sont
 déclarés par l'agent : l'interface les montre comme tels. Seul l'hôte d'origine

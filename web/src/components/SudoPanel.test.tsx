@@ -128,6 +128,7 @@ describe('SudoPanel', () => {
     expect(pre.tagName).toBe('PRE')
     expect(pre.textContent).toBe(hidden)
     expect(pre.className).toContain('whitespace-pre-wrap')
+    expect(screen.getByTestId('sudo-requester').textContent).toBe('host-agents')
     expect(screen.getByTestId('sudo-command').textContent).toContain(`${hidden.length} caractères · sha256 ${sha256Hex(hidden).slice(0, 12)}`)
   })
 

@@ -72,6 +72,9 @@ type Options struct {
 	// SudoPeers pins the fingerprints of the peers allowed to open sudo
 	// terminals (TMUXATLAS_SUDO_PEERS).
 	SudoPeers string
+	// SudoRequesters lists the fingerprints of the hosts allowed to file sudo
+	// requests (TMUXATLAS_SUDO_REQUESTERS). Empty refuses every request.
+	SudoRequesters string
 	LocalOnly bool
 	// GuestLocalHost allows granting the hub's own host to a guest. Leave it
 	// off when the hub runs under an account that guests must not reach, such

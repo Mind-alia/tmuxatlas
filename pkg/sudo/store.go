@@ -19,16 +19,22 @@ type Limits struct {
 	RunTTL       time.Duration // hard ceiling for a running terminal, seen from the hub
 	ReviewTTL    time.Duration // unreviewed output is withheld after this
 	Retention    time.Duration // final requests are forgotten after this
-	MaxPerHost   int
+	MaxPerHost   int // open requests per host
 	MaxOpen      int
 	MaxRevisions int
+	// CreateWindow and MaxCreatesPerWindow bound how many requests one host
+	// may file, cancelled ones included, so a host cannot flood the panel
+	// and the notifications by filing and cancelling in a loop.
+	CreateWindow        time.Duration
+	MaxCreatesPerWindow int
 }
 
 func DefaultLimits() Limits {
 	return Limits{
 		TTL: 15 * time.Minute, GrantTTL: 60 * time.Second, RunTTL: 16 * time.Minute,
 		ReviewTTL: 30 * time.Minute, Retention: 30 * time.Minute,
-		MaxPerHost: 8, MaxOpen: 32, MaxRevisions: 32,
+		MaxPerHost: 4, MaxOpen: 32, MaxRevisions: 32,
+		CreateWindow: 10 * time.Minute, MaxCreatesPerWindow: 12,
 	}
 }
 
@@ -67,6 +73,7 @@ type Store struct {
 	limits   Limits
 	now      func() time.Time
 	entries  map[string]*entry
+	created  map[string][]time.Time // per host, within CreateWindow
 	onChange func(Request)
 }
 
@@ -74,7 +81,7 @@ func NewStore(limits Limits, now func() time.Time) *Store {
 	if now == nil {
 		now = time.Now
 	}
-	return &Store{limits: limits, now: now, entries: make(map[string]*entry)}
+	return &Store{limits: limits, now: now, entries: make(map[string]*entry), created: make(map[string][]time.Time)}
 }
 
 // OnChange registers a callback run after each change, outside the lock.
@@ -143,11 +150,14 @@ func (s *Store) Create(input CreateInput) (Request, error) {
 			}
 		}
 	}
-	if open >= s.limits.MaxOpen || perHost >= s.limits.MaxPerHost {
+	recent := s.recentCreatesLocked(input.Origin.HostID, now)
+	if open >= s.limits.MaxOpen || perHost >= s.limits.MaxPerHost ||
+		(s.limits.MaxCreatesPerWindow > 0 && len(recent) >= s.limits.MaxCreatesPerWindow) {
 		s.mu.Unlock()
 		s.notify(expired...)
 		return Request{}, ErrTooMany
 	}
+	s.created[input.Origin.HostID] = append(recent, now)
 	e := &entry{changed: make(chan struct{}), request: Request{
 		ID: newID(), Status: StatusPending, Version: 1, Command: input.Command,
 		Reason: input.Reason, Origin: input.Origin, CreatedAt: now, UpdatedAt: now,
@@ -159,6 +169,24 @@ func (s *Store) Create(input CreateInput) (Request, error) {
 	s.mu.Unlock()
 	s.notify(append(expired, created)...)
 	return created, nil
+}
+
+// recentCreatesLocked returns the creation times of host within the window,
+// forgetting older ones.
+func (s *Store) recentCreatesLocked(host string, now time.Time) []time.Time {
+	times := s.created[host]
+	kept := times[:0]
+	for _, at := range times {
+		if now.Sub(at) < s.limits.CreateWindow {
+			kept = append(kept, at)
+		}
+	}
+	if len(kept) == 0 {
+		delete(s.created, host)
+		return nil
+	}
+	s.created[host] = kept
+	return kept
 }
 
 // Get returns one request.

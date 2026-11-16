@@ -22,6 +22,8 @@ type sudoService struct {
 	store  *sudo.Store
 	admins SudoAdmins
 	pinned []string
+	// requesters may file requests; empty refuses everyone.
+	requesters []string
 
 	mu    sync.Mutex
 	users map[string]string // sudo peer host ID → Unix user it reported
@@ -36,7 +38,7 @@ func newSudoService(opts *Options) *sudoService {
 	pinned := parseFingerprints(opts.SudoPeers)
 	service := &sudoService{
 		opts: opts, store: sudo.NewStore(sudo.DefaultLimits(), nil), admins: newSudoAdmins(opts),
-		pinned: pinned, users: make(map[string]string),
+		pinned: pinned, requesters: parseFingerprints(opts.SudoRequesters), users: make(map[string]string),
 	}
 	service.store.OnChange(service.onChange)
 	return service
@@ -56,9 +58,38 @@ func (s *sudoService) Run(ctx context.Context) {
 	}
 }
 
-// LocalBroker serves agents that share the hub's own host.
+// LocalBroker serves agents that share the hub's own host. The hub's own
+// fingerprint must be listed in TMUXATLAS_SUDO_REQUESTERS too.
 func (s *sudoService) LocalBroker() sudo.Broker {
-	return sudo.StoreBroker{Store: s.store, HostID: s.opts.PeerMgr.LocalID(), Host: s.opts.PeerMgr.LocalName()}
+	broker := sudo.StoreBroker{Store: s.store, HostID: s.opts.PeerMgr.LocalID(), Host: s.opts.PeerMgr.LocalName()}
+	return requesterBroker{StoreBroker: broker, allowed: s.mayRequest}
+}
+
+// mayRequest reports whether a host may file sudo requests. Only listed
+// fingerprints may: a name or a declared origin is never enough.
+func (s *sudoService) mayRequest(hostID string) bool {
+	if hostID == "" {
+		return false
+	}
+	for _, value := range s.requesters {
+		if value == hostID {
+			return true
+		}
+	}
+	return false
+}
+
+// requesterBroker refuses local requests when the hub is not a requester.
+type requesterBroker struct {
+	sudo.StoreBroker
+	allowed func(string) bool
+}
+
+func (b requesterBroker) Create(ctx context.Context, input sudo.CreateInput) (sudo.AgentView, error) {
+	if !b.allowed(b.HostID) {
+		return sudo.AgentView{}, sudo.ErrForbidden
+	}
+	return b.StoreBroker.Create(ctx, input)
 }
 
 func (s *sudoService) onChange(changed sudo.Request) {
@@ -142,6 +173,11 @@ func (s *sudoService) HandlePeerSudo(hostID string, connection *peer.PeerConnect
 	case peer.MsgSudoCreate:
 		var payload peer.SudoCreatePayload
 		if json.Unmarshal(message.Payload, &payload) != nil || payload.Ref == "" || len(payload.Ref) > 128 {
+			return
+		}
+		if !s.mayRequest(hostID) {
+			logrus.WithField("host", hostID).Warn("sudo request from a host outside TMUXATLAS_SUDO_REQUESTERS")
+			s.reply(hostID, payload.Ref, sudo.AgentView{}, sudo.ErrForbidden)
 			return
 		}
 		origin := payload.Origin

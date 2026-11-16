@@ -93,6 +93,13 @@ function SudoRequestView({ request, onChange }: { request: SudoRequest; onChange
   return (
     <div className="flex flex-col gap-2">
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <dt>Demandeur</dt>
+        <dd>
+          <code className="break-all text-foreground" data-testid="sudo-requester">
+            {request.origin.host_id}
+          </code>
+          <span className="ml-1 italic">(empreinte vérifiée par le hub)</span>
+        </dd>
         <dt>Raison</dt>
         <dd className="text-foreground">{request.reason || '—'}</dd>
         <dt>Origine</dt>

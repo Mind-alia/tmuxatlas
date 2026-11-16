@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	"github.com/LosFurina/tmuxatlas/pkg/peer"
 	"github.com/LosFurina/tmuxatlas/pkg/sudo"
 	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
 )
@@ -40,5 +43,42 @@ func TestSudoAnnounceFollowsOpenRequests(t *testing.T) {
 	service.store.Refuse(second.ID, admin, "")
 	if events := sudoEvents(tracker); len(events) != 0 {
 		t.Fatalf("event kept after the last request ended: %+v", events)
+	}
+}
+
+func TestSudoRequestsOnlyFromListedRequesters(t *testing.T) {
+	hub := mustIdentity(t)
+	create := func(service *sudoService, host string) {
+		message, err := peer.NewMessage(peer.MsgSudoCreate, peer.SudoCreatePayload{Ref: "r1", Command: "id", Reason: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		service.HandlePeerSudo(host, nil, message)
+	}
+	for _, tt := range []struct {
+		name       string
+		requesters string
+		host       string
+		want       int
+	}{
+		{"empty list refuses everyone", "", "host-agents", 0},
+		{"unlisted host", "host-other", "host-agents", 0},
+		{"listed host", "host-other, host-agents", "host-agents", 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			service := newSudoService(&Options{AuthEnabled: true, PeerMgr: peer.NewHubManager(hub, nil), SudoRequesters: tt.requesters})
+			create(service, tt.host)
+			if got := len(service.store.List()); got != tt.want {
+				t.Fatalf("requests = %d, want %d", got, tt.want)
+			}
+		})
+	}
+	local := newSudoService(&Options{AuthEnabled: true, PeerMgr: peer.NewHubManager(hub, nil)})
+	if _, err := local.LocalBroker().Create(context.Background(), sudo.CreateInput{Command: "id"}); !errors.Is(err, sudo.ErrForbidden) {
+		t.Fatalf("local request with an empty list: %v", err)
+	}
+	local = newSudoService(&Options{AuthEnabled: true, PeerMgr: peer.NewHubManager(hub, nil), SudoRequesters: hub.Fingerprint()})
+	if _, err := local.LocalBroker().Create(context.Background(), sudo.CreateInput{Command: "id"}); err != nil {
+		t.Fatalf("local request from a listed hub: %v", err)
 	}
 }
