@@ -13,6 +13,7 @@ import (
 	"path"
 	"sort"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/LosFurina/tmuxatlas/pkg/auth"
@@ -28,6 +29,10 @@ const (
 	maxFileUpload = (1 << 20) - (16 << 10)
 	// maxFileOpsPerAccount bounds the file operations one account runs at once.
 	maxFileOpsPerAccount = 4
+	// maxListPages and maxListDuration bound one listing, whatever the host
+	// answers: a peer could otherwise send pages forever.
+	maxListPages    = 64
+	maxListDuration = 30 * time.Second
 )
 
 // filesAPI serves /api/files/*. Each request names a host with host_id; the
@@ -38,10 +43,14 @@ type filesAPI struct {
 	policy *accountPolicy
 	mu     sync.Mutex
 	active map[string]int
+	// execute runs one file operation on a host; tests replace it.
+	execute func(ctx context.Context, host, operation string, payload any) (json.RawMessage, error)
 }
 
 func newFilesAPI(opts *Options, policy *accountPolicy) *filesAPI {
-	return &filesAPI{opts: opts, router: peer.NewFileRouter(opts.PeerMgr, opts.Files, 0), policy: policy, active: make(map[string]int)}
+	api := &filesAPI{opts: opts, router: peer.NewFileRouter(opts.PeerMgr, opts.Files, 0), policy: policy, active: make(map[string]int)}
+	api.execute = api.router.Execute
+	return api
 }
 
 var fileErrorStatus = map[string]int{
@@ -100,7 +109,7 @@ func (api *filesAPI) begin(w http.ResponseWriter, r *http.Request) (func(), bool
 }
 
 func (api *filesAPI) call(ctx context.Context, host, operation string, payload any, result any) error {
-	raw, err := api.router.Execute(ctx, host, operation, payload)
+	raw, err := api.execute(ctx, host, operation, payload)
 	if err != nil {
 		return err
 	}
@@ -155,21 +164,44 @@ func (api *filesAPI) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer done()
-	var entries []json.RawMessage
-	var listed struct {
+	ctx, cancel := context.WithTimeout(r.Context(), maxListDuration)
+	defer cancel()
+	type page struct {
 		Path      string            `json:"path"`
 		Entries   []json.RawMessage `json:"entries"`
 		Next      int               `json:"next"`
 		Truncated bool              `json:"truncated"`
 	}
-	for offset := 0; offset >= 0 && len(entries) < files.MaxListEntries; offset = listed.Next {
-		if err := api.call(r.Context(), query.Get("host_id"), "list", map[string]any{"path": query.Get("path"), "offset": offset}, &listed); err != nil {
+	var entries []json.RawMessage
+	var listed page
+	truncated := false
+	for offset, pages := 0, 0; ; pages++ {
+		listed = page{Next: -1}
+		if err := api.call(ctx, query.Get("host_id"), "list", map[string]any{"path": query.Get("path"), "offset": offset}, &listed); err != nil {
 			writeFileError(w, err)
 			return
 		}
 		entries = append(entries, listed.Entries...)
+		truncated = truncated || listed.Truncated
+		if listed.Next < 0 {
+			break
+		}
+		// The next page must start after this one: a host that answers
+		// "next: 0" again would otherwise keep the hub listing forever.
+		if listed.Next <= offset {
+			writeFileError(w, &files.Error{Code: files.CodeFailed, Message: "réponse invalide de l'hôte"})
+			return
+		}
+		if len(entries) >= files.MaxListEntries || pages+1 >= maxListPages {
+			truncated = true
+			break
+		}
+		offset = listed.Next
 	}
-	writeFileJSON(w, map[string]any{"path": listed.Path, "entries": entries, "truncated": listed.Truncated})
+	if len(entries) > files.MaxListEntries {
+		entries, truncated = entries[:files.MaxListEntries], true
+	}
+	writeFileJSON(w, map[string]any{"path": listed.Path, "entries": entries, "truncated": truncated})
 }
 
 type fileStat struct {
@@ -198,7 +230,12 @@ func (api *filesAPI) readFile(ctx context.Context, host, filePath string, limit 
 	if err := start(stat); err != nil {
 		return err
 	}
-	for offset := int64(0); ; {
+	// A host sending tiny chunks must not keep the hub reading forever.
+	maxChunks := limit/files.ChunkSize + 2
+	for offset, chunks := int64(0), int64(0); ; chunks++ {
+		if chunks >= maxChunks {
+			return &files.Error{Code: files.CodeFailed, Message: "réponse invalide de l'hôte"}
+		}
 		var chunk struct {
 			Data    string `json:"data"`
 			Version string `json:"version"`
