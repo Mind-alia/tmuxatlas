@@ -18,6 +18,9 @@ const (
 	// ToolAgy is the Antigravity CLI. Its working screen is not known yet, so the
 	// watcher records no status for it (see ClassifyScreen).
 	ToolAgy Tool = "agy"
+	// ToolSudo marks a pane whose agent waits for a sudo request. It is
+	// recorded by the hub, never by a hook, and the watcher leaves it alone.
+	ToolSudo Tool = "sudo"
 )
 
 // Status represents the current state of an agent

@@ -1074,6 +1074,11 @@ func Run(ctx context.Context, opts *Options) error {
 		logger.Info("authentication is enabled")
 	}
 
+	sudoService := newSudoService(opts)
+	if sudoService != nil {
+		go sudoService.Run(ctx)
+	}
+
 	// Start Unix socket listener for local notify CLI
 	var unixListener net.Listener
 	socketPath := opts.SocketPath
@@ -1092,8 +1097,12 @@ func Run(ctx context.Context, opts *Options) error {
 		if opts.Deployment != "" {
 			health.Deployment = opts.Deployment
 		}
+		localRouter := newLocalRouter(opts.Tracker, opts.PeerMgr, opts.PairingMgr, opts.PasskeyManager, health)
+		if sudoService != nil {
+			registerSudoLocalRoutes(localRouter, sudoService.LocalBroker())
+		}
 		localServer := &http.Server{
-			Handler:           newLocalRouter(opts.Tracker, opts.PeerMgr, opts.PairingMgr, opts.PasskeyManager, health),
+			Handler:           localRouter,
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		go func() {
