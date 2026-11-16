@@ -127,7 +127,9 @@ est **désactivé**. Le modèle de comptes n'est pas modifié.
 `/ws/sudo` exige un en-tête `Origin` égal à l'URL publique (l'ancien
 `CheckSameOrigin` acceptait l'absence d'`Origin`).
 
-Le panneau Sudo s'ouvre sous le cockpit de la session concernée :
+Le panneau Sudo s'ouvre sous le cockpit (`TerminalCockpit`) de la session
+concernée, pour les administrateurs (il interroge `/api/sudo` toutes les 3 s et
+se masque si le serveur refuse) :
 
 1. **Demande** : raison, origine, commande éditable (versionnée, l'original reste
    affiché), choix du peer sudo, Approuver / Refuser.
@@ -138,10 +140,12 @@ Le panneau Sudo s'ouvre sous le cockpit de la session concernée :
 
 ## Côté peer sudo (`pkg/sudoterm`)
 
-Activé explicitement : `tmuxatlas agent --sudo-terminal`. Le hub n'ouvre de
-terminal que vers un peer **épinglé** par `TMUXATLAS_SUDO_PEERS` (noms ou
-empreintes, séparés par des virgules), connecté, qui annonce la capacité
-`sudo-terminal`, et différent de l'hôte d'origine de la demande. Sans cet
+Activé explicitement : `tmuxatlas agent --sudo-terminal` (ou
+`TMUXATLAS_SUDO_TERMINAL=1`). Le hub n'ouvre de terminal que vers un peer
+**épinglé** par `TMUXATLAS_SUDO_PEERS` (ou `--sudo-peers`) : des **empreintes**
+séparées par des virgules, jamais des noms (un nom n'est qu'une étiquette).
+Le peer doit être connecté, annoncer la capacité `sudo-terminal`, et être
+différent de l'hôte d'origine de la demande. Sans cet
 épinglage, un agent hostile qui relancerait son propre peer avec
 `--sudo-terminal` recevrait le mot de passe de l'admin.
 
@@ -176,11 +180,18 @@ frappes ni la sortie.** `tmuxatlas sudo-audit` l'affiche. Complément : journald
 
 Un agent pourrait imiter une invite `[sudo] password` dans son propre pane pour
 récupérer un mot de passe tapé par erreur. Le peer qui sert un terminal tmux
-surveille le TTY du pane actif : quand il est en mode canonique **sans écho**
-(la signature d'une invite de mot de passe, contrairement aux TUI comme Claude
-Code qui sont en mode brut), il envoie une trame `echo off`, et le navigateur
-bloque les frappes vers ce terminal en affichant un avertissement qui renvoie vers
-le panneau Sudo.
+surveille (toutes les 500 ms) le TTY du pane actif : quand il est en mode
+canonique **sans écho** (la signature d'une invite de mot de passe, contrairement
+aux TUI comme Claude Code qui sont en mode brut), il envoie une trame `echo off`,
+et le navigateur bloque les frappes, les collages et le composeur vers ce
+terminal en affichant un avertissement qui renvoie vers le panneau Sudo. Un clic
+explicite « Taper quand même » laisse passer jusqu'à la fin de l'invite (utile
+pour un `ssh` légitime dans une session de l'admin).
+
+Limite : seules les sessions servies par un peer (`tmuxatlas agent`) sont
+surveillées. Les sessions locales d'un hub `standalone` ne le sont pas encore
+(`pkg/ws/pty_terminal.go`) ; dans la topologie visée, les sessions des agents
+sont toujours celles du peer `agents`.
 
 ## Modèle de menace
 
