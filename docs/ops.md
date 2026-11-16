@@ -155,3 +155,79 @@ The hub reads the directory every 15 s and derives:
 Restarts are followed by container name: a new id (compose recreated the
 container, its `restart_count` starts again at 0), a higher `restart_count`
 or a new `started_at` each count as a restart.
+
+## Backups
+
+The **Sauvegardes** panel (same page) shows the date of the last full
+backup, whether the copy on Cloudflare R2 succeeded and was verified, when the
+next one is expected, and the retention: **3 days locally, 14 days on R2**.
+
+The backup script itself, in the production account, publishes its progress
+by sourcing `contrib/ops/backup-status.sh`. TmuxAtlas never runs, reads or
+changes the backup itself.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+export TF_OPS_DIR=/srv/tf-ops TF_LOCAL_RETENTION_DAYS=3 TF_R2_RETENTION_DAYS=14
+source ~/.local/libexec/tf-ops/backup-status.sh
+# job, expected interval, grace, maximum duration (seconds)
+tf_status_begin db-nightly 86400 3600 7200
+
+file=/var/backups/tf/db-$(date -u +%F).sql.zst
+tf_status_step dump;        pg_dump ... | zstd -q -o "$file"
+tf_status_step local-write; tf_status_local "$file" "$(ls /var/backups/tf | wc -l)"
+tf_status_step r2-upload;   rc=0; rclone copy "$file" r2:tf-backups/ || rc=$?
+tf_status_step r2-verify;   vrc=0; rclone check --one-way "$(dirname "$file")" r2:tf-backups/ --include "$(basename "$file")" || vrc=$?
+tf_status_remote "$rc" "$vrc" "$(rclone lsf r2:tf-backups/ | wc -l)"
+tf_status_step prune-local; find /var/backups/tf -name 'db-*.sql.zst' -mtime +"$TF_LOCAL_RETENTION_DAYS" -delete
+if [ "$rc" = 0 ]; then
+  tf_status_step prune-r2;  rclone delete r2:tf-backups/ --min-age "${TF_R2_RETENTION_DAYS}d"
+fi
+# The EXIT trap writes the result. A failed R2 copy (rc != 0) without exiting
+# gives "partial" with failed_step r2-upload; exiting early would name the
+# step running at that moment instead.
+```
+
+Install the library next to the collector:
+`install -D -m 0644 contrib/ops/backup-status.sh ~/.local/libexec/tf-ops/backup-status.sh`.
+Check that `sha256sum` and `rclone check` are available.
+
+### `backup-status.json` (schema 1)
+
+`last-success.json` has the same content, written only after a full success.
+
+```json
+{
+  "schema": 1, "job": "db-nightly", "run_id": "20261116T030000Z-4242",
+  "result": "success",
+  "started_at": "2026-11-16T03:00:00Z", "finished_at": "2026-11-16T03:04:12Z",
+  "exit_code": 0, "step": "prune-r2", "failed_step": "", "message": "",
+  "local":  {"ok": true, "file": "db-2026-11-16.sql.zst", "size": 73400320,
+             "sha256": "…", "retention_days": 3, "count": 3},
+  "remote": {"provider": "r2", "attempted": true, "ok": true, "verified": true,
+             "rclone_exit_code": 0, "retention_days": 14, "count": 14},
+  "schedule": {"expected_interval_seconds": 86400, "grace_seconds": 3600,
+               "max_duration_seconds": 7200}
+}
+```
+
+`result` is `running`, `success` (local and R2 copies done, and verified when
+a check ran), `partial` (local copy done, then R2 or a later step failed) or
+`failure` (no valid local copy). `failed_step` is one of `dump`, `compress`,
+`local-write`, `r2-upload`, `r2-verify`, `prune-local`, `prune-r2`.
+
+### States and alerts
+
+| State | Key | When |
+|---|---|---|
+| `stuck` | `ops:backup:stuck` | `running` for longer than `max_duration_seconds` |
+| `failed` | `ops:backup:failed` | last run `failure` |
+| `r2-failed` | `ops:backup:r2-failed` | last run `partial` |
+| `late` | `ops:backup:late` | no full success for `expected_interval + grace` |
+| `running` | — | a run in progress |
+| `ok` | — | everything above is fine |
+| `unknown` | `ops:backup:missing` | no status file yet |
+
+The checks are applied in this order: a stuck run hides a failure, which
+hides lateness.
