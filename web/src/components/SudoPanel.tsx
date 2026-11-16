@@ -15,6 +15,7 @@ import {
   type SudoRequest,
   type SudoStatus,
 } from '../lib/sudoApi'
+import { sha256Hex } from '../lib/sha256'
 
 const statusLabels: Record<SudoStatus, string> = {
   pending: 'En attente',
@@ -102,6 +103,7 @@ function SudoRequestView({ request, onChange }: { request: SudoRequest; onChange
           <span className="ml-1 italic">(déclaré par l’agent)</span>
         </dd>
       </dl>
+      {request.status !== 'pending' && <SudoCommand command={request.command} label={`Commande v${request.version}`} />}
       {request.status === 'pending' && <PendingStep request={request} busy={busy} run={run} onGrant={setGrant} />}
       {(request.status === 'approved' || request.status === 'running') &&
         (grant ? (
@@ -116,6 +118,27 @@ function SudoRequestView({ request, onChange }: { request: SudoRequest; onChange
       {request.status === 'awaiting_review' && <ReviewStep request={request} busy={busy} run={run} />}
       {error && <p className="text-destructive">{error}</p>}
     </div>
+  )
+}
+
+/**
+ * The exact command, wrapped so nothing hides past the edge, with its length
+ * and a short digest to compare with what the sudo terminal prints.
+ */
+export function SudoCommand({ command, label }: { command: string; label: string }) {
+  const length = [...command].length
+  return (
+    <figure className="flex flex-col gap-1" data-testid="sudo-command">
+      <pre
+        aria-label={label}
+        className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded border border-border bg-card p-2 font-mono text-xs text-foreground"
+      >
+        {command}
+      </pre>
+      <figcaption className="font-mono text-[11px] text-muted-foreground">
+        {length} caractère{length > 1 ? 's' : ''} · sha256 {sha256Hex(command).slice(0, 12)}
+      </figcaption>
+    </figure>
   )
 }
 
@@ -151,10 +174,12 @@ function PendingStep({ request, busy, run, onGrant }: StepProps & { onGrant: (gr
   const choices = peers.filter(candidate => candidate.id !== request.origin.host_id)
   return (
     <div className="flex flex-col gap-2">
+      <span className="text-xs text-muted-foreground">
+        Commande à approuver (v{request.version}), lancée avec <code>sudo -k -- sh -c</code> :
+      </span>
+      <SudoCommand command={request.command} label={`Commande v${request.version}`} />
       <label className="flex flex-col gap-1">
-        <span className="text-xs text-muted-foreground">
-          Commande (v{request.version}) — lancée avec <code>sudo -k -- sh -c</code>
-        </span>
+        <span className="text-xs text-muted-foreground">Modifier la commande</span>
         <input
           className="rounded border border-border bg-background px-2 py-1 font-mono"
           value={command}
@@ -164,9 +189,10 @@ function PendingStep({ request, busy, run, onGrant }: StepProps & { onGrant: (gr
         />
       </label>
       {request.original !== request.command && (
-        <p className="font-mono text-xs text-muted-foreground">
-          Demandé par l’agent : <del>{request.original}</del>
-        </p>
+        <div className="text-xs text-muted-foreground">
+          Demandé à l’origine par l’agent :
+          <SudoCommand command={request.original} label="Commande d’origine" />
+        </div>
       )}
       <div className="flex flex-wrap items-center gap-2">
         {edited && (
