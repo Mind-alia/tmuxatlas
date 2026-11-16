@@ -277,6 +277,51 @@ describe('Terminal workspace controls', () => {
   })
 })
 
+describe('Terminal untrusted host banner', () => {
+  const realFetch = globalThis.fetch
+  afterEach(() => {
+    cleanup()
+    vi.stubGlobal('fetch', realFetch)
+  })
+  beforeEach(() => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    )
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
+    )
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input) === '/api/hosts/trust'
+          ? new Response(JSON.stringify({ hub: 'hub-id', local: true, trusted: ['hub-id', 'sudo-admin'] }))
+          : new Response('{}', { status: 404 }),
+      ),
+    )
+  })
+
+  it('warns on every host that is neither the hub nor a pinned sudo peer', async () => {
+    render(<Terminal sessionName="claude" hostId="host-agents" />)
+    expect(await screen.findByTestId('untrusted-host-banner')).toHaveTextContent(
+      'Hôte non fiable : ne tapez jamais de mot de passe ici',
+    )
+  })
+
+  it('stays permanent until the server confirms the host is trusted', async () => {
+    render(<Terminal sessionName="s" hostId="sudo-admin" />)
+    expect(screen.getByTestId('untrusted-host-banner')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByTestId('untrusted-host-banner')).toBeNull())
+    cleanup()
+    render(<Terminal sessionName="s" hostId="hub-id" />)
+    await waitFor(() => expect(screen.queryByTestId('untrusted-host-banner')).toBeNull())
+  })
+})
+
 describe('Terminal microphone', () => {
   beforeEach(() =>
     vi.stubGlobal(

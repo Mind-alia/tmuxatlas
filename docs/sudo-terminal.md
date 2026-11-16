@@ -167,10 +167,14 @@ Pour chaque ouverture :
 4. Les frappes de l'humain sont gardées en mémoire le temps de la commande, puis
    chaque ligne de 4 caractères ou plus est **caviardée** de la capture (au cas
    où un programme l'aurait recopiée), et le tampon est effacé.
-5. L'état de l'écho du PTY est surveillé : quand il est coupé, le navigateur
+5. Avant que `sudo` n'affiche son invite, le terminal imprime la **commande
+   exacte**, sa longueur et les 12 premiers caractères de son sha256 : les mêmes
+   que dans le panneau. On ne tape le mot de passe qu'après avoir vérifié
+   qu'ils correspondent.
+6. L'état de l'écho du PTY est surveillé : quand il est coupé, le navigateur
    affiche « saisie masquée ».
-6. Fin : kill du groupe de processus, puis `sudo -k`.
-7. La capture part vers le hub en `awaiting_review` : l'agent ne reçoit rien
+7. Fin : kill du groupe de processus, puis `sudo -k`.
+8. La capture part vers le hub en `awaiting_review` : l'agent ne reçoit rien
    tant que l'humain n'a pas relu.
 
 Audit faisant foi : `$XDG_STATE_HOME/tmuxatlas/sudo-audit.jsonl` (défaut
@@ -181,6 +185,18 @@ frappes ni la sortie.** `tmuxatlas sudo-audit` l'affiche. Complément : journald
 `auth.log` de sudo.
 
 ## Frappes vers le terminal d'un agent
+
+**La règle est simple : on ne tape jamais de mot de passe dans le terminal
+d'un hôte qui n'est ni le hub ni un peer sudo épinglé.** Ces terminaux portent
+en permanence le bandeau « Hôte non fiable : ne tapez jamais de mot de passe
+ici » (liste servie par `GET /api/hosts/trust`, et bandeau affiché tant que la
+réponse manque). Le seul endroit où taper un mot de passe sudo est le terminal
+du panneau Sudo.
+
+Le blocage décrit ci-dessous n'est **qu'une aide**, pas une garantie : la
+détection tourne dans le peer de l'hôte surveillé, c'est-à-dire sous le
+contrôle de l'agent, et une fausse invite affichée par un programme en mode
+brut (sans ICANON) n'est pas détectée.
 
 Un agent pourrait imiter une invite `[sudo] password` dans son propre pane pour
 récupérer un mot de passe tapé par erreur. Le peer qui sert un terminal tmux
@@ -205,7 +221,8 @@ sont toujours celles du peer `agents`.
 | Agent qui lit le mot de passe | Il n'est tapé que dans le PTY du peer sudo (autre compte Unix) ; capture par pipes, caviardage, relecture. Le hub et le peer ne journalisent jamais de payload PTY. |
 | Agent qui modifie la commande après approbation | Approbation liée à la version ; plus d'édition hors `pending` ; le peer exécute la commande reçue du hub pour cette version. |
 | Agent qui se fait passer pour le peer sudo | Épinglage `TMUXATLAS_SUDO_PEERS` par empreinte ; refus si le peer sudo est l'hôte d'origine. |
-| Agent qui imite une invite sudo dans son pane | Blocage des frappes quand l'écho est coupé. |
+| Agent qui imite une invite sudo dans son pane | Bandeau permanent « Hôte non fiable » sur tout hôte autre que le hub et les peers sudo épinglés. En aide seulement : blocage des frappes quand l'écho est coupé, contournable par un pane en mode brut. |
+| Commande trompeuse (blancs, bidi, caractères invisibles) | Le hub refuse les catégories Unicode Cc, Cf, Zl, Zp, plus de 2 blancs à la suite et plus de 1000 caractères ; le panneau montre la commande entière avec longueur et sha256 ; le terminal sudo la réimprime avant l'invite. |
 | Rejeu d'une approbation | Grant à usage unique, 60 s, lié à l'admin qui l'a obtenu, transmis dans la 1re trame WebSocket (pas dans l'URL ni les journaux). |
 | Page tierce qui pilote l'API | `Origin` stricte, CSRF, cookie `SameSite=Strict`. |
 | Cookie admin volé | Il faut encore le mot de passe sudo de l'admin, tapé en direct. Voir « Reste à faire ». |
