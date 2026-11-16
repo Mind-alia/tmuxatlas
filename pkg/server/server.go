@@ -73,8 +73,11 @@ type Options struct {
 	PairingMgr       *identity.PairingManager
 	PTYRelay         *peer.PTYRelay
 	Watcher          *toolevents.Watcher
-	LocalOnly        bool
-	routerObserver   func(chi.Routes)
+	// SudoPeers pins the fingerprints of the peers allowed to open sudo
+	// terminals (TMUXATLAS_SUDO_PEERS).
+	SudoPeers      string
+	LocalOnly      bool
+	routerObserver func(chi.Routes)
 }
 
 func writeRuntimeError(w http.ResponseWriter, err error) {
@@ -378,6 +381,13 @@ func Run(ctx context.Context, opts *Options) error {
 	}
 	if opts.AccountsAuth != nil {
 		go accountPolicy.watchOwnership(ctx)
+	}
+	sudoService := newSudoService(opts)
+	if sudoService != nil {
+		go sudoService.Run(ctx)
+		if opts.PeerHandler != nil {
+			opts.PeerHandler.SetSudoHub(sudoService)
+		}
 	}
 
 	// API routes
@@ -928,6 +938,13 @@ func Run(ctx context.Context, opts *Options) error {
 					"expires_at": code.ExpiresAt,
 				})
 			})
+
+			// Sudo terminal: administrators only (see docs/sudo-terminal.md).
+			if sudoService != nil {
+				sudoService.registerSudoAPI(r, mutations.With(
+					httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit),
+				))
+			}
 		})
 		if opts.AccountsAuth != nil {
 			r.With(opts.AccountsAuth.Middleware, accountPolicy.Middleware).Handle("/*", http.NotFoundHandler())
@@ -973,6 +990,11 @@ func Run(ctx context.Context, opts *Options) error {
 			accountGuard = accountPolicy.Middleware
 		}
 		publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/events", hub.HandleEvents)
+		if sudoService != nil {
+			// originMiddleware requires an exact Origin: unlike CheckSameOrigin,
+			// a missing header is refused.
+			publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/sudo", sudoService.HandleTerminal)
+		}
 		if browserMic != nil {
 			publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/mic", browserMic.HandleStream)
 		}
@@ -1072,11 +1094,6 @@ func Run(ctx context.Context, opts *Options) error {
 	logger.Infof("open %s in your browser", publicURL)
 	if opts.AuthEnabled {
 		logger.Info("authentication is enabled")
-	}
-
-	sudoService := newSudoService(opts)
-	if sudoService != nil {
-		go sudoService.Run(ctx)
 	}
 
 	// Start Unix socket listener for local notify CLI
