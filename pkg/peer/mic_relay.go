@@ -138,7 +138,7 @@ func (relay *MicRelay) HandlePeerMic(w http.ResponseWriter, request *http.Reques
 	}
 	relay.mu.Lock()
 	attachment := relay.pending[streamID]
-	if attachment == nil || attachment.hostID != hostID || attachment.generation != generation || attachment.token != token {
+	if attachment == nil || attachment.hostID != hostID || attachment.generation != generation || !tokenEqual(attachment.token, token) {
 		relay.mu.Unlock()
 		logrus.WithField("stream", streamID).Warn("rejected unmatched or late microphone attachment")
 		http.Error(w, "unknown microphone attachment", http.StatusNotFound)
