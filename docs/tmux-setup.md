@@ -32,9 +32,12 @@ set -g renumber-windows on
 # Enable mouse support (scrolling, pane selection, resizing)
 set -g mouse on
 
-# --- Clipboard (required for tmuxatlas) ---
+# --- Clipboard ---
 
-# Let tmux process OSC 52 clipboard sequences
+# Let tmux process OSC 52 clipboard sequences. TmuxAtlas itself ignores
+# OSC 52 in the browser (no read, no write): a program in a pane could
+# otherwise read or replace your clipboard. Copy with the mouse selection
+# or the Copy button.
 set -g set-clipboard on
 
 # Allow applications to send escape sequences through tmux
