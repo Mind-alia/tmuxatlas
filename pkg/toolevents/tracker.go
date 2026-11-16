@@ -15,6 +15,9 @@ const (
 	ToolCodex    Tool = "codex"
 	ToolCopilot  Tool = "copilot"
 	ToolOpenCode Tool = "opencode"
+	// ToolSudo marks a pane whose agent waits for a sudo request. It is
+	// recorded by the hub, never by a hook, and the watcher leaves it alone.
+	ToolSudo Tool = "sudo"
 )
 
 // Status represents the current state of an agent

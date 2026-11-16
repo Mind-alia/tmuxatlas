@@ -12,12 +12,13 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
 	"github.com/LosFurina/tmuxatlas/pkg/socket"
 	"github.com/LosFurina/tmuxatlas/pkg/state"
+	"github.com/LosFurina/tmuxatlas/pkg/sudo"
 	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
 )
 
 // RunAgentSocket serves only the local Unix socket used by notify hooks. It
 // never opens a TCP listener.
-func RunAgentSocket(ctx context.Context, socketPath string, tracker *toolevents.Tracker, peerMgr *peer.Manager) error {
+func RunAgentSocket(ctx context.Context, socketPath string, tracker *toolevents.Tracker, peerMgr *peer.Manager, sudoBroker sudo.Broker) error {
 	if socketPath == "" {
 		socketPath = socket.DefaultPath()
 	}
@@ -34,8 +35,10 @@ func RunAgentSocket(ctx context.Context, socketPath string, tracker *toolevents.
 	if err != nil {
 		return fmt.Errorf("create agent instance ID: %w", err)
 	}
+	router := newLocalRouter(tracker, peerMgr, nil, nil, nativeHealth("agent", instanceID, true))
+	registerSudoLocalRoutes(router, sudoBroker)
 	httpServer := &http.Server{
-		Handler:           newLocalRouter(tracker, peerMgr, nil, nil, nativeHealth("agent", instanceID, true)),
+		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	serverErr := make(chan error, 1)

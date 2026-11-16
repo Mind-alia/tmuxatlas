@@ -24,7 +24,7 @@ func TestRunAgentSocketAcceptsLocalToolEvents(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errCh := make(chan error, 1)
-	go func() { errCh <- RunAgentSocket(ctx, socketPath, tracker, nil) }()
+	go func() { errCh <- RunAgentSocket(ctx, socketPath, tracker, nil, nil) }()
 
 	client := &http.Client{Transport: &http.Transport{
 		DialContext: func(context.Context, string, string) (net.Conn, error) {

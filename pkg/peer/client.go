@@ -87,6 +87,8 @@ type Client struct {
 	outcomeCache        *OutcomeCache
 	dispatcher          *RequestDispatcher
 	files               *files.Service
+	sudo                *sudoRelay
+	sudoTerminal        *sudoTerminal
 
 	voiceMu sync.RWMutex
 	voice   VoiceEndpoint
@@ -149,6 +151,7 @@ func NewClient(hubURL string, id *identity.Identity, peerStore *identity.PeerSto
 	}
 	c.outcomeCache, _ = NewOutcomeCache(cacheConfig, nil)
 	c.ptyManager = NewPTYManager(tmuxPath, actTracker, c)
+	c.sudo = newSudoRelay(c)
 	return c
 }
 
@@ -270,7 +273,7 @@ func (c *Client) connectAndRun(ctx context.Context) error {
 
 	helloMessage, _ := NewMessage(MsgHello, HelloPayload{
 		MinVersion: RuntimeProtocolMin, MaxVersion: RuntimeProtocolMax,
-		Capabilities: helloCapabilities(c.Voice() != nil), BuildVersion: common.VERSION,
+		Capabilities: c.helloCapabilities(), BuildVersion: common.VERSION,
 		AgentInstanceID: c.instanceID,
 	})
 	if err := conn.WriteJSON(helloMessage); err != nil {
@@ -309,6 +312,13 @@ func (c *Client) connectAndRun(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 	log.WithField("generation", helloAck.Generation).Info("runtime protocol negotiated")
+	go c.sudo.resync()
+	if _, ok := c.runtimeCapabilities[CapabilitySudoTerminal]; ok && c.sudoTerminal != nil {
+		if message, err := NewMessage(MsgSudoTerminalInfo, SudoTerminalInfoPayload{UnixUser: c.sudoTerminal.user}); err == nil {
+			c.writeJSON(conn, message)
+		}
+		log.Info("sudo terminal offered to hub")
+	}
 
 	// Configure ping/pong for connection liveness detection
 	conn.SetPongHandler(func(string) error {
@@ -410,6 +420,21 @@ func (c *Client) handleHubMessage(msg *Message, conn *websocket.Conn, log *logru
 
 	case MsgRequestState:
 		c.sendStateUpdate(conn)
+
+	case MsgSudoReply, MsgSudoUpdate:
+		c.sudo.handle(msg)
+
+	case MsgSudoOpen:
+		if c.sudoTerminal == nil {
+			log.Warn("ignored sudo-open: this agent was not started with --sudo-terminal")
+			return
+		}
+		var payload SudoOpenPayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			log.WithError(err).Debug("invalid sudo-open")
+			return
+		}
+		go c.sudoTerminal.Open(payload)
 
 	default:
 		log.WithField("type", msg.Type).Debug("unknown message from hub")

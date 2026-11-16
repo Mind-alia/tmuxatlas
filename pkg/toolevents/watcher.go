@@ -168,7 +168,7 @@ func (w *Watcher) tick() {
 		if event.Host != w.hostID {
 			continue // another host's agent; that host watches it
 		}
-		if w.dropIfStale(event, byID) {
+		if w.dropIfStale(event, byID) || event.Tool == ToolSudo {
 			continue
 		}
 		events[event.Pane] = event

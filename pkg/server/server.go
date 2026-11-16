@@ -69,7 +69,10 @@ type Options struct {
 	PairingMgr       *identity.PairingManager
 	PTYRelay         *peer.PTYRelay
 	Watcher          *toolevents.Watcher
-	LocalOnly        bool
+	// SudoPeers pins the fingerprints of the peers allowed to open sudo
+	// terminals (TMUXATLAS_SUDO_PEERS).
+	SudoPeers string
+	LocalOnly bool
 	// GuestLocalHost allows granting the hub's own host to a guest. Leave it
 	// off when the hub runs under an account that guests must not reach, such
 	// as a production account (TMUXATLAS_GUEST_LOCAL_HOST=allow).
@@ -385,6 +388,13 @@ func Run(ctx context.Context, opts *Options) error {
 	}
 	if opts.AccountsAuth != nil {
 		go accountPolicy.watchOwnership(ctx)
+	}
+	sudoService := newSudoService(opts)
+	if sudoService != nil {
+		go sudoService.Run(ctx)
+		if opts.PeerHandler != nil {
+			opts.PeerHandler.SetSudoHub(sudoService)
+		}
 	}
 
 	// API routes
@@ -942,6 +952,13 @@ func Run(ctx context.Context, opts *Options) error {
 					"expires_at": code.ExpiresAt,
 				})
 			})
+
+			// Sudo terminal: administrators only (see docs/sudo-terminal.md).
+			if sudoService != nil {
+				sudoService.registerSudoAPI(r, mutations.With(
+					httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit),
+				))
+			}
 		})
 		if opts.AccountsAuth != nil {
 			r.With(opts.AccountsAuth.Middleware, accountPolicy.Middleware).Handle("/*", http.NotFoundHandler())
@@ -984,6 +1001,11 @@ func Run(ctx context.Context, opts *Options) error {
 			accountGuard = accountPolicy.Middleware
 		}
 		publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/events", hub.HandleEvents)
+		if sudoService != nil {
+			// originMiddleware requires an exact Origin: unlike CheckSameOrigin,
+			// a missing header is refused.
+			publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/sudo", sudoService.HandleTerminal)
+		}
 		publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/mic", micHandler(opts, browserMic, micRelay))
 		publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
 			hostID := req.URL.Query().Get("host")
@@ -1102,8 +1124,12 @@ func Run(ctx context.Context, opts *Options) error {
 		if opts.Deployment != "" {
 			health.Deployment = opts.Deployment
 		}
+		localRouter := newLocalRouter(opts.Tracker, opts.PeerMgr, opts.PairingMgr, opts.PasskeyManager, health)
+		if sudoService != nil {
+			registerSudoLocalRoutes(localRouter, sudoService.LocalBroker())
+		}
 		localServer := &http.Server{
-			Handler:           newLocalRouter(opts.Tracker, opts.PeerMgr, opts.PairingMgr, opts.PasskeyManager, health),
+			Handler:           localRouter,
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		go func() {

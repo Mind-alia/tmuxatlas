@@ -20,6 +20,8 @@ import { TerminalContextMenu, type TerminalMenuPosition } from './TerminalContex
 import { TerminalPasteConfirmation } from './TerminalPasteConfirmation'
 import { TerminalSearchBar } from './TerminalSearchBar'
 import { MobileInputComposer } from './MobileInputComposer'
+import { SudoPanel } from './SudoPanel'
+import { useAccountRole } from '../lib/accountContext'
 
 export interface TerminalCommandActions {
   reconnect: () => void
@@ -133,6 +135,9 @@ export function Terminal({
   const [contextMenu, setContextMenu] = useState<TerminalMenuPosition | null>(null)
   const [pendingPaste, setPendingPaste] = useState<PendingTerminalPaste | null>(null)
   const [pasteError, setPasteError] = useState('')
+  // Outside the accounts mode the signed-in owner is the administrator; the
+  // server still decides and the panel hides itself when refused.
+  const sudoAdmin = useAccountRole() !== 'guest'
   const {
     connect,
     disconnect,
@@ -154,6 +159,8 @@ export function Terminal({
     copySelection,
     pasteClipboard,
     imagePasteStatus,
+    passwordPrompt,
+    allowPasswordInput,
     commitClipboardPaste,
     selectAll,
     searchState,
@@ -511,6 +518,7 @@ export function Terminal({
           onMore={showMenuAtButton}
         />
       )}
+      {!embedded && <SudoPanel hostId={hostId} sessionName={sessionName} enabled={sudoAdmin} />}
       {!embedded &&
         !compact &&
         mic.available &&
@@ -591,6 +599,24 @@ export function Terminal({
                 </button>
               )}
             </div>
+          </div>
+        )}
+        {passwordPrompt && (
+          <div
+            role="alert"
+            className="absolute inset-x-2 top-2 z-20 flex flex-wrap items-center gap-2 rounded border border-warning bg-card/95 px-3 py-2 text-sm"
+          >
+            <span>
+              Ce terminal attend un mot de passe sans écho : les frappes sont bloquées. Un agent peut imiter une invite
+              sudo ; pour un sudo demandé par l’agent, utilise le panneau Sudo.
+            </span>
+            <button
+              type="button"
+              onClick={allowPasswordInput}
+              className="min-h-9 rounded border border-warning px-3 text-warning"
+            >
+              Taper quand même
+            </button>
           </div>
         )}
         {imagePasteStatus && (

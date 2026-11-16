@@ -466,3 +466,23 @@ func (c *Client) SendEnter(target string) error {
 	_, err = c.Exec("send-keys", "-t", resolved, "Enter")
 	return err
 }
+
+// ActivePaneTTY returns the terminal device of the active pane of a session,
+// the pane an attached client shows.
+func ActivePaneTTY(tmuxPath, session string) (string, error) {
+	target, err := resolveWindowTarget(tmuxPath, session, "")
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, tmuxPath, "display-message", "-p", "-t", target, "#{pane_tty}").Output()
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(path, "/dev/pts/") && !strings.HasPrefix(path, "/dev/tty") {
+		return "", fmt.Errorf("unexpected pane tty %q", path)
+	}
+	return path, nil
+}

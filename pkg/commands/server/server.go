@@ -362,6 +362,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		Files:           fileService,
 		Role:            map[bool]string{true: "hub", false: "standalone"}[pureHub],
 		Deployment:      os.Getenv("TMUXATLAS_DEPLOYMENT"),
+		SudoPeers:       c.String("sudo-peers"),
 	}
 
 	// Start the HTTP server (blocks until ctx is cancelled)
@@ -420,6 +421,10 @@ func serverFlags() []cli.Flag {
 			Usage:   "Only show local sessions in the web UI (still shares state with hub)",
 			Sources: cli.EnvVars("TMUXATLAS_LOCAL_ONLY", "GUPPI_LOCAL_ONLY"),
 		},
+		&cli.StringFlag{
+			Name: "sudo-peers", Usage: "Comma-separated fingerprints of the peers allowed to open sudo terminals",
+			Sources: cli.EnvVars("TMUXATLAS_SUDO_PEERS"),
+		},
 	}
 }
 
@@ -445,6 +450,10 @@ func hubFlags() []cli.Flag {
 		&cli.BoolFlag{
 			Name: "no-auth", Usage: "Disable authentication (loopback development only)",
 			Sources: cli.EnvVars("TMUXATLAS_NO_AUTH"),
+		},
+		&cli.StringFlag{
+			Name: "sudo-peers", Usage: "Comma-separated fingerprints of the peers allowed to open sudo terminals",
+			Sources: cli.EnvVars("TMUXATLAS_SUDO_PEERS"),
 		},
 	}
 }

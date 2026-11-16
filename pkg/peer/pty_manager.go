@@ -3,14 +3,18 @@ package peer
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 
 	"github.com/LosFurina/tmuxatlas/pkg/activity"
 	"github.com/LosFurina/tmuxatlas/pkg/clipboardimage"
+	"github.com/LosFurina/tmuxatlas/pkg/sudoterm"
 	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 	"github.com/LosFurina/tmuxatlas/pkg/ws"
 )
@@ -22,6 +26,9 @@ type PTYManager struct {
 	activity *activity.Tracker
 	client   *Client
 	openPTY  func(string, string, uint16, uint16) (ptyDevice, error)
+	// paneTTY finds the device of a session's active pane, to warn the
+	// browser when it reads a password. Nil disables the warning.
+	paneTTY func(string, string) (string, error)
 }
 
 type ptyDevice interface {
@@ -53,6 +60,7 @@ func NewPTYManager(tmuxPath string, actTracker *activity.Tracker, client *Client
 	manager.openPTY = func(path, session string, cols, rows uint16) (ptyDevice, error) {
 		return tmux.NewPTYSession(path, session, cols, rows)
 	}
+	manager.paneTTY = tmux.ActivePaneTTY
 	return manager
 }
 
@@ -208,6 +216,28 @@ func (pm *PTYManager) Open(request PTYOpenPayload) {
 		}
 	}()
 
+	if pm.paneTTY != nil {
+		active.wg.Add(1)
+		go func() {
+			defer active.wg.Done()
+			var controlSequence uint64
+			pm.watchPasswordMode(ctx, request.Target.Session, func(off bool) error {
+				state := "on"
+				if off {
+					state = "off"
+				}
+				writeMu.Lock()
+				defer writeMu.Unlock()
+				controlSequence++
+				frame, err := EncodePTYControlFrame(PTYControlFrame{Version: PTYFrameVersion, Type: "echo", Sequence: controlSequence, Reason: state})
+				if err != nil {
+					return err
+				}
+				return hubWS.WriteMessage(websocket.TextMessage, frame)
+			})
+		}()
+	}
+
 	<-done
 	active.Teardown("relay-ended")
 	active.wg.Wait()
@@ -278,4 +308,34 @@ func (pm *PTYManager) connectPTYWebSocket(request PTYOpenPayload) (*websocket.Co
 	}
 	conn.SetReadLimit(maxPTYFrameData + ptyDataHeaderSize)
 	return conn, nil
+}
+
+// watchPasswordMode polls the active pane's terminal. When it reads a line
+// without echo, the shape of a password prompt, the browser is told to stop
+// sending keystrokes: an agent could fake a sudo prompt in its own pane.
+// Full-screen programs run in raw mode and are not reported.
+func (pm *PTYManager) watchPasswordMode(ctx context.Context, session string, report func(bool) error) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	reported := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		off := false
+		if path, err := pm.paneTTY(pm.tmuxPath, session); err == nil {
+			if file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0); err == nil {
+				off, _ = sudoterm.PasswordMode(file)
+				file.Close()
+			}
+		}
+		if off != reported {
+			if report(off) != nil {
+				return
+			}
+			reported = off
+		}
+	}
 }
