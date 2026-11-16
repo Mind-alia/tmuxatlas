@@ -75,12 +75,31 @@ CGO_ENABLED=0 go build -trimpath \
 sha256sum dist/tmuxatlas
 ```
 
+Go n'est pas installé pour `transcriptflow` sur le serveur : on compile le
+binaire dans l'image `golang:1.25-bookworm` (celle des binaires précédents),
+avec les caches de `transcriptflow`, après avoir construit le frontend avec le
+`npm` de l'hôte comme ci-dessus :
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" -v ~/src/tmuxatlas:/src -w /src \
+  -v ~/go/pkg/mod:/gomod -v ~/.cache/go-build:/gocache \
+  -e HOME=/tmp -e GOMODCACHE=/gomod -e GOCACHE=/gocache \
+  -e GOTOOLCHAIN=local -e GOFLAGS=-mod=readonly -e CGO_ENABLED=0 \
+  golang:1.25-bookworm sh -c "go mod verify && go build -trimpath \
+    -ldflags '-s -w -X github.com/LosFurina/tmuxatlas/pkg/common.COMMIT=$EXPECTED_SHA' \
+    -o dist/tmuxatlas . && ./dist/tmuxatlas --version"
+```
+
 Les caches (`~/go`, `~/.cache/go-build`, `~/.npm`) sont ceux de
 `transcriptflow`. Ne pointez jamais `GOCACHE`, `GOMODCACHE`, `GOPATH` ou
 `npm_config_cache` vers `/home/agents`.
 
 Lancer les tests ciblés si le temps le permet (`go test ./pkg/...`), avec
-`TMUX` vidé et `TMUX_TMPDIR` temporaire (voir `CLAUDE.md`).
+`TMUX` vidé et `TMUX_TMPDIR` temporaire (voir `CLAUDE.md`). Dans un conteneur,
+il faut `tmux` dans l'image et un `/etc/passwd` qui nomme l'uid utilisé, sinon
+`TestSudoTerminalEndToEnd` expire faute de nom d'utilisateur ;
+`TestSessionNamedAsIdCannotReachAnotherSession` échoue avec le tmux 3.3a de
+Debian bookworm, comme sur les versions précédentes.
 
 ## 4. Installer en gardant le binaire précédent
 
@@ -96,8 +115,13 @@ stat -c '%U:%G %a %n' /opt/tmuxatlas /opt/tmuxatlas/tmuxatlas   # root:root 755
 cours gardent l'ancienne version jusqu'à leur redémarrage.
 
 La première fois seulement, faire pointer le service du hub sur ce binaire :
-`/opt/tmuxatlas/tmuxatlas install --mode hub` (le service reprend le chemin
-du binaire qui l'installe).
+`/opt/tmuxatlas/tmuxatlas install --mode server --public-url http://localhost:7654`
+(le service reprend le chemin du binaire qui l'installe). **Pas `--mode hub`** :
+ce mode est un hub distant seulement, sans tmux ni fichiers locaux, et les
+sessions de `transcriptflow` disparaîtraient de l'interface. Vérifier ensuite
+que l'unité contient `KillMode=process` (`systemctl --user cat
+tmuxatlas.service`) : sans lui, le redémarrage tue le serveur tmux de
+`transcriptflow` et toutes ses sessions.
 
 Avant de redémarrer, ajouter au `.env` du hub les variables nouvelles de la
 version (voir le `CHANGELOG.md` et les notes de passation). Les secrets vont
@@ -110,7 +134,7 @@ dans git.
 systemctl --user restart tmuxatlas.service
 systemctl --user status tmuxatlas.service --no-pager
 journalctl --user -u tmuxatlas.service -n 50 --no-pager
-/opt/tmuxatlas/tmuxatlas healthcheck   # puis ouvrir la page de connexion via Caddy
+/opt/tmuxatlas/tmuxatlas healthcheck   # puis ouvrir l'interface (tunnel SSH, ou le proxy s'il y en a un)
 ```
 
 Les peers invités utilisent aussi `/opt/tmuxatlas/tmuxatlas` : chacun reprend
@@ -129,6 +153,23 @@ Si la nouvelle version a ajouté des variables au `.env`, l'ancienne les ignore 
 on peut les laisser. Si elle a modifié des fichiers d'état
 (`~/.local/state/tmuxatlas`), sauvegardez ce dossier avant l'étape 5 pour
 pouvoir le restaurer.
+
+## Particularités du serveur de prod
+
+- **Pas de Caddy aujourd'hui** : l'interface n'est joignable que par un tunnel
+  SSH vers `127.0.0.1:7654`. `TMUXATLAS_PROXY_SECRET` n'est lu qu'en mode
+  comptes (`TMUXATLAS_AUTH=accounts`) et ne sert que derrière un proxy qui
+  ajoute l'en-tête `X-Tmuxatlas-Proxy-Secret` : sans proxy, il n'y a pas de
+  `header_up` à configurer.
+- **Terminal sudo** : `TMUXATLAS_SUDO_REQUESTERS` (empreinte du peer agents)
+  laisse les agents déposer des demandes, mais aucun terminal ne s'ouvre sans
+  un peer `tmuxatlas agent --sudo-terminal` sous un compte admin, épinglé par
+  `TMUXATLAS_SUDO_PEERS` (voir [sudo-terminal.md](sudo-terminal.md)).
+- **Collecteur ops** : le hub tourne sous `transcriptflow`, le compte qui
+  possède Docker. Le dossier d'état peut donc rester dans son home
+  (`TMUXATLAS_OPS_DIR=~/.local/state/tf-ops`, et
+  `ReadWritePaths=%h/.local/state/tf-ops` dans l'unité du collecteur), sans
+  groupe `tfops` ni `/srv/tf-ops`.
 
 ## Scripts `contrib/ops`
 
