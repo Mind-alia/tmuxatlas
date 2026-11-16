@@ -9,7 +9,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -26,6 +28,7 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/httpguard"
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
 	"github.com/LosFurina/tmuxatlas/pkg/ingress"
+	"github.com/LosFurina/tmuxatlas/pkg/monitor"
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
 	"github.com/LosFurina/tmuxatlas/pkg/preferences"
 	"github.com/LosFurina/tmuxatlas/pkg/socket"
@@ -33,6 +36,7 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/stats"
 	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
+	"github.com/LosFurina/tmuxatlas/pkg/voice"
 	"github.com/LosFurina/tmuxatlas/pkg/webpush"
 	"github.com/LosFurina/tmuxatlas/pkg/ws"
 )
@@ -53,14 +57,16 @@ type Options struct {
 	PushStore        *webpush.Store
 	PrefStore        *preferences.Store
 	AuthEnabled      bool
+	AccountsAuth     *auth.AccountsAuth
 	PasskeyManager   *auth.PasskeyManager
 	SessionMgr       *auth.SessionManager
 	PeerMgr          *peer.Manager
 	PeerHandler      *peer.Handler
 	PairingMgr       *identity.PairingManager
 	PTYRelay         *peer.PTYRelay
-	Detector         *toolevents.Detector
+	Watcher          *toolevents.Watcher
 	LocalOnly        bool
+	routerObserver   func(chi.Routes)
 }
 
 func writeRuntimeError(w http.ResponseWriter, err error) {
@@ -77,8 +83,10 @@ func writeRuntimeError(w http.ResponseWriter, err error) {
 	case peer.ErrorPeerOffline, peer.ErrorPeerRevoked:
 		status = http.StatusServiceUnavailable
 	case peer.ErrorProtocolIncompatible, peer.ErrorCapabilityUnsupported,
-		peer.ErrorRequestConflict, peer.ErrorExecutionUnknown:
+		peer.ErrorRequestConflict, peer.ErrorExecutionUnknown, peer.ErrorPromptChanged, peer.ErrorAlreadyOwned, peer.ErrorNotOwner:
 		status = http.StatusConflict
+	case peer.ErrorUnsupported:
+		status = http.StatusNotImplemented
 	case peer.ErrorQueueFull, peer.ErrorResourceExhausted:
 		status = http.StatusTooManyRequests
 	case peer.ErrorTimeout:
@@ -139,6 +147,19 @@ func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, 
 		return
 	}
 	defer browserWS.Close()
+	if identity, ok := auth.AccountFromContext(r.Context()); ok {
+		stop := make(chan struct{})
+		defer close(stop)
+		go func() {
+			select {
+			case <-identity.Done:
+				_ = browserWS.Close()
+			case <-r.Context().Done():
+				_ = browserWS.Close()
+			case <-stop:
+			}
+		}()
+	}
 
 	// Generate stream ID and register pending relay
 	owner, err := opts.PTYRelay.RegisterPending(peerConn, target, browserWS)
@@ -169,6 +190,9 @@ func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, 
 
 func Run(ctx context.Context, opts *Options) error {
 	logger := logrus.WithField("component", "server")
+	if opts.AccountsAuth != nil && (!opts.AuthEnabled || opts.SessionMgr == nil || opts.AccountsAuth.Sessions != opts.SessionMgr) {
+		return errors.New("configuration de l'authentification comptes incohérente")
+	}
 
 	coordinator := opts.StateCoordinator
 	if coordinator == nil {
@@ -180,6 +204,24 @@ func Run(ctx context.Context, opts *Options) error {
 		defer coordinator.Close()
 		opts.StateCoordinator = coordinator
 	}
+	// Host monitoring only makes sense where TmuxAtlas runs on a real host.
+	var hostMonitor *monitor.Monitor
+	if opts.Role != "hub" && monitor.Supported() && monitorEnabled(os.Getenv("TMUXATLAS_MONITOR")) {
+		hostMonitor = monitor.New(monitorURLs(os.Getenv("TMUXATLAS_MONITOR_URLS")))
+		go hostMonitor.Run(ctx)
+	}
+	// The browser microphone feeds programs on this host, so it needs local tmux.
+	var browserMic *voice.Mic
+	if opts.Client != nil && voice.Enabled(os.Getenv("TMUXATLAS_VOICE")) {
+		browserMic = voice.New(opts.Client.TmuxPath())
+		go func() {
+			if err := browserMic.Setup(ctx); err != nil {
+				logrus.WithError(err).Warn("voice setup failed")
+			}
+			browserMic.Run(ctx)
+		}()
+	}
+
 	if opts.PeerMgr != nil {
 		if _, err := coordinator.ReplaceHosts(ctx, opts.PeerMgr.StateHostSnapshots()); err != nil {
 			return fmt.Errorf("initialize canonical host projection: %w", err)
@@ -228,6 +270,11 @@ func Run(ctx context.Context, opts *Options) error {
 	if opts.Tracker != nil {
 		toolEvents := opts.Tracker.Subscribe()
 		defer opts.Tracker.Unsubscribe(toolEvents)
+		for _, event := range opts.Tracker.GetAll() {
+			if _, err := coordinator.ApplyToolEvent(ctx, event, localHostID); err != nil {
+				return fmt.Errorf("initialize canonical tool events: %w", err)
+			}
+		}
 		go func() {
 			for {
 				select {
@@ -304,12 +351,28 @@ func Run(ctx context.Context, opts *Options) error {
 	publicRouter.Use(chimiddleware.RequestID)
 	publicRouter.Use(hostValidation)
 	publicRouter.Use(httpguard.GlobalBodyLimitMiddleware(httpguard.GlobalBodyLimit))
+	accountPolicy := newAccountPolicy(opts)
+	if actionRouter != nil {
+		accountPolicy.router = actionRouter
+	}
+	if opts.AccountsAuth != nil {
+		go accountPolicy.watchOwnership(ctx)
+	}
 
 	// API routes
 	publicRouter.Route("/api", func(r chi.Router) {
 		// Public auth endpoints (no middleware)
-		r.Get("/auth/status", auth.StatusHandler(opts.AuthEnabled, opts.PasskeyManager))
-		if opts.AuthEnabled {
+		if opts.AccountsAuth != nil {
+			r.Get("/auth/status", opts.AccountsAuth.Status)
+			r.With(admissionMiddleware(ingressPolicy, ingress.CategoryWebAuthn), originMiddleware,
+				httpguard.BodyReadDeadline(15*time.Second), httpguard.JSONBody(httpguard.WebAuthnLimit)).
+				Post("/auth/login", opts.AccountsAuth.Login)
+			r.With(opts.AccountsAuth.Middleware, originMiddleware, auth.CSRFMiddleware(opts.SessionMgr)).
+				Post("/auth/logout", opts.AccountsAuth.Logout)
+		} else {
+			r.Get("/auth/status", auth.StatusHandler(opts.AuthEnabled, opts.PasskeyManager))
+		}
+		if opts.AuthEnabled && opts.AccountsAuth == nil {
 			preSessionJSON := []func(http.Handler) http.Handler{
 				admissionMiddleware(ingressPolicy, ingress.CategoryWebAuthn),
 				originMiddleware,
@@ -340,7 +403,43 @@ func Run(ctx context.Context, opts *Options) error {
 		// Protected API routes
 		r.Group(func(r chi.Router) {
 			mutations := r
-			if opts.AuthEnabled {
+			if opts.AccountsAuth != nil {
+				r.Use(opts.AccountsAuth.Middleware)
+				r.Use(accountPolicy.Middleware)
+				mutations = r.With(originMiddleware, auth.CSRFMiddleware(opts.SessionMgr))
+				mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).
+					Post("/auth/change-password", opts.AccountsAuth.ChangePassword)
+				r.Get("/accounts/directory", func(w http.ResponseWriter, r *http.Request) {
+					handleAccountDirectory(w, opts)
+				})
+				r.With(accountAdminOnly).Get("/admin/users", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminUsers(w, r, opts)
+				})
+				mutations.With(accountAdminOnly, httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Post("/admin/users", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminUsers(w, r, opts)
+				})
+				mutations.With(accountAdminOnly, httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Patch("/admin/users/{id}", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminUserUpdate(w, r, opts)
+				})
+				mutations.With(accountAdminOnly).Delete("/admin/users/{id}", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminUserDelete(w, r, opts, actionRouter)
+				})
+				r.With(accountAdminOnly).Get("/admin/sessions", func(w http.ResponseWriter, r *http.Request) {
+					snapshot, err := coordinator.Snapshot(r.Context())
+					if err != nil {
+						http.Error(w, "état indisponible", http.StatusServiceUnavailable)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(snapshot.State.SessionViews())
+				})
+				for _, operation := range []string{"claim", "release"} {
+					operation := operation
+					mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Post("/session/"+operation, func(w http.ResponseWriter, r *http.Request) {
+						handleAccountOwnership(w, r, opts, actionRouter, accountPolicy, operation)
+					})
+				}
+			} else if opts.AuthEnabled {
 				r.Use(auth.Middleware(opts.SessionMgr, opts.SecureCookies))
 				r.Get("/auth/passkeys", opts.PasskeyManager.ListHandler())
 				mutations = r.With(originMiddleware, auth.CSRFMiddleware(opts.SessionMgr))
@@ -352,6 +451,11 @@ func Run(ctx context.Context, opts *Options) error {
 			}
 
 			// Agent status — check which agents are installed/configured
+			if opts.AccountsAuth != nil {
+				r.Get("/peers", func(w http.ResponseWriter, r *http.Request) {
+					http.NotFound(w, r)
+				})
+			}
 			r.Get("/agent-status", func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				if opts.Role == "hub" {
@@ -371,6 +475,10 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
+					json.NewEncoder(w).Encode(accountPolicy.verifiedProjection(snapshot.State).AccountSessionViews(identity.User.ID))
+					return
+				}
 				json.NewEncoder(w).Encode(snapshot.State.SessionViews())
 			})
 
@@ -381,6 +489,10 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
+					json.NewEncoder(w).Encode(accountPolicy.verifiedProjection(snapshot.State).AccountHostViews(identity.User.ID))
+					return
+				}
 				json.NewEncoder(w).Encode(snapshot.State.HostViews())
 			})
 
@@ -392,12 +504,28 @@ func Run(ctx context.Context, opts *Options) error {
 				handleSessionRename(w, r, actionRouter, opts)
 			})
 
+			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Post("/session/kill", func(w http.ResponseWriter, r *http.Request) {
+				handleSessionKill(w, r, actionRouter, opts)
+			})
+
 			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Post("/session/select-window", func(w http.ResponseWriter, r *http.Request) {
 				handleSessionSelectWindow(w, r, actionRouter)
 			})
 
 			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Post("/session/select-pane", func(w http.ResponseWriter, r *http.Request) {
 				handleSessionSelectPane(w, r, actionRouter)
+			})
+
+			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Post("/session/reply", func(w http.ResponseWriter, r *http.Request) {
+				handleSessionReply(w, r, actionRouter)
+			})
+
+			r.Get("/session/preview", func(w http.ResponseWriter, r *http.Request) {
+				handleSessionPreview(w, r, actionRouter)
+			})
+
+			r.Get("/session/directories", func(w http.ResponseWriter, r *http.Request) {
+				handleSessionDirectories(w, r, actionRouter)
 			})
 
 			// Tool event query/management (auth-protected)
@@ -408,7 +536,11 @@ func Run(ctx context.Context, opts *Options) error {
 					http.Error(w, err.Error(), http.StatusServiceUnavailable)
 					return
 				}
-				events := snapshot.State.ToolEventViews()
+				projection := snapshot.State
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
+					projection = accountPolicy.verifiedProjection(projection).OwnedBy(identity.User.ID)
+				}
+				events := projection.ToolEventViews()
 				if session != "" {
 					filtered := events[:0]
 					for _, event := range events {
@@ -437,6 +569,7 @@ func Run(ctx context.Context, opts *Options) error {
 			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Delete("/tool-event", func(w http.ResponseWriter, r *http.Request) {
 				var req struct {
 					Host    string `json:"host"`
+					HostID  string `json:"host_id"`
 					Session string `json:"session"`
 					Window  int    `json:"window"`
 					Pane    string `json:"pane"`
@@ -444,6 +577,13 @@ func Run(ctx context.Context, opts *Options) error {
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Session == "" {
 					http.Error(w, "session is required", http.StatusBadRequest)
 					return
+				}
+				if req.Host != "" && req.HostID != "" && req.Host != req.HostID {
+					http.Error(w, "cibles contradictoires", http.StatusBadRequest)
+					return
+				}
+				if req.Host == "" {
+					req.Host = req.HostID
 				}
 				if opts.Tracker != nil {
 					opts.Tracker.Clear(req.Host, req.Session, req.Window, req.Pane)
@@ -455,6 +595,30 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 				w.WriteHeader(http.StatusNoContent)
+			})
+
+			// Voice status — whether the browser microphone can be used on this host
+			r.Get("/voice", func(w http.ResponseWriter, r *http.Request) {
+				status := voice.Status{}
+				if browserMic != nil {
+					status = browserMic.Status()
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				json.NewEncoder(w).Encode(status)
+			})
+
+			// Monitor endpoint — host observability (series + inventories)
+			r.Get("/monitor", func(w http.ResponseWriter, r *http.Request) {
+				if hostMonitor == nil {
+					http.Error(w, "monitoring unavailable on this role", http.StatusNotFound)
+					return
+				}
+				rangeSec := monitorRange(r.URL.Query().Get("range"))
+				after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				json.NewEncoder(w).Encode(hostMonitor.Snapshot(rangeSec, after))
 			})
 
 			// Stats endpoint — aggregate overview data
@@ -496,8 +660,8 @@ func Run(ctx context.Context, opts *Options) error {
 					}
 				}
 				// Also include panes detected via process tree inspection
-				if opts.Detector != nil {
-					for paneID := range opts.Detector.DetectedPanes() {
+				if opts.Watcher != nil {
+					for paneID := range opts.Watcher.DetectedPanes() {
 						agentEventPanes[paneID] = true
 					}
 				}
@@ -507,10 +671,13 @@ func Run(ctx context.Context, opts *Options) error {
 						agentPanes++
 					}
 				}
+				activeAgents := 0
 				waitingAgents := 0
 				errorAgents := 0
 				for _, evt := range toolEvents {
 					switch evt.Status {
+					case "active":
+						activeAgents++
 					case "waiting":
 						waitingAgents++
 					case "error":
@@ -532,7 +699,7 @@ func Run(ctx context.Context, opts *Options) error {
 					"panes":       len(allPanes),
 					"agent_panes": agentPanes,
 					"agents": map[string]int{
-						"active":  agentPanes,
+						"active":  activeAgents,
 						"waiting": waitingAgents,
 						"error":   errorAgents,
 					},
@@ -552,7 +719,11 @@ func Run(ctx context.Context, opts *Options) error {
 					http.Error(w, err.Error(), http.StatusServiceUnavailable)
 					return
 				}
-				snapshots := snapshot.State.ActivityViews()
+				projection := snapshot.State
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
+					projection = accountPolicy.verifiedProjection(projection).OwnedBy(identity.User.ID)
+				}
+				snapshots := projection.ActivityViews()
 				w.Header().Set("Content-Type", "application/json")
 				if session != "" {
 					for _, activitySnapshot := range snapshots {
@@ -623,6 +794,9 @@ func Run(ctx context.Context, opts *Options) error {
 				} else {
 					prefs = preferences.Default()
 				}
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
+					prefs = preferences.Default()
+				}
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(prefs)
 			})
@@ -667,11 +841,19 @@ func Run(ctx context.Context, opts *Options) error {
 				})
 			})
 		})
+		if opts.AccountsAuth != nil {
+			r.With(opts.AccountsAuth.Middleware, accountPolicy.Middleware).Handle("/*", http.NotFoundHandler())
+		}
 	})
 
 	// WebSocket routes (protected by auth if enabled)
 	hub := ws.NewHub(opts.StateMgr, opts.Tracker)
 	hub.SetCoordinator(coordinator)
+	if opts.AccountsAuth != nil {
+		hub.SetAccountProjection(func(projection state.Projection, accountID string) state.AccountProjection {
+			return accountPolicy.verifiedProjection(projection).ForAccount(accountID)
+		})
+	}
 	if opts.ActivityTracker != nil {
 		var peerActivity ws.ActivitySource
 		localHostID := ""
@@ -687,12 +869,25 @@ func Run(ctx context.Context, opts *Options) error {
 	var ptyHandler *ws.PTYTerminalHandler
 	if opts.Client != nil {
 		ptyHandler = ws.NewPTYTerminalHandler(opts.Client.TmuxPath(), opts.ActivityTracker)
+		if browserMic != nil {
+			ptyHandler.OnSessionUse = browserMic.UseSession
+		}
 	}
 
 	if opts.AuthEnabled {
 		authMw := auth.Middleware(opts.SessionMgr, opts.SecureCookies)
-		publicRouter.With(authMw, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/events", hub.HandleEvents)
-		publicRouter.With(authMw, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
+		if opts.AccountsAuth != nil {
+			authMw = opts.AccountsAuth.Middleware
+		}
+		accountGuard := func(next http.Handler) http.Handler { return next }
+		if opts.AccountsAuth != nil {
+			accountGuard = accountPolicy.Middleware
+		}
+		publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/events", hub.HandleEvents)
+		if browserMic != nil {
+			publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/mic", browserMic.HandleStream)
+		}
+		publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
 			hostID := req.URL.Query().Get("host")
 			if opts.PeerMgr == nil || hostID == "" || !opts.PeerMgr.HasHost(hostID) {
 				http.Error(w, "explicit known host is required", http.StatusBadRequest)
@@ -710,6 +905,9 @@ func Run(ctx context.Context, opts *Options) error {
 		})
 	} else {
 		publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/events", hub.HandleEvents)
+		if browserMic != nil {
+			publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/mic", browserMic.HandleStream)
+		}
 		publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
 			hostID := req.URL.Query().Get("host")
 			if opts.PeerMgr == nil || hostID == "" || !opts.PeerMgr.HasHost(hostID) {
@@ -747,6 +945,9 @@ func Run(ctx context.Context, opts *Options) error {
 		return fmt.Errorf("frontend fs: %w", err)
 	}
 	publicRouter.Get("/*", frontendHandler(sub).ServeHTTP)
+	if opts.routerObserver != nil {
+		opts.routerObserver(publicRouter)
+	}
 
 	publicServer := &http.Server{
 		Handler:           publicRouter,
@@ -841,4 +1042,40 @@ func Run(ctx context.Context, opts *Options) error {
 	}
 
 	return nil
+}
+
+// monitorEnabled reads TMUXATLAS_MONITOR. Monitoring stays on unless explicitly
+// disabled, since it runs commands such as apt, systemctl and journalctl.
+func monitorEnabled(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "off", "false", "0", "no":
+		return false
+	default:
+		return true
+	}
+}
+
+// monitorRange maps the UI range selector to seconds (default one hour).
+func monitorRange(value string) int64 {
+	switch value {
+	case "15m":
+		return 15 * 60
+	case "6h":
+		return 6 * 3600
+	case "24h":
+		return 24 * 3600
+	default:
+		return 3600
+	}
+}
+
+// monitorURLs parses TMUXATLAS_MONITOR_URLS (comma or space separated).
+func monitorURLs(value string) []string {
+	var urls []string
+	for _, field := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ' ' }) {
+		if strings.HasPrefix(field, "http://") || strings.HasPrefix(field, "https://") {
+			urls = append(urls, field)
+		}
+	}
+	return urls
 }

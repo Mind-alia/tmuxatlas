@@ -15,8 +15,13 @@ It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode) running 
 ### Key features
 
 - **Full terminal in the browser** — PTY-backed xterm.js rendering. Type, scroll, resize — it just works.
+- **Paste clipboard images** — paste a PNG, JPEG, or GIF (up to 10 MB) into a Claude Code or Codex terminal. Atlas saves a private copy on the session host and inserts it into the prompt. Remote hosts require an updated Atlas Agent. Copies remain in the session host’s `~/.cache/tmuxatlas/clipboard-images` directory until removed.
 - **Real-time session discovery** — sessions, windows, and panes update live via tmux control mode.
 - **AI agent monitoring** — see which agents are active, waiting for input, or errored across all sessions at a glance.
+- **Attention inbox and previews** — see sessions that need attention, inspect pane previews and reply to detected choices explicitly; the server rechecks the prompt before sending a reply.
+- **Workspace navigation** — switch terminal windows with tabs, view sessions in the Wall, and inspect host metrics on the Monitoring page.
+- **Session creation** — choose a project directory and optionally launch a supported agent when creating a session.
+- **Host aliases and shortcuts** — give hosts recognizable names and navigate with keyboard shortcuts and the command palette.
 - **Push notifications** — get browser/desktop notifications when an agent needs attention, even with the tab backgrounded.
 - **Installable Web App** — install the HTTPS Hub as a focused PWA on desktop or add it to an iPhone/iPad Home Screen.
 - **Command Palette** — search hosts, sessions, windows, agents, and application commands from one keyboard-first interface.
@@ -26,8 +31,8 @@ It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode) running 
 
 ### Non-goals
 
-- **Multi-user** — TmuxAtlas is a single-user tool. One person, one dashboard. There are no user accounts, roles, or shared access controls.
-- **Agent orchestration** — TmuxAtlas doesn't start, stop, or control your agents. It watches and reports. You run your agents however you want; TmuxAtlas just tells you what they're doing.
+- **Isolation multi-utilisateur Unix** — Le mode comptes filtre l’interface et l’API, mais ne fournit pas d’isolation entre comptes Unix.
+- **Agent orchestration** — Atlas does not orchestrate agents. On explicit user action it can launch an agent when creating a session or send a reply to a detected question, after server-side revalidation.
 - **tmux management** — TmuxAtlas doesn't manage layouts or workflows. The installer can optionally add a small, clearly marked `mouse on` block to `.tmux.conf`; all other tmux configuration stays yours.
 
 ## Installation
@@ -541,6 +546,28 @@ Push alerts (via the Web Push API) work independently of the browser tab, includ
 
 ## Configuration
 
+### Comptes Atlas
+
+Pour activer le mode comptes, initialisez d’abord un administrateur, puis
+démarrez le serveur avec `TMUXATLAS_AUTH=accounts` ou `--auth accounts` :
+
+```bash
+tmuxatlas users bootstrap-admin --username admin --password-stdin
+TMUXATLAS_AUTH=accounts tmuxatlas server
+```
+
+La première commande lit le mot de passe sur l’entrée standard. On peut aussi
+importer un hash bcrypt avec `--password-hash-file <fichier>` ; `--force`
+remplace un administrateur existant. Le serveur refuse le mode comptes sans
+administrateur actif ou avec `--no-auth`. Le fichier `users.json` est stocké
+dans le dossier de configuration avec les permissions `0600`. La première
+activation attribue les sessions tmux locales existantes à l’administrateur ;
+les sessions créées ensuite en dehors d’Atlas restent libres.
+
+Les routes, les formats JSON et les autorisations figurent dans
+[l’API des comptes](docs/accounts-api.md). Les comptes partagent le compte
+Unix du serveur : voir l’[avertissement de sécurité](docs/accounts-security.md).
+
 TmuxAtlas automatically loads `~/.config/tmuxatlas/.env` at startup. Existing
 process environment variables take precedence. Start from
 [`.env.example`](.env.example); only `TMUXATLAS_*` entries are accepted.
@@ -549,9 +576,11 @@ process environment variables take precedence. Start from
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `TMUXATLAS_AUTH` | `passkey` | Mode d’authentification : `passkey` ou `accounts` |
 | `TMUXATLAS_LISTEN` | `127.0.0.1:7654` | HTTP/WS origin listen address |
 | `TMUXATLAS_PUBLIC_URL` | `http://localhost:7654` | Browser-facing absolute HTTP(S) URL; HTTPS enables Secure cookies |
 | `TMUXATLAS_SESSION_TTL` | `24h` | Idle time before Passkey login is required again; accepts Go durations such as `168h` |
+| `TMUXATLAS_PROJECT_DIRS` | `~/Project,~/projects,~/code,~/src,~/dev` | Project roots on each session host, separated by commas or colons; their immediate directories are offered during session creation |
 | `TMUXATLAS_DISCOVERY_INTERVAL` | `2` | Session polling interval (seconds) |
 | `TMUXATLAS_NO_CONTROL_MODE` | `false` | Disable tmux control mode |
 | `TMUXATLAS_SOCKET` | platform default | Private Unix socket used by notify/agent-setup |
@@ -567,6 +596,7 @@ process environment variables take precedence. Start from
 
 ```
 tmuxatlas server [flags]
+      --auth string               Mode d’authentification : passkey ou accounts
       --listen string             HTTP/WS origin listen address (default "127.0.0.1:7654")
       --public-url string         Browser-facing absolute URL (default "http://localhost:7654")
       --session-ttl duration      Idle time before Passkey login is required again (default 24h)
@@ -626,3 +656,10 @@ cannot read unrelated Terminal content.
 ## License
 
 MIT
+
+### Avertissement sur les comptes Unix
+
+Tous les utilisateurs d’Atlas partagent le compte Unix du serveur. Les contrôles
+éventuels de l’interface et de l’API ne constituent pas une isolation Unix :
+une personne disposant d’un terminal peut lire les fichiers accessibles à ce
+compte et modifier les options tmux, notamment `@atlas-owner`.

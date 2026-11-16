@@ -30,27 +30,36 @@ TmuxAtlas is a web dashboard for monitoring and interacting with tmux sessions. 
 ```
 main.go                  # Entry point, urfave/cli v3
 pkg/
-  commands/              # CLI commands (server, notify, pair, peers, agent-setup, install)
+  commands/              # CLI commands (server, agent, agent-setup, bootstrap, doctor, healthcheck, install, notify, pair, peers, update)
   server/                # Chi HTTP server + embedded frontend
   ws/                    # WebSocket hub (broadcast) + PTY terminal bridge
   state/                 # Central state tree with diff-based broadcasting
   tmux/                  # tmux client, PTY, control mode, discovery
-  peer/                  # Multi-host peer protocol, manager, PTY relay
+  peer/                  # Multi-host peer protocol, manager, PTY relay, session_extras (previews, replies, directories)
   identity/              # ed25519 keypair, peer store, pairing
-  toolevents/            # Agent detection, event tracking, silence monitor, prompt parser
-  auth/                  # Password auth + session management
+  toolevents/            # Agent watcher, screen classifier, event tracking, prompt parser and promptoptions
+  auth/                  # Passkey auth + session management
   agentcheck/            # Agent installation & hook configuration checks
   activity/              # Activity tracking (sparklines)
+  monitor/               # Host monitoring: metrics, services, probes, alerts (`/api/monitor`, disable with TMUXATLAS_MONITOR=off)
+  fleethealth/           # Fleet health evaluation
+  httpguard/             # HTTP request guards (body limits and deadlines)
+  ingress/               # Bounded admission controls for ingress connections
+  paths/                 # Config and state directory resolution
   common/                # Command registration, version, logging setup
   socket/                # Unix socket communication
   preferences/           # User preferences
   stats/                 # System statistics
   webpush/               # Browser push notifications
+  voice/                 # Browser microphone to PulseAudio virtual mic (`/ws/mic`, enable with TMUXATLAS_VOICE=on)
 web/
   src/
     App.tsx              # Main app component
-    components/          # React components (Sidebar, Terminal, Overview, etc.)
+    components/          # Shell, Overview, Inbox, Terminal, WindowTabs, monitoring, Brand and shared ui primitives
     hooks/               # Custom hooks (useTerminal, useSessions, useHosts, etc.)
+    state/               # Revisioned Hub projection and connection state
+    workspace/           # Workspace view model and status helpers
+    lib/                 # API clients, host labels and UI helpers
 ```
 
 ## Code Conventions
@@ -79,17 +88,17 @@ web/
 **All tool events must include `Host` and `HostName` fields.** The frontend uses `host` to construct session keys (`host/session`) for URL routing and navigation. Events missing host info will fail to navigate to the correct session in multi-host setups.
 
 - The HTTP handler (`POST /api/tool-event`) stamps `Host`/`HostName` from `PeerMgr.LocalID()`/`LocalName()` automatically.
-- Components that record events directly (detector, silence monitor, inactivity promoter) must have host identity set via `SetHost()` at startup.
+- Components that record events directly (the agent watcher) must have host identity set via `SetHost()` at startup.
 - Frontend session keys follow the format `host/sessionName` for remote sessions, or just `sessionName` for local-only (single host) mode.
 
 ### Agent Detection
 
 Agent detection uses multiple layers — see `docs/agent-detection.md` for full details. Key rules:
 
-- **Claude and OpenCode** have native "waiting" hooks. Codex and Copilot rely on silence-based detection or inactivity promotion.
-- The silence monitor only runs `capture-pane` on panes with a detected non-Claude agent that have been silent for 10+ seconds, limited to 2 checks per silence period.
-- The inactivity promoter (30s timeout) is a fallback for when silence detection doesn't trigger.
-- The reconciler clears events when the agent process exits (foreground returns to a shell).
+- Each agent pane keeps one status until it changes: `active`, `waiting`, `completed`, `idle` or `error`. Only `waiting` and `error` can be dismissed.
+- The watcher reads every agent pane each 2 seconds and corrects what hooks cannot report. Add real captures to `pkg/toolevents/screen_test.go` when a CLI changes its screen.
+- A screen with no positive evidence keeps the last status: never guess.
+- Unset `TMUX` and set `TMUX_TMPDIR` when running Go tests from inside tmux: `$TMUX` takes precedence, and some tests run `kill-server`.
 
 ## Build & Release
 

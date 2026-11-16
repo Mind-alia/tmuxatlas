@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"sync"
+
+	"github.com/LosFurina/tmuxatlas/pkg/clipboardimage"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -17,6 +20,10 @@ import (
 type PTYTerminalHandler struct {
 	tmuxPath        string
 	activityTracker *activity.Tracker
+
+	// OnSessionUse reports that a browser tab, identified by the id of its
+	// microphone, is working in a tmux session.
+	OnSessionUse func(session, micID string)
 }
 
 // NewPTYTerminalHandler creates a new PTY-based terminal handler
@@ -29,16 +36,19 @@ func NewPTYTerminalHandler(tmuxPath string, activityTracker *activity.Tracker) *
 
 // resizeMsg is the JSON control message for resize events
 type resizeMsg struct {
-	Type string `json:"type"`
-	Cols uint16 `json:"cols"`
-	Rows uint16 `json:"rows"`
+	Type  string `json:"type"`
+	Cols  uint16 `json:"cols"`
+	Rows  uint16 `json:"rows"`
+	Data  string `json:"data"`
+	Final bool   `json:"final"`
+	On    bool   `json:"on"`
 }
 
 // HandleSession handles a WebSocket connection for an entire tmux session via PTY.
 // Query params: name=<session>, cols=<cols>, rows=<rows>
 func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Request) {
 	sessionName := r.URL.Query().Get("name")
-	if sessionName == "" {
+	if sessionName == "" || sessionName == tmux.ControlSessionName() {
 		http.Error(w, "missing session name", http.StatusBadRequest)
 		return
 	}
@@ -58,6 +68,8 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer conn.Close()
+	stopRevocation := closeOnAccountRevocation(conn, r)
+	defer stopRevocation()
 	conn.SetReadLimit(64 << 10)
 	conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 	conn.SetPongHandler(func(string) error {
@@ -84,6 +96,14 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 	log := logrus.WithField("session", sessionName)
 	log.Info("session ws client connected")
 
+	micID := r.URL.Query().Get("mic")
+	useSession := func() {
+		if h.OnSessionUse != nil && micID != "" {
+			h.OnSessionUse(sessionName, micID)
+		}
+	}
+	useSession()
+
 	// Spawn tmux attach in a PTY
 	ptySess, err := tmux.NewPTYSession(h.tmuxPath, sessionName, uint16(cols), uint16(rows))
 	if err != nil {
@@ -92,6 +112,20 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer ptySess.Close()
+
+	var writeMu sync.Mutex
+	var images clipboardimage.Receiver
+	hold := newVoiceHold(ptySess)
+	sendResult := func(err error) {
+		message := ""
+		if err != nil {
+			message = err.Error()
+		}
+		data, _ := json.Marshal(map[string]string{"type": "image-result", "error": message})
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_ = conn.WriteMessage(websocket.TextMessage, data)
+	}
 
 	// Read goroutine: PTY → WebSocket (binary messages)
 	done := make(chan struct{})
@@ -107,7 +141,10 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 			if h.activityTracker != nil {
 				h.activityTracker.Record(sessionName, n)
 			}
-			if err := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
+			writeMu.Lock()
+			err = conn.WriteMessage(websocket.BinaryMessage, buf[:n])
+			writeMu.Unlock()
+			if err != nil {
 				return
 			}
 		}
@@ -131,6 +168,23 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 				log.WithError(err).Debug("invalid control message")
 				continue
 			}
+			if msg.Type == "image" {
+				path, err := images.Add(msg.Data, msg.Final)
+				if err == nil && path != "" {
+					_, err = ptySess.Write([]byte("\x1b[200~" + path + "\x1b[201~"))
+				}
+				if err != nil || path != "" {
+					sendResult(err)
+				}
+			}
+			if msg.Type == "voice-hold" {
+				if msg.On {
+					useSession()
+					hold.Start()
+				} else {
+					hold.Stop()
+				}
+			}
 			if msg.Type == "resize" && msg.Cols > 0 && msg.Rows > 0 {
 				if err := ptySess.Resize(msg.Cols, msg.Rows); err != nil {
 					log.WithError(err).Debug("resize failed")
@@ -138,6 +192,7 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 			}
 
 		case websocket.BinaryMessage:
+			useSession()
 			if _, err := ptySess.Write(message); err != nil {
 				log.WithError(err).Debug("PTY write failed")
 				break
@@ -145,6 +200,8 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	hold.Stop()
+	ptySess.Close()
 	<-done
 	log.Info("session ws client disconnected")
 }

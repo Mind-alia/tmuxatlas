@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, createContext, useContext, useRef } from 'react'
+import { getBrandStorage, setBrandStorage } from '../lib/brandStorage'
 
 export interface Preferences {
   terminal: {
@@ -28,6 +29,8 @@ export interface Preferences {
   lock_background_faster: boolean
   lock_background_minutes: number
   fullscreen_hide_alerts: boolean
+  /** Friendly host names, keyed by host id. */
+  host_aliases?: Record<string, string>
 }
 
 export const defaultPreferences: Preferences = {
@@ -36,7 +39,7 @@ export const defaultPreferences: Preferences = {
     font_family: 'Space Mono',
     scrollback: 5000,
   },
-  theme: 'retro-blue',
+  theme: 'atlas',
   custom_theme: {},
   sidebar: {
     default_collapsed: false,
@@ -68,6 +71,7 @@ interface PreferencesContextValue {
   saveState: 'idle' | 'saving' | 'saved' | 'error'
   saveError: string | null
   retrySave: () => Promise<void>
+  isLocalOnly?: boolean
 }
 
 export const PreferencesContext = createContext<PreferencesContextValue>({
@@ -78,18 +82,45 @@ export const PreferencesContext = createContext<PreferencesContextValue>({
   saveState: 'idle',
   saveError: null,
   retrySave: async () => {},
+  isLocalOnly: false,
 })
 
-export function usePreferencesProvider() {
+function readLocalPreferences(): Partial<Preferences> | null {
+  try {
+    const raw = getBrandStorage('local-preferences')
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object') return parsed as Partial<Preferences>
+  } catch {
+    // ignore
+  }
+  return null
+}
+
+function writeLocalPreferences(prefs: Preferences): void {
+  try {
+    setBrandStorage('local-preferences', JSON.stringify(prefs))
+  } catch {
+    // ignore
+  }
+}
+
+export function usePreferencesProvider(options: { localOnly?: boolean } = {}) {
+  const { localOnly = false } = options
   const [prefs, setPrefs] = useState<Preferences>(defaultPreferences)
   const [loaded, setLoaded] = useState(false)
   const [saveState, setSaveState] = useState<PreferencesContextValue['saveState']>('idle')
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [localFallback, setLocalFallback] = useState(localOnly)
   const prefsRef = useRef(prefs)
   const confirmedRef = useRef(prefs)
   const queueRef = useRef<Promise<void>>(Promise.resolve())
   const updateVersionRef = useRef(0)
   const failedPayloadRef = useRef<Preferences | null>(null)
+
+  useEffect(() => {
+    setLocalFallback(localOnly)
+  }, [localOnly])
 
   const applyPrefs = useCallback((next: Preferences) => {
     prefsRef.current = next
@@ -106,8 +137,22 @@ export function usePreferencesProvider() {
       const data = await res.json()
       // Validate shape before accepting
       if (data && typeof data.theme === 'string' && data.terminal) {
-        confirmedRef.current = data
-        applyPrefs(data)
+        let resolved: Preferences = data
+        if (localOnly) {
+          const localOverride = readLocalPreferences()
+          if (localOverride) {
+            resolved = {
+              ...data,
+              ...localOverride,
+              terminal: { ...data.terminal, ...(localOverride.terminal || {}) },
+              sidebar: { ...data.sidebar, ...(localOverride.sidebar || {}) },
+              notifications: { ...data.notifications, ...(localOverride.notifications || {}) },
+              agent_banner: { ...data.agent_banner, ...(localOverride.agent_banner || {}) },
+            }
+          }
+        }
+        confirmedRef.current = resolved
+        applyPrefs(resolved)
         failedPayloadRef.current = null
         setSaveError(null)
         setSaveState('idle')
@@ -116,52 +161,82 @@ export function usePreferencesProvider() {
       setSaveError(error instanceof Error ? error.message : 'Failed to load preferences.')
     }
     setLoaded(true)
-  }, [applyPrefs])
+  }, [applyPrefs, localOnly])
 
   useEffect(() => {
     fetchPrefs()
   }, [fetchPrefs])
 
-  const enqueueSave = useCallback((payload: Preferences, version: number) => {
-    const request = async () => {
-      const res = await fetch('/api/preferences', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+  const enqueueSave = useCallback(
+    (payload: Preferences, version: number) => {
+      if (localOnly || localFallback) {
+        writeLocalPreferences(payload)
+        confirmedRef.current = payload
+        failedPayloadRef.current = null
+        if (version === updateVersionRef.current) {
+          applyPrefs(payload)
+          setSaveError(null)
+          setSaveState('saved')
+        }
+        return Promise.resolve()
+      }
+
+      const request = async () => {
+        const res = await fetch('/api/preferences', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        if (res.status === 403) {
+          setLocalFallback(true)
+          writeLocalPreferences(payload)
+          confirmedRef.current = payload
+          failedPayloadRef.current = null
+          if (version === updateVersionRef.current) {
+            applyPrefs(payload)
+            setSaveError(null)
+            setSaveState('saved')
+          }
+          return
+        }
+        if (!res.ok) {
+          throw new Error(`Failed to save preferences (${res.status}).`)
+        }
+        const saved = (await res.json()) as Preferences
+        confirmedRef.current = saved
+        failedPayloadRef.current = null
+        if (version === updateVersionRef.current) {
+          applyPrefs(saved)
+          setSaveError(null)
+          setSaveState('saved')
+        }
+      }
+
+      const result = queueRef.current.then(request, request)
+      queueRef.current = result.catch(() => {})
+      return result.catch(error => {
+        failedPayloadRef.current = payload
+        if (version === updateVersionRef.current) {
+          applyPrefs(confirmedRef.current)
+          setSaveState('error')
+          setSaveError(error instanceof Error ? error.message : 'Failed to save preferences.')
+        }
       })
-      if (!res.ok) {
-        throw new Error(`Failed to save preferences (${res.status}).`)
-      }
-      const saved = await res.json() as Preferences
-      confirmedRef.current = saved
-      failedPayloadRef.current = null
-      if (version === updateVersionRef.current) {
-        applyPrefs(saved)
-        setSaveError(null)
-        setSaveState('saved')
-      }
-    }
+    },
+    [applyPrefs, localOnly, localFallback],
+  )
 
-    const result = queueRef.current.then(request, request)
-    queueRef.current = result.catch(() => {})
-    return result.catch((error) => {
-      failedPayloadRef.current = payload
-      if (version === updateVersionRef.current) {
-        applyPrefs(confirmedRef.current)
-        setSaveState('error')
-        setSaveError(error instanceof Error ? error.message : 'Failed to save preferences.')
-      }
-    })
-  }, [applyPrefs])
-
-  const updatePrefs = useCallback(async (partial: Partial<Preferences>) => {
-    const merged = { ...prefsRef.current, ...partial }
-    const version = ++updateVersionRef.current
-    applyPrefs(merged)
-    setSaveError(null)
-    setSaveState('saving')
-    await enqueueSave(merged, version)
-  }, [applyPrefs, enqueueSave])
+  const updatePrefs = useCallback(
+    async (partial: Partial<Preferences>) => {
+      const merged = { ...prefsRef.current, ...partial }
+      const version = ++updateVersionRef.current
+      applyPrefs(merged)
+      setSaveError(null)
+      setSaveState('saving')
+      await enqueueSave(merged, version)
+    },
+    [applyPrefs, enqueueSave],
+  )
 
   const retrySave = useCallback(async () => {
     const payload = failedPayloadRef.current
@@ -181,6 +256,7 @@ export function usePreferencesProvider() {
     saveState,
     saveError,
     retrySave,
+    isLocalOnly: localOnly || localFallback,
   }
 }
 

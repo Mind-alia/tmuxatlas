@@ -139,6 +139,8 @@ async function openWorkspace(
   theme: 'light' | 'dark' | 'retro-blue',
   viewport: { width: number; height: number },
   expandComposer: boolean,
+  terminalMessages?: (string | Buffer)[],
+  mouseTracking = false,
 ) {
   await page.setViewportSize(viewport)
   await page.addInitScript(now => {
@@ -152,21 +154,26 @@ async function openWorkspace(
     socket.send(JSON.stringify(snapshot))
   })
   await page.routeWebSocket('**/ws/session**', socket => {
-    socket.send([
-      '\u001b[1;36mTmuxAtlas Workspace\u001b[0m',
-      '',
-      '$ codex --workspace tmuxatlas',
-      'Analyzing terminal UX and connection safety…',
-      '✓ Command registry ready',
-      '✓ PTY generation isolated',
-      '',
-      '$ _',
-    ].join('\r\n'))
+    let sent = false
+    socket.onMessage(message => {
+      if (!sent && typeof message === 'string' && message.includes('\"type\":\"resize\"')) {
+        sent = true
+        socket.send((mouseTracking ? '\u001b[?1003h\u001b[?1006h' : '') + [
+          '\u001b[1;36mTmuxAtlas Workspace\u001b[0m', '', '$ codex --workspace tmuxatlas',
+          'Analyzing terminal UX and connection safety…', '✓ Command registry ready',
+          '✓ PTY generation isolated', '', '$ _',
+        ].join('\r\n'))
+      }
+      terminalMessages?.push(message)
+      if (typeof message === 'string' && message.includes('\"type\":\"image\"') && message.includes('\"final\":true')) {
+        socket.send(JSON.stringify({ type: 'image-result', error: '' }))
+      }
+    })
   })
   await page.goto(`${baseURL}/session/host-a/workspace`)
-  await expect(page.getByText('Connected', { exact: true })).toBeVisible()
-  if (expandComposer) {
-    await page.getByRole('button', { name: 'Expand Mobile Input Composer' }).click()
+  await expect(page.locator('.xterm-screen')).toBeVisible()
+  if (expandComposer && viewport.width < 768) {
+    await page.getByRole('button', { name: 'Composer un message' }).click()
     await page.getByRole('textbox', { name: /studio-mac\/workspace/ }).fill('git status\nnpm test')
   }
   await page.addStyleTag({
@@ -190,13 +197,13 @@ test.beforeAll(async () => {
     '--public-url', baseURL,
     '--discovery-interval', '60',
     '--no-auth',
-  ], { env: { ...process.env, HOME: testHome } })
+  ], { env: { ...process.env, HOME: testHome, XDG_CONFIG_HOME: join(testHome, 'config'), XDG_DATA_HOME: join(testHome, 'data'), XDG_CACHE_HOME: join(testHome, 'cache'), XDG_RUNTIME_DIR: join(testHome, 'runtime') } })
   await waitForServer()
 })
 
 test.afterAll(async () => {
   server?.kill('SIGTERM')
-  await rm(testHome, { recursive: true, force: true })
+  await rm(testHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 })
 
 test('Light Workspace at 1440×900', async ({ page }) => {
@@ -221,4 +228,66 @@ test('Retro Workspace at 844×390', async ({ page }) => {
     animations: 'disabled',
     caret: 'hide',
   })
+})
+
+
+test('Ctrl+V pastes browser text and images without sending the control key', async ({ page, context }) => {
+  const messages: (string | Buffer)[] = []
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: baseURL })
+  await openWorkspace(page, 'dark', { width: 1024, height: 768 }, false, messages)
+  const terminal = page.locator('.xterm-helper-textarea')
+  await terminal.focus()
+  await page.evaluate(() => navigator.clipboard.writeText('clipboard text'))
+  await page.keyboard.press('Control+V')
+  await expect.poll(() => messages.filter(Buffer.isBuffer).map(data => data.toString()).join('')).toContain('clipboard text')
+  expect(messages.filter(Buffer.isBuffer).map(data => data.toString()).join('')).not.toContain('\x16')
+
+  await page.evaluate(async () => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 2; canvas.height = 2
+    const png = await new Promise<Blob>(resolve => canvas.toBlob(blob => resolve(blob!), 'image/png'))
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
+  })
+  await terminal.focus()
+  await page.keyboard.press('Control+V')
+  await expect.poll(() => messages.some(message => typeof message === 'string' && message.includes('"type":"image"'))).toBe(true)
+  await expect(page.getByRole('status').filter({ hasText: 'Image collée dans le terminal.' })).toBeVisible()
+  expect(messages.filter(Buffer.isBuffer).map(data => data.toString()).join('')).not.toContain('\x16')
+})
+
+for (const mouseTracking of [false, true]) test(`mouse selection and clipboard work with mouse tracking ${mouseTracking ? 'on' : 'off'}`, async ({ page, context }) => {
+  const messages: (string | Buffer)[] = []
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: baseURL })
+  // xterm's WebGL renderer does not expose DOM rows for selecting by coordinates.
+  await page.addInitScript(() => {
+    const getContext = HTMLCanvasElement.prototype.getContext
+    HTMLCanvasElement.prototype.getContext = function (kind: string, ...args: unknown[]) {
+      if (kind === 'webgl2') return null
+      return (getContext as Function).call(this, kind, ...args)
+    } as typeof getContext
+  })
+  await openWorkspace(page, 'dark', { width: 1024, height: 768 }, false, messages, mouseTracking)
+  const row = page.locator('.xterm-rows > div').filter({ hasText: 'TmuxAtlas Workspace' }).first()
+  await expect(row).toBeVisible()
+  const box = await row.boundingBox()
+  if (!box) throw new Error('terminal row has no bounds')
+  if (mouseTracking) {
+    await page.mouse.click(box.x + 100, box.y + box.height / 2)
+    await expect.poll(() => messages.filter(Buffer.isBuffer).map(data => data.toString()).join('')).toContain('\x1b[<0;')
+    messages.length = 0
+  }
+  await page.mouse.move(box.x + 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + 85, box.y + box.height / 2, { steps: 5 })
+  await page.mouse.up()
+  await page.mouse.move(box.x + 100, box.y + box.height / 2)
+  await expect(page.getByRole('button', { name: 'Copier' })).toBeEnabled()
+  await page.keyboard.press('Control+C')
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('TmuxAtlas')
+  await expect(page.getByRole('button', { name: 'Copier' })).toBeEnabled()
+  expect(messages.filter(Buffer.isBuffer).map(data => data.toString()).join('')).not.toContain('\x03')
+  await page.keyboard.press('Control+V')
+  await expect.poll(() => messages.filter(Buffer.isBuffer).map(data => data.toString()).join('')).toContain('TmuxAtlas')
+  await page.keyboard.press('Control+C')
+  await expect.poll(() => messages.filter(Buffer.isBuffer).map(data => data.toString()).join('')).toContain('\x03')
 })

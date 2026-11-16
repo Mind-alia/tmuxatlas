@@ -33,7 +33,7 @@ func (p Projection) SessionViews() []*tmux.Session {
 		source := p.Sessions[key]
 		host := p.Hosts[source.HostKey]
 		session := &tmux.Session{
-			ID: source.TmuxID, Name: source.Name,
+			ID: source.TmuxID, Name: source.Name, Owner: source.Owner,
 			Host: source.HostID, HostName: host.DisplayName, HostOnline: host.Online,
 			Created: source.Created, Attached: source.Attached,
 			LastActivity: source.LastActivity, Windows: []*tmux.Window{},
@@ -126,7 +126,7 @@ func (p Projection) ToolEventViews() []*toolevents.Event {
 			Tool: toolevents.Tool(event.Tool), Status: toolevents.Status(event.Status),
 			Host: event.HostID, Session: event.Session, Window: window,
 			Pane: event.Pane, Message: event.Message, Timestamp: event.Timestamp,
-			AutoDetected: event.AutoDetected,
+			AutoDetected: event.AutoDetected, Baseline: event.Baseline,
 		})
 	}
 	return result

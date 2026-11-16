@@ -6,16 +6,19 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v3"
 
+	"github.com/LosFurina/tmuxatlas/pkg/accounts"
 	"github.com/LosFurina/tmuxatlas/pkg/activity"
 	"github.com/LosFurina/tmuxatlas/pkg/auth"
 	"github.com/LosFurina/tmuxatlas/pkg/common"
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
+	"github.com/LosFurina/tmuxatlas/pkg/paths"
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
 	"github.com/LosFurina/tmuxatlas/pkg/preferences"
 	"github.com/LosFurina/tmuxatlas/pkg/server"
@@ -114,13 +117,43 @@ func ExecuteHub(ctx context.Context, c *cli.Command) error {
 }
 
 func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
+	var accountAuth *auth.AccountsAuth
+	var accountSessions *auth.SessionManager
+	var adminID, adminName string
+	if c.String("auth") == "accounts" {
+		store, err := accounts.NewStore()
+		if err != nil {
+			return err
+		}
+		users, err := store.List()
+		if err != nil {
+			return err
+		}
+		for _, user := range users {
+			if user.Role == "admin" && !user.Disabled {
+				adminID = user.ID
+				adminName = user.Username
+				break
+			}
+		}
+		if adminID == "" {
+			return fmt.Errorf("aucun administrateur actif ; utilisez tmuxatlas users bootstrap-admin")
+		}
+		if c.Duration("session-ttl") < time.Minute {
+			return fmt.Errorf("la durée de session doit être d'au moins une minute")
+		}
+		accountSessions = auth.NewSessionManager(c.Duration("session-ttl"))
+		accountAuth, err = auth.NewAccountsAuth(store, accountSessions)
+		if err != nil {
+			return err
+		}
+	}
 	tracker := toolevents.NewTracker()
 	actTracker := activity.NewTracker()
 	var (
-		client         *tmux.Client
-		stateMgr       *state.Manager
-		detector       *toolevents.Detector
-		silenceMonitor *toolevents.SilenceMonitor
+		client   *tmux.Client
+		stateMgr *state.Manager
+		watcher  *toolevents.Watcher
 	)
 	if !pureHub {
 		var err error
@@ -128,41 +161,21 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		if err != nil {
 			return err
 		}
+		if accountAuth != nil {
+			dir, err := paths.ConfigDir()
+			if err != nil {
+				return err
+			}
+			if err := tmux.MigrateOwners(client, filepath.Join(dir, "accounts-ownership-migrated"), adminID, adminName); err != nil {
+				return fmt.Errorf("migration des propriétaires : %w", err)
+			}
+		}
 		stateMgr = state.NewManager(client)
 		interval := time.Duration(c.Int("discovery-interval")) * time.Second
 		discovery := tmux.NewDiscovery(client, interval, stateMgr.UpdateSessions)
 		go discovery.Run(ctx)
 
-		reconciler := toolevents.NewReconciler(tracker, func(paneID string) toolevents.PaneState {
-			panes, err := client.ListAllPanes()
-			if err != nil {
-				return toolevents.PaneState{Exists: false}
-			}
-			for _, p := range panes {
-				if p.ID == paneID {
-					return toolevents.PaneState{Exists: true, CurrentCommand: p.CurrentCommand, PID: p.PID}
-				}
-			}
-			return toolevents.PaneState{Exists: false}
-		}, 3*time.Second)
-		go reconciler.Run(ctx)
-
-		detector = toolevents.NewDetector(tracker, func() []toolevents.PaneInfo {
-			panes, err := client.ListAllPanesDetailed()
-			if err != nil {
-				return nil
-			}
-			infos := make([]toolevents.PaneInfo, 0, len(panes))
-			for _, p := range panes {
-				infos = append(infos, toolevents.PaneInfo{
-					PaneID: p.ID, Session: p.Session, Window: p.Window, PID: p.PID,
-				})
-			}
-			return infos
-		}, 5*time.Second)
-		go detector.Run(ctx)
-		silenceMonitor = toolevents.NewSilenceMonitor(tracker, detector, client)
-		go silenceMonitor.Run(ctx)
+		watcher = toolevents.NewWatcher(tracker, agentPaneLister(client), client.CapturePaneContent, toolevents.DefaultWatchInterval)
 
 		if !c.Bool("no-control-mode") {
 			ctrlMode := tmux.NewControlMode(client, stateMgr.UpdateSessions,
@@ -172,12 +185,11 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 					if session := stateMgr.SessionForPane(paneID); session != "" {
 						actTracker.Record(session, dataLen)
 					}
-					silenceMonitor.RecordOutput(paneID)
+					watcher.RecordOutput(paneID)
 				}),
 			)
 			go ctrlMode.Run(ctx)
 		}
-		go tracker.RunInactivityPromoter(ctx, toolevents.DefaultInactivityTimeout)
 	}
 
 	// Initialize preferences store
@@ -216,6 +228,11 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		return err
 	}
 
+	// Do not silently start with Passkey authentication when accounts mode is requested.
+	if c.String("auth") != "" && c.String("auth") != "passkey" && c.String("auth") != "accounts" {
+		return fmt.Errorf("mode d’authentification %q indisponible", c.String("auth"))
+	}
+
 	// Initialize Passkey-only authentication. The RP ID and allowed origin are
 	// derived from the externally reachable URL, not the internal listen address.
 	var (
@@ -223,7 +240,10 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		passkeyManager *auth.PasskeyManager
 		sessionMgr     *auth.SessionManager
 	)
-	if !c.Bool("no-auth") {
+	if accountAuth != nil {
+		sessionMgr = accountSessions
+		authEnabled = true
+	} else if !c.Bool("no-auth") {
 		sessionTTL := c.Duration("session-ttl")
 		if sessionTTL < time.Minute {
 			return fmt.Errorf("session TTL must be at least 1 minute")
@@ -265,11 +285,11 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 	}
 	go peerMgr.RunContext(ctx)
 
-	// Stamp local host identity on detector and silence monitor so
-	// auto-detected events include the host info for multi-host navigation
-	if detector != nil {
-		detector.SetHost(peerMgr.LocalID(), peerMgr.LocalName())
-		silenceMonitor.SetHost(peerMgr.LocalID(), peerMgr.LocalName())
+	// The watcher starts once it knows the local host, so that its events and
+	// hook events for the same pane share one key.
+	if watcher != nil {
+		watcher.SetHost(peerMgr.LocalID(), peerMgr.LocalName())
+		go watcher.Run(ctx)
 	}
 
 	// Initialize pairing manager
@@ -316,13 +336,14 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		PushStore:       pushStore,
 		PrefStore:       prefStore,
 		AuthEnabled:     authEnabled,
+		AccountsAuth:    accountAuth,
 		PasskeyManager:  passkeyManager,
 		SessionMgr:      sessionMgr,
 		PeerMgr:         peerMgr,
 		PeerHandler:     peerHandler,
 		PairingMgr:      pairingMgr,
 		PTYRelay:        ptyRelay,
-		Detector:        detector,
+		Watcher:         watcher,
 		LocalOnly:       localOnly,
 		Role:            map[bool]string{true: "hub", false: "standalone"}[pureHub],
 		Deployment:      os.Getenv("TMUXATLAS_DEPLOYMENT"),
@@ -334,6 +355,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 
 func serverFlags() []cli.Flag {
 	return []cli.Flag{
+		&cli.StringFlag{Name: "auth", Sources: cli.EnvVars("TMUXATLAS_AUTH")},
 		&cli.StringFlag{
 			Name:    "listen",
 			Usage:   "HTTP origin listen address",
@@ -388,6 +410,7 @@ func serverFlags() []cli.Flag {
 
 func hubFlags() []cli.Flag {
 	return []cli.Flag{
+		&cli.StringFlag{Name: "auth", Sources: cli.EnvVars("TMUXATLAS_AUTH")},
 		&cli.StringFlag{
 			Name: "listen", Usage: "HTTP origin listen address",
 			Sources: cli.EnvVars("TMUXATLAS_LISTEN"), Value: defaultListenAddress,
@@ -412,6 +435,12 @@ func hubFlags() []cli.Flag {
 }
 
 func validateServerCommand(ctx context.Context, c *cli.Command) (context.Context, error) {
+	if c.String("auth") != "" && c.String("auth") != "passkey" && c.String("auth") != "accounts" {
+		return ctx, fmt.Errorf("mode d'authentification %q indisponible", c.String("auth"))
+	}
+	if c.String("auth") == "accounts" && c.Bool("no-auth") {
+		return ctx, fmt.Errorf("le mode comptes est incompatible avec --no-auth")
+	}
 	if err := validateRemovedTransportEnv(); err != nil {
 		return ctx, err
 	}
@@ -463,4 +492,22 @@ func init() {
 	common.RegisterCommand(serverCommand)
 	common.RegisterCommand(standaloneCommand)
 	common.RegisterCommand(hubCommand)
+}
+
+// agentPaneLister lists tmux panes for the agent watcher.
+func agentPaneLister(client *tmux.Client) toolevents.PaneLister {
+	return func() ([]toolevents.WatchedPane, error) {
+		panes, err := client.ListAllPanesDetailed()
+		if err != nil {
+			return nil, err
+		}
+		result := make([]toolevents.WatchedPane, 0, len(panes))
+		for _, pane := range panes {
+			result = append(result, toolevents.WatchedPane{
+				ID: pane.ID, Session: pane.Session, Window: pane.Window,
+				PID: pane.PID, CurrentCommand: pane.CurrentCommand,
+			})
+		}
+		return result, nil
+	}
 }

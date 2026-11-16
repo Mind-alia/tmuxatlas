@@ -1,11 +1,25 @@
 package tmux
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
+
+// Owner is a stable account ID; the empty value is encoded as JSON null.
+type Owner string
+
+func (o Owner) MarshalJSON() ([]byte, error) {
+	if o == "" {
+		return []byte("null"), nil
+	}
+	return json.Marshal(string(o))
+}
 
 // Session represents a tmux session
 type Session struct {
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
+	Owner        Owner     `json:"owner"`
 	Host         string    `json:"host,omitempty"`        // peer fingerprint (empty = local)
 	HostName     string    `json:"host_name,omitempty"`   // peer display name
 	HostOnline   bool      `json:"host_online,omitempty"` // whether the host peer is connected
@@ -33,6 +47,8 @@ type PaneDetailed struct {
 	Session string `json:"session"` // session name (not ID)
 	Window  int    `json:"window"`  // window index
 	PID     int    `json:"pid"`
+	// CurrentCommand is the pane's foreground command.
+	CurrentCommand string `json:"current_command"`
 }
 
 // Pane represents a tmux pane

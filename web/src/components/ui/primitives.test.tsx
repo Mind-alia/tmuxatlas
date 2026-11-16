@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { applyTheme, semanticThemeVars, themePresets } from '../../theme'
+import { applyTheme, DEFAULT_THEME, overridableSemanticTokens, semanticThemeVars, themePresets } from '../../theme'
 import {
   Button,
   Dialog,
@@ -31,6 +31,10 @@ describe('semantic theme contracts', () => {
   it('provides every semantic token in every existing preset', () => {
     for (const preset of Object.values(themePresets)) {
       for (const [token, value] of Object.entries(semanticThemeVars)) {
+        if (overridableSemanticTokens.has(token)) {
+          expect(preset.cssVars[token], `${preset.name} is missing ${token}`).toBeTruthy()
+          continue
+        }
         expect(preset.cssVars[token], `${preset.name} is missing ${token}`).toBe(value)
       }
     }
@@ -48,7 +52,7 @@ describe('semantic theme contracts', () => {
   })
 
   it('uses a readable UI stack and reserves monospace for technical content', () => {
-    expect(indexCss).toContain('--font-sans: ui-sans-serif')
+    expect(indexCss).toContain("--font-sans: 'Geist Variable', ui-sans-serif")
     expect(indexCss).toContain("--font-mono: 'JetBrains Mono'")
     expect(indexCss).toContain("--font-display: 'VT323'")
   })
@@ -83,7 +87,11 @@ describe('basic shared controls', () => {
     expect(onClick).toHaveBeenCalledTimes(1)
 
     cleanup()
-    render(<Button loading loadingLabel="Connecting">Reconnect</Button>)
+    render(
+      <Button loading loadingLabel="Connecting">
+        Reconnect
+      </Button>,
+    )
     expect(screen.getByRole('button', { name: 'Connecting' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Connecting' })).toHaveAttribute('aria-busy', 'true')
   })
@@ -127,7 +135,9 @@ describe('accessible overlays', () => {
     const [open, setOpen] = useState(false)
     return (
       <>
-        <button type="button" onClick={() => setOpen(true)}>Open preferences</button>
+        <button type="button" onClick={() => setOpen(true)}>
+          Open preferences
+        </button>
         <Dialog
           open={open}
           onOpenChange={setOpen}
@@ -156,7 +166,7 @@ describe('accessible overlays', () => {
     const save = screen.getByRole('button', { name: 'Save' })
     save.focus()
     await user.tab()
-    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus()
+    expect(screen.getByRole('button', { name: 'Fermer' })).toHaveFocus()
 
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -199,10 +209,7 @@ describe('feedback and page states', () => {
   function ToastHarness() {
     const { toast } = useToast()
     return (
-      <button
-        type="button"
-        onClick={() => toast({ title: 'Connected', description: 'PTY is ready', duration: 0 })}
-      >
+      <button type="button" onClick={() => toast({ title: 'Connected', description: 'PTY is ready', duration: 0 })}>
         Notify
       </button>
     )
@@ -218,7 +225,7 @@ describe('feedback and page states', () => {
     await user.click(screen.getByRole('button', { name: 'Notify' }))
     expect(screen.getByRole('status')).toHaveTextContent('Connected')
     expect(screen.getByRole('status')).toHaveTextContent('PTY is ready')
-    await user.click(screen.getByRole('button', { name: 'Dismiss notification' }))
+    await user.click(screen.getByRole('button', { name: 'Ignorer la notification' }))
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 
@@ -236,5 +243,18 @@ describe('feedback and page states', () => {
     expect(screen.getByTestId('skeleton')).toHaveAttribute('aria-hidden', 'true')
     expect(screen.getByRole('heading', { name: 'No sessions' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'New Session' })).toBeInTheDocument()
+  })
+})
+
+describe('default theme', () => {
+  it('falls back to Atlas and restores legacy chrome when switching presets', () => {
+    expect(themePresets[DEFAULT_THEME].label).toBe('Atlas')
+
+    applyTheme('unknown-theme')
+    expect(document.documentElement.style.getPropertyValue('--radius')).toBe('0.5rem')
+
+    applyTheme('retro-blue')
+    expect(document.documentElement.style.getPropertyValue('--radius')).toBe('0.25rem')
+    expect(document.documentElement.style.getPropertyValue('--theme-font-body')).toBe('var(--font-mono)')
   })
 })

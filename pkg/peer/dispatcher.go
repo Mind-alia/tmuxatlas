@@ -4,11 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 )
 
 type RuntimeExecutor interface {
@@ -167,6 +170,31 @@ func (dispatcher *RequestDispatcher) Dispatch(ctx context.Context, request Runti
 	if _, ok := dispatcher.Capabilities[CapabilitySessionActions]; !ok {
 		return RuntimeAck{}, errorOutcome(request, ErrorCapabilityUnsupported, "")
 	}
+	if _, ok := dispatcher.Capabilities[CapabilitySessionExtras]; !ok && requiresSessionExtras(request.Operation, request.Payload) {
+		return RuntimeAck{}, errorOutcome(request, ErrorUnsupported, "operation not supported by this Agent")
+	}
+	if _, ok := dispatcher.Capabilities[CapabilitySessionOwnership]; !ok && requiresOwnership(request.Operation, request.Payload) {
+		return RuntimeAck{}, errorOutcome(request, ErrorUnsupported, "operation not supported by this Agent")
+	}
+	if _, ok := dispatcher.Capabilities[CapabilitySessionOwnerName]; !ok && requiresOwnerName(request.Operation, request.Payload) {
+		return RuntimeAck{}, errorOutcome(request, ErrorUnsupported, "operation not supported by this Agent")
+	}
+	if request.Operation == "new" {
+		if err := tmux.ValidateSessionName(request.Target.Session); err != nil {
+			return RuntimeAck{}, errorOutcome(request, ErrorInvalidTarget, err.Error())
+		}
+	}
+	if request.Operation == "rename" {
+		var params struct {
+			NewName string `json:"new_name"`
+		}
+		if json.Unmarshal(request.Payload, &params) != nil {
+			return RuntimeAck{}, errorOutcome(request, ErrorInvalidTarget, "new_name is required")
+		}
+		if err := tmux.ValidateSessionName(params.NewName); err != nil {
+			return RuntimeAck{}, errorOutcome(request, ErrorInvalidTarget, err.Error())
+		}
+	}
 	if dispatcher.Executor == nil || dispatcher.Cache == nil {
 		return RuntimeAck{}, errorOutcome(request, ErrorExecutionFailed, "runtime executor unavailable")
 	}
@@ -174,6 +202,10 @@ func (dispatcher *RequestDispatcher) Dispatch(ctx context.Context, request Runti
 	outcome := dispatcher.Cache.Do(ctx, request, func() RequestOutcome {
 		result, err := dispatcher.Executor.Execute(ctx, request.Operation, request.Target, request.Payload)
 		if err != nil {
+			var runtimeError RuntimeError
+			if errors.As(err, &runtimeError) {
+				return errorOutcome(request, runtimeError.Code, runtimeError.Message)
+			}
 			return errorOutcome(request, ErrorExecutionFailed, "target operation failed")
 		}
 		if len(result) == 0 {

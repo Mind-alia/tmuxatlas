@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 )
 
 const (
@@ -63,6 +65,7 @@ type Session struct {
 	HostKey      HostKey    `json:"host_key"`
 	HostID       string     `json:"host_id"`
 	Name         string     `json:"name"`
+	Owner        tmux.Owner `json:"owner"`
 	TmuxID       string     `json:"tmux_id,omitempty"`
 	Attached     bool       `json:"attached"`
 	Created      time.Time  `json:"created,omitempty"`
@@ -102,6 +105,7 @@ type ToolEvent struct {
 	Message      string       `json:"message,omitempty"`
 	Timestamp    time.Time    `json:"timestamp"`
 	AutoDetected bool         `json:"auto_detected,omitempty"`
+	Baseline     bool         `json:"baseline,omitempty"`
 }
 
 type Activity struct {

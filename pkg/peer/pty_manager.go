@@ -10,6 +10,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/LosFurina/tmuxatlas/pkg/activity"
+	"github.com/LosFurina/tmuxatlas/pkg/clipboardimage"
 	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 )
 
@@ -58,8 +59,10 @@ func (pm *PTYManager) Open(request PTYOpenPayload) {
 	log := logrus.WithFields(logrus.Fields{"stream": request.StreamID, "session": request.Target.Session})
 	if request.StreamID == "" || request.AttachToken == "" || request.Generation == 0 ||
 		request.Cols == 0 || request.Rows == 0 || request.Target.Validate() != nil ||
+		request.Target.Session == tmux.ControlSessionName() ||
 		request.Target.HostID != pm.client.peerMgr.LocalID() ||
-		request.Generation != pm.client.RuntimeGeneration() {
+		request.Generation != pm.client.RuntimeGeneration() ||
+		(pm.client.peerMgr.localMgr != nil && !pm.client.peerMgr.HasSession(request.Target.HostID, request.Target.Session)) {
 		log.Warn("rejected invalid or stale PTY open")
 		return
 	}
@@ -89,6 +92,8 @@ func (pm *PTYManager) Open(request PTYOpenPayload) {
 	pm.sessions[request.StreamID] = active
 	pm.mu.Unlock()
 
+	var writeMu sync.Mutex
+	var images clipboardimage.Receiver
 	done := make(chan struct{}, 2)
 	go func() {
 		defer active.wg.Done()
@@ -105,7 +110,12 @@ func (pm *PTYManager) Open(request PTYOpenPayload) {
 			}
 			outputSequence++
 			frame, err := EncodePTYDataFrame(PTYDataOutput, outputSequence, buffer[:n])
-			if err != nil || hubWS.WriteMessage(websocket.BinaryMessage, frame) != nil {
+			writeMu.Lock()
+			if err == nil {
+				err = hubWS.WriteMessage(websocket.BinaryMessage, frame)
+			}
+			writeMu.Unlock()
+			if err != nil {
 				return
 			}
 		}
@@ -114,6 +124,7 @@ func (pm *PTYManager) Open(request PTYOpenPayload) {
 		defer active.wg.Done()
 		defer func() { done <- struct{}{} }()
 		var inputSequence, controlSequence PTYSequence
+		var resultSequence uint64
 		for {
 			messageType, data, err := hubWS.ReadMessage()
 			if err != nil {
@@ -148,6 +159,25 @@ func (pm *PTYManager) Open(request PTYOpenPayload) {
 					continue
 				}
 				switch frame.Type {
+				case "image":
+					path, imageErr := images.Add(frame.Data, frame.Final)
+					if imageErr == nil && path != "" {
+						_, imageErr = ptySession.Write([]byte("\x1b[200~" + path + "\x1b[201~"))
+					}
+					if imageErr != nil || path != "" {
+						reason := ""
+						if imageErr != nil {
+							reason = imageErr.Error()
+						}
+						resultSequence++
+						result, _ := EncodePTYControlFrame(PTYControlFrame{Version: PTYFrameVersion, Type: "image-result", Sequence: resultSequence, Reason: reason})
+						writeMu.Lock()
+						err := hubWS.WriteMessage(websocket.TextMessage, result)
+						writeMu.Unlock()
+						if err != nil {
+							return
+						}
+					}
 				case "resize":
 					if err := ptySession.Resize(frame.Cols, frame.Rows); err != nil {
 						return

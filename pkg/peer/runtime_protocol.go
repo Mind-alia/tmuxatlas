@@ -19,6 +19,12 @@ const (
 	CapabilitySessionActions = "session-actions"
 	CapabilityRequestResults = "request-results"
 	CapabilityPTYControl     = "pty-control"
+	CapabilityClipboardImage = "clipboard-image"
+	// CapabilitySessionExtras covers preview, reply, directories and the
+	// cwd/agent options of "new". Agents without it get a clean "unsupported".
+	CapabilitySessionExtras    = "session-extras"
+	CapabilitySessionOwnership = "session-ownership"
+	CapabilitySessionOwnerName = "session-owner-name"
 
 	maxRuntimeIDLength = 128
 	maxOperationLength = 64
@@ -31,6 +37,10 @@ var RuntimeCapabilities = []string{
 	CapabilitySessionActions,
 	CapabilityRequestResults,
 	CapabilityPTYControl,
+	CapabilityClipboardImage,
+	CapabilitySessionExtras,
+	CapabilitySessionOwnership,
+	CapabilitySessionOwnerName,
 }
 
 type SessionTarget struct {
@@ -42,7 +52,7 @@ func (target SessionTarget) Validate() error {
 	if err := validateRuntimeID("host_id", target.HostID); err != nil {
 		return err
 	}
-	if err := validateRuntimeID("session", target.Session); err != nil {
+	if err := validateSessionTarget("session", target.Session); err != nil {
 		return err
 	}
 	return nil
@@ -193,6 +203,10 @@ const (
 	ErrorRequestConflict       ErrorCode = "request-conflict"
 	ErrorResourceExhausted     ErrorCode = "resource-exhausted"
 	ErrorStaleGeneration       ErrorCode = "stale-generation"
+	ErrorUnsupported           ErrorCode = "unsupported"
+	ErrorPromptChanged         ErrorCode = "prompt_changed"
+	ErrorAlreadyOwned          ErrorCode = "already-owned"
+	ErrorNotOwner              ErrorCode = "not-owner"
 )
 
 type RuntimeError struct {
@@ -224,7 +238,8 @@ func (runtimeError RuntimeError) validateCode() error {
 	case ErrorInvalidTarget, ErrorNotFound, ErrorPeerOffline, ErrorPeerRevoked,
 		ErrorProtocolIncompatible, ErrorCapabilityUnsupported, ErrorQueueFull,
 		ErrorTimeout, ErrorExecutionFailed, ErrorExecutionUnknown,
-		ErrorRequestConflict, ErrorResourceExhausted, ErrorStaleGeneration:
+		ErrorRequestConflict, ErrorResourceExhausted, ErrorStaleGeneration,
+		ErrorUnsupported, ErrorPromptChanged, ErrorAlreadyOwned, ErrorNotOwner:
 	default:
 		return errors.New("unknown runtime error code")
 	}
@@ -269,6 +284,21 @@ func validateRuntimeID(field, value string) error {
 	for _, r := range value {
 		if unicode.IsSpace(r) || unicode.IsControl(r) {
 			return fmt.Errorf("%s contains whitespace or control characters", field)
+		}
+	}
+	return nil
+}
+
+func validateSessionTarget(field, value string) error {
+	if err := validateBoundedText(field, value, maxRuntimeIDLength); err != nil {
+		return err
+	}
+	if strings.TrimSpace(value) != value {
+		return fmt.Errorf("%s has leading or trailing whitespace", field)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || (unicode.IsSpace(r) && r != ' ') {
+			return fmt.Errorf("%s contains control characters", field)
 		}
 	}
 	return nil
