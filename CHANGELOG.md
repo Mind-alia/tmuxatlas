@@ -6,6 +6,7 @@
 
 * refresh the Atlas interface with an attention inbox, session previews, quick replies, window tabs, Wall and Monitoring views
 * add project directory and agent selection for new sessions, host aliases and navigation shortcuts
+* add a sudo terminal: agents ask with `tmuxatlas sudo-request`, an administrator approves the exact command, types the password in an ephemeral PTY on a pinned `--sudo-terminal` peer and reviews the output before it is sent back (see `docs/sudo-terminal.md`)
 
 ## [0.9.0](https://github.com/LosFurina/tmuxatlas/compare/v0.8.0...v0.9.0) (2026-07-27)
 
