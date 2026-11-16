@@ -1,6 +1,7 @@
 import { Alerts, NUM, StatusBadge, Table, toneColor } from '../monitoring/Monitoring'
 import { formatDuration, formatRelative } from '../monitoring/format'
 import { BackupsPanel } from './BackupsPanel'
+import { NotificationsPanel } from './NotificationsPanel'
 import type { OpsContainer, OpsContainers, OpsResponse } from './types'
 import { useOps } from './useOps'
 
@@ -94,12 +95,24 @@ function NotConfigured() {
 }
 
 export function OpsView({ data }: { data: OpsResponse }) {
-  if (!data.configured) return <NotConfigured />
+  if (!data.configured) {
+    return (
+      <>
+        <NotConfigured />
+        {data.notifications && (
+          <div className="mt-6">
+            <NotificationsPanel notifications={data.notifications} />
+          </div>
+        )}
+      </>
+    )
+  }
   const items = data.containers.items ?? []
   return (
     <>
       <Alerts alerts={data.alerts ?? []} okText="Conteneurs et sauvegardes sont en ordre." />
       {data.backups && <BackupsPanel backups={data.backups} />}
+      {data.notifications && <NotificationsPanel notifications={data.notifications} />}
       <section className="mb-6">
         <h2 className="mb-1 text-sm font-medium">Conteneurs</h2>
         <Freshness containers={data.containers} />

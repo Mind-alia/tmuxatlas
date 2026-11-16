@@ -64,11 +64,17 @@ self.addEventListener('push', (event) => {
   ]
     .filter((part) => typeof part === 'string' || typeof part === 'number')
 
+  // Ops alerts send their own tag: the recovery replaces the outage.
+  const tag = typeof payload.tag === 'string' && payload.tag.length > 0
+    ? payload.tag
+    : tagParts.length > 0 ? tagParts.join(':') : undefined
+
   event.waitUntil(self.registration.showNotification(title, {
     body,
     icon: '/icon-192.png',
     badge: '/favicon-32.png',
-    tag: tagParts.length > 0 ? tagParts.join(':') : undefined,
+    tag,
+    renotify: typeof payload.tag === 'string' && payload.tag.length > 0,
     data: { url },
   }))
 })
