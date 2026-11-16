@@ -39,7 +39,9 @@ func (c *Client) EnableSudoTerminal(runner *sudoterm.Runner, audit *sudoterm.Aud
 }
 
 func (c *Client) helloCapabilities() []string {
-	capabilities := append([]string(nil), RuntimeCapabilities...)
+	// Capabilities add up: the runtime ones (voice only with a microphone),
+	// then sudo requests, then the sudo terminal when enabled.
+	capabilities := helloCapabilities(c.Voice() != nil)
 	capabilities = append(capabilities, CapabilitySudoRequests)
 	if c.sudoTerminal != nil {
 		capabilities = append(capabilities, CapabilitySudoTerminal)

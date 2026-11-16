@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { KeyRound, Plus, ShieldAlert, Trash2, User, UserCheck, UserX } from 'lucide-react'
+import { Copy, KeyRound, Plus, ShieldAlert, SlidersHorizontal, Trash2, User, UserCheck, UserX } from 'lucide-react'
 import type { Session } from '../hooks/useSessions'
 import {
   claimSession,
@@ -8,11 +8,15 @@ import {
   fetchAdminSessions,
   fetchAdminUsers,
   releaseSession,
+  invitationURL,
   resolveOwnerName,
   updateAdminUser,
+  type AccountRoleName,
   type AccountUser,
   type AdminSession,
+  type InvitationLink,
 } from '../lib/accountsApi'
+import { AccountAccessDialog } from './AccountAccessDialog'
 import { useHostLabel } from '../lib/hostLabel'
 import { Button, Dialog } from './ui'
 
@@ -46,6 +50,10 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
   const [createError, setCreateError] = useState<string | null>(null)
   const [createSuccess, setCreateSuccess] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  const [newRole, setNewRole] = useState<AccountRoleName>('guest')
+  const [newUnixUser, setNewUnixUser] = useState('')
+  const [createdInvitation, setCreatedInvitation] = useState<InvitationLink | null>(null)
+  const [accessTarget, setAccessTarget] = useState<AccountUser | null>(null)
 
   // Reset password dialog state
   const [resetTarget, setResetTarget] = useState<AccountUser | null>(null)
@@ -135,7 +143,8 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
       setCreateError('Veuillez saisir un nom d’utilisateur.')
       return
     }
-    if (newPassword.length < 10 || newPassword.length > 200) {
+    // Without a password, the server returns a one-time invitation link instead.
+    if (newPassword && (newPassword.length < 10 || newPassword.length > 200)) {
       setCreateError('Le mot de passe doit contenir entre 10 et 200 caractères.')
       return
     }
@@ -144,12 +153,19 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
       return
     }
     setCreating(true)
+    setCreatedInvitation(null)
     try {
-      await createAdminUser(trimmed, newPassword)
+      const created = await createAdminUser(trimmed, newPassword, { role: newRole, unixUser: newUnixUser })
       setNewUsername('')
       setNewPassword('')
       setConfirmPassword('')
-      setCreateSuccess(`Compte « ${trimmed} » créé.`)
+      setNewUnixUser('')
+      setCreatedInvitation(created.invitation ?? null)
+      setCreateSuccess(
+        created.invitation
+          ? `Compte « ${trimmed} » créé. Transmettez-lui ce lien à usage unique :`
+          : `Compte « ${trimmed} » créé.`,
+      )
       await loadData()
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : 'Impossible de créer le compte.')
@@ -247,7 +263,10 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
           <h1 className="text-2xl tracking-tight text-foreground">Administration des comptes</h1>
           <p className="flex items-center gap-2 text-xs text-muted-foreground">
             <ShieldAlert size={14} aria-hidden="true" className="shrink-0" />
-            <span>Tous les comptes partagent le même utilisateur système du serveur. Un terminal donne ses droits.</span>
+            <span>
+              Un terminal donne les droits du compte Linux de son hôte. Donnez à chaque invité son propre compte
+              Linux et attribuez-lui seulement cet hôte : celui du hub est le compte de production.
+            </span>
           </p>
         </header>
 
@@ -266,7 +285,7 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
             Créer un compte
           </h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Longueur du mot de passe : 10 à 200 caractères.
+            Laissez le mot de passe vide pour créer un lien d’invitation : la personne choisit alors le sien.
           </p>
           <form onSubmit={handleCreateUser} className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="space-y-1">
@@ -312,6 +331,35 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
                 className="ui-focus-ring min-h-11 w-full rounded bg-input px-3 text-sm text-foreground placeholder:text-muted-foreground"
               />
             </div>
+            <div className="space-y-1">
+              <label htmlFor="admin-new-role" className="block text-xs text-muted-foreground">
+                Rôle
+              </label>
+              <select
+                id="admin-new-role"
+                value={newRole}
+                onChange={event => setNewRole(event.target.value as AccountRoleName)}
+                className="ui-focus-ring min-h-11 w-full rounded border border-border bg-input px-2.5 text-sm text-foreground"
+              >
+                <option value="guest">Invité</option>
+                <option value="admin">Administrateur</option>
+              </select>
+            </div>
+            <div className="space-y-1 sm:col-span-2">
+              <label htmlFor="admin-new-unix-user" className="block text-xs text-muted-foreground">
+                Compte Linux (facultatif)
+              </label>
+              <input
+                id="admin-new-unix-user"
+                type="text"
+                value={newUnixUser}
+                onChange={event => setNewUnixUser(event.target.value.trim())}
+                placeholder="ex. inv-alice"
+                autoComplete="off"
+                spellCheck={false}
+                className="ui-focus-ring min-h-11 w-full rounded bg-input px-3 font-mono text-sm text-foreground placeholder:text-muted-foreground"
+              />
+            </div>
             <div className="flex flex-wrap items-center justify-between gap-2 sm:col-span-3">
               <div>
                 {createError && (
@@ -322,6 +370,22 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
                 {createSuccess && (
                   <p role="status" className="text-xs text-success">
                     {createSuccess}
+                  </p>
+                )}
+                {createdInvitation && (
+                  <p className="mt-1 flex items-center gap-2">
+                    <code data-testid="created-invitation-url" className="break-all rounded bg-muted px-2 py-1 text-2xs">
+                      {invitationURL(createdInvitation)}
+                    </code>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      leadingIcon={<Copy size={14} aria-hidden="true" />}
+                      onClick={() => void navigator.clipboard?.writeText(invitationURL(createdInvitation)).catch(() => {})}
+                    >
+                      Copier
+                    </Button>
                   </p>
                 )}
               </div>
@@ -364,8 +428,13 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium text-foreground">{user.username}</span>
                         <span className="rounded bg-secondary px-1.5 py-0.5 text-2xs text-muted-foreground">
-                          {user.role === 'admin' ? 'Administrateur' : 'Utilisateur'}
+                          {user.role === 'admin' ? 'Administrateur' : 'Invité'}
                         </span>
+                        {user.pending && (
+                          <span className="rounded bg-warning/15 px-1.5 py-0.5 text-2xs text-warning">
+                            Invitation en attente
+                          </span>
+                        )}
                         <span
                           className={`rounded px-1.5 py-0.5 text-2xs ${
                             user.disabled
@@ -378,9 +447,22 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
                       </div>
                       <p className="text-2xs text-muted-foreground">
                         Créé le {formatDate(user.created_at)}
+                        {user.unix_user ? ` · Linux : ${user.unix_user}` : ''}
+                        {user.role === 'admin'
+                          ? ' · tous les hôtes'
+                          : ` · ${(user.hosts ?? []).length} hôte${(user.hosts ?? []).length > 1 ? 's' : ''}`}
                       </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        leadingIcon={<SlidersHorizontal size={14} aria-hidden="true" />}
+                        onClick={() => setAccessTarget(user)}
+                      >
+                        Rôle et accès
+                      </Button>
                       <Button
                         type="button"
                         variant="secondary"
@@ -539,6 +621,16 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
       </div>
 
       {/* Dialog: Réinitialiser le mot de passe */}
+      {accessTarget && (
+        <AccountAccessDialog
+          user={accessTarget}
+          isSelf={currentUsername === accessTarget.username}
+          usersById={usersById}
+          onClose={() => setAccessTarget(null)}
+          onChanged={() => void loadData()}
+        />
+      )}
+
       {resetTarget && (
         <Dialog
           open

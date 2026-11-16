@@ -1,10 +1,12 @@
 package webpush
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"path/filepath"
 	"testing"
+	"time"
 
 	wp "github.com/SherClockHolmes/webpush-go"
 	"github.com/sirupsen/logrus"
@@ -84,5 +86,32 @@ func TestSenderPersistsExpiredEndpointRemoval(t *testing.T) {
 	}
 	if reloaded.Count() != 0 {
 		t.Fatal("expired endpoint removal was not durable")
+	}
+}
+
+func TestBroadcastUsesLongTTLAndUrgency(t *testing.T) {
+	store, err := NewStoreAt(filepath.Join(t.TempDir(), subscriptionsFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var options *wp.Options
+	sender := &Sender{
+		keys: &VAPIDKeys{}, store: store, logger: logrus.New().WithField("test", true),
+		send: func(_ []byte, _ *wp.Subscription, o *wp.Options) (*http.Response, error) {
+			options = o
+			return &http.Response{StatusCode: http.StatusCreated, Body: http.NoBody}, nil
+		},
+	}
+	if err := sender.Broadcast(context.Background(), map[string]string{"title": "x"}, time.Hour, "high"); err == nil {
+		t.Fatal("envoi sans abonnement accepté")
+	}
+	if err := store.Add(&wp.Subscription{Endpoint: "https://push.example/a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sender.Broadcast(context.Background(), map[string]string{"title": "x"}, time.Hour, "high"); err != nil {
+		t.Fatal(err)
+	}
+	if options == nil || options.TTL != 3600 || options.Urgency != wp.UrgencyHigh {
+		t.Fatalf("options : %+v", options)
 	}
 }

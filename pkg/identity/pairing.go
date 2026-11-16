@@ -25,6 +25,9 @@ var pairingSyllables = [...]string{
 type PairingCode struct {
 	Code      string
 	ExpiresAt time.Time
+	// Account, when set, is the TmuxAtlas account that receives the paired
+	// host: the code is meant for that person's own peer.
+	Account string
 }
 
 type PairingManager struct {
@@ -47,6 +50,11 @@ func newPairingManager(random io.Reader, now func() time.Time, maxPending int) *
 // 256-entry generated word vocabulary, providing exactly 48 bits without
 // modulo bias.
 func (pm *PairingManager) Generate() (*PairingCode, error) {
+	return pm.GenerateFor("")
+}
+
+// GenerateFor creates a code whose paired host is granted to account.
+func (pm *PairingManager) GenerateFor(account string) (*PairingCode, error) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	now := pm.now()
@@ -63,7 +71,7 @@ func (pm *PairingManager) Generate() (*PairingCode, error) {
 		parts[i] = pairingSyllables[value>>4] + pairingSyllables[value&0x0f]
 	}
 	code := strings.ToUpper(strings.Join(parts, "-"))
-	pc := &PairingCode{Code: code, ExpiresAt: now.Add(PairingCodeTTL)}
+	pc := &PairingCode{Code: code, ExpiresAt: now.Add(PairingCodeTTL), Account: account}
 	pm.codes[code] = pc
 	return pc, nil
 }
@@ -71,6 +79,11 @@ func (pm *PairingManager) Generate() (*PairingCode, error) {
 // Complete runs commit while holding the code lock and consumes the one-time
 // code only after the entire persistence operation succeeds.
 func (pm *PairingManager) Complete(code string, commit func() error) error {
+	return pm.CompleteFor(code, func(string) error { return commit() })
+}
+
+// CompleteFor is Complete with the account the code was generated for.
+func (pm *PairingManager) CompleteFor(code string, commit func(account string) error) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	code = NormalizePairingCode(code)
@@ -81,7 +94,7 @@ func (pm *PairingManager) Complete(code string, commit func() error) error {
 		}
 		return fmt.Errorf("pairing failed")
 	}
-	if err := commit(); err != nil {
+	if err := commit(pc.Account); err != nil {
 		return fmt.Errorf("pairing failed")
 	}
 	delete(pm.codes, code)

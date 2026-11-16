@@ -57,8 +57,6 @@ export interface TerminalProps {
   connectionState?: TerminalWorkspaceConnectionState
   fullscreen?: boolean
   zenMode?: boolean
-  /** The session runs on the machine serving this page, where the virtual microphone lives. */
-  hostLocal?: boolean
   /** Whether voice/microphone features are allowed for the current user role. */
   voiceAllowed?: boolean
   /** Claude Code runs in the pane this Terminal has active. */
@@ -109,7 +107,6 @@ export function Terminal({
   connectionState,
   fullscreen,
   zenMode,
-  hostLocal,
   voiceAllowed = true,
   claudeActive,
   talkSlot,
@@ -140,7 +137,7 @@ export function Terminal({
   const [pasteError, setPasteError] = useState('')
   // Outside the accounts mode the signed-in owner is the administrator; the
   // server still decides and the panel hides itself when refused.
-  const sudoAdmin = useAccountRole() !== 'user'
+  const sudoAdmin = useAccountRole() !== 'guest'
   const {
     connect,
     disconnect,
@@ -172,7 +169,7 @@ export function Terminal({
     findPrevious,
     clearSearch,
   } = useTerminal(sessionName, hostId, input)
-  const mic = useMicStream(Boolean(hostLocal && !embedded && voiceAllowed))
+  const mic = useMicStream(Boolean(hostId && !embedded && voiceAllowed), hostId)
   const toggleMic = useCallback(() => {
     mic.toggle()
     focus()

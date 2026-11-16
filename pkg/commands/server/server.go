@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"github.com/LosFurina/tmuxatlas/pkg/files"
 	"net"
 	"net/url"
 	"os"
@@ -203,6 +204,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 	// Initialize web push notifications
 	var pushKeys *webpush.VAPIDKeys
 	var pushStore *webpush.Store
+	var pushSender *webpush.Sender
 	vapidKeys, err := webpush.LoadOrCreateKeys()
 	if err != nil {
 		logrus.WithError(err).Warn("failed to load VAPID keys, push notifications will be unavailable")
@@ -212,7 +214,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		if err != nil {
 			return fmt.Errorf("failed to initialize push subscription store: %w", err)
 		}
-		pushSender := webpush.NewSender(pushKeys, pushStore, tracker, prefStore)
+		pushSender = webpush.NewSender(pushKeys, pushStore, tracker, prefStore)
 		go pushSender.Run(ctx)
 	}
 
@@ -264,8 +266,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 	}
 
 	// Initialize identity for peer system
-	hostname, _ := os.Hostname()
-	nodeIdentity, err := identity.LoadOrCreate(hostname)
+	nodeIdentity, err := identity.LoadOrCreate(identity.DefaultName())
 	if err != nil {
 		return fmt.Errorf("failed to load identity: %w", err)
 	}
@@ -298,6 +299,16 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 	// Initialize PTY relay for remote sessions
 	ptyRelay := peer.NewPTYRelay()
 
+	// The hub's own host serves its files from this process, which runs under
+	// that host's Unix account. A pure hub has no host of its own.
+	var fileService *files.Service
+	if !pureHub {
+		if fileService, err = openFileService(); err != nil {
+			return err
+		}
+		defer fileService.Close()
+	}
+
 	// Initialize peer handler (accepts incoming peer connections)
 	peerHandler := peer.NewHandler(peerMgr, peerStore, tracker, pairingMgr, ptyRelay, publicURL.String())
 
@@ -314,6 +325,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 			stateMgr, peerMgr, actTracker, tracker,
 			client.TmuxPath(),
 		)
+		peerClient.SetFiles(fileService)
 		go peerClient.Run(ctx)
 		logrus.WithField("hub", hubURL).Info("connecting to hub as peer")
 	}
@@ -334,6 +346,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		ActivityTracker: actTracker,
 		PushKeys:        pushKeys,
 		PushStore:       pushStore,
+		PushSender:      pushSender,
 		PrefStore:       prefStore,
 		AuthEnabled:     authEnabled,
 		AccountsAuth:    accountAuth,
@@ -345,6 +358,8 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		PTYRelay:        ptyRelay,
 		Watcher:         watcher,
 		LocalOnly:       localOnly,
+		GuestLocalHost:  os.Getenv("TMUXATLAS_GUEST_LOCAL_HOST") == "allow",
+		Files:           fileService,
 		Role:            map[bool]string{true: "hub", false: "standalone"}[pureHub],
 		Deployment:      os.Getenv("TMUXATLAS_DEPLOYMENT"),
 		SudoPeers:       c.String("sudo-peers"),

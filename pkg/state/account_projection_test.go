@@ -58,3 +58,31 @@ func TestNewAccountSeesOnlyOnlineHostsWithIdentityFields(t *testing.T) {
 		t.Fatalf("vues : %v", views)
 	}
 }
+
+func TestForHostsDropsEverythingOfOtherHosts(t *testing.T) {
+	p := NewProjection()
+	for _, host := range []string{"mine", "prod"} {
+		hostKey := NewHostKey(host)
+		sessionKey := NewSessionKey(host, "work")
+		windowKey := NewWindowKey(host, "work", "@1")
+		p.Hosts[hostKey] = Host{Key: hostKey, ID: host, Online: true}
+		p.Health[hostKey] = Health{HostKey: hostKey}
+		p.Sessions[sessionKey] = Session{Key: sessionKey, HostKey: hostKey, HostID: host, Name: "work"}
+		p.Windows[windowKey] = Window{Key: windowKey, SessionKey: sessionKey}
+		p.Panes[NewPaneKey(host, "work", "@1", "%1")] = Pane{WindowKey: windowKey}
+		p.ToolEvents[ToolEventKey(host+"/e")] = ToolEvent{HostID: host}
+		p.Activity[ActivityKey(host+"/a")] = Activity{HostID: host}
+	}
+	got := p.ForHosts(func(id string) bool { return id == "mine" })
+	for name, size := range map[string]int{
+		"hosts": len(got.Hosts), "sessions": len(got.Sessions), "windows": len(got.Windows),
+		"panes": len(got.Panes), "events": len(got.ToolEvents), "activity": len(got.Activity), "health": len(got.Health),
+	} {
+		if size != 1 {
+			t.Errorf("%s: %d entries, want 1", name, size)
+		}
+	}
+	if _, ok := got.Hosts[NewHostKey("prod")]; ok {
+		t.Fatal("other host kept")
+	}
+}

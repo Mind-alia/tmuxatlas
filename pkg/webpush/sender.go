@@ -3,8 +3,10 @@ package webpush
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	wp "github.com/SherClockHolmes/webpush-go"
 	"github.com/sirupsen/logrus"
@@ -96,13 +98,37 @@ func (s *Sender) sendAll(evt *toolevents.Event) {
 		s.logger.WithError(err).Error("failed to marshal push payload")
 		return
 	}
+	s.sendData(subs, data, 30, "")
+}
 
+// Broadcast sends payload to every subscription. Ops notifications use a
+// longer TTL and high urgency so a phone in doze still gets them. It fails
+// when there is no subscription or when no delivery succeeded.
+func (s *Sender) Broadcast(_ context.Context, payload any, ttl time.Duration, urgency string) error {
+	subs := s.store.All()
+	if len(subs) == 0 {
+		return errors.New("aucun appareil abonné aux notifications (Réglages > Notifications)")
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if s.sendData(subs, data, int(ttl/time.Second), wp.Urgency(urgency)) == 0 {
+		return fmt.Errorf("aucun des %d abonnements n'a accepté la notification", len(subs))
+	}
+	return nil
+}
+
+// sendData delivers data to subs and returns how many accepted it.
+func (s *Sender) sendData(subs []*wp.Subscription, data []byte, ttl int, urgency wp.Urgency) int {
+	delivered := 0
 	for _, sub := range subs {
 		resp, err := s.send(data, sub, &wp.Options{
 			Subscriber:      "mailto:tmuxatlas@localhost",
 			VAPIDPublicKey:  s.keys.PublicKey,
 			VAPIDPrivateKey: s.keys.PrivateKey,
-			TTL:             30,
+			TTL:             ttl,
+			Urgency:         urgency,
 		})
 		if err != nil {
 			s.logger.WithError(err).WithField("endpoint", sub.Endpoint).Debug("push send failed")
@@ -115,8 +141,12 @@ func (s *Sender) sendAll(evt *toolevents.Event) {
 			}
 			continue
 		}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			delivered++
+		}
 		resp.Body.Close()
 	}
+	return delivered
 }
 
 func (s *Sender) statusEnabled(status toolevents.Status) bool {

@@ -28,7 +28,7 @@ describe('OwnerPicker', () => {
         : new Response('{}'),
     )
     vi.stubGlobal('fetch', fetchMock)
-    show('user', 'alice')
+    show('guest', 'alice')
     fireEvent.click(screen.getByRole('button', { name: /Changer le propriétaire de travail/ }))
     expect(await screen.findByRole('menuitem', { name: 'alice' })).toBeDisabled()
     fireEvent.click(screen.getByRole('menuitem', { name: 'bob' }))
@@ -47,7 +47,7 @@ describe('OwnerPicker', () => {
   })
 
   it('permet à tout compte de reprendre une session libre', () => {
-    show('user', null)
+    show('guest', null)
     expect(screen.getByTestId('badge')).toHaveTextContent('Libre')
   })
 })

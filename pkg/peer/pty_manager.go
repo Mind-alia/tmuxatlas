@@ -16,6 +16,7 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/clipboardimage"
 	"github.com/LosFurina/tmuxatlas/pkg/sudoterm"
 	"github.com/LosFurina/tmuxatlas/pkg/tmux"
+	"github.com/LosFurina/tmuxatlas/pkg/ws"
 )
 
 type PTYManager struct {
@@ -102,6 +103,14 @@ func (pm *PTYManager) Open(request PTYOpenPayload) {
 
 	var writeMu sync.Mutex
 	var images clipboardimage.Receiver
+	useSession := func() {
+		if voice := pm.client.Voice(); voice != nil && request.MicID != "" {
+			voice.UseSession(request.Target.Session, request.MicID)
+		}
+	}
+	useSession()
+	hold := ws.NewVoiceHold(ptySession)
+	defer hold.Stop()
 	done := make(chan struct{}, 2)
 	go func() {
 		defer active.wg.Done()
@@ -151,6 +160,7 @@ func (pm *PTYManager) Open(request PTYOpenPayload) {
 				if duplicate {
 					continue
 				}
+				useSession()
 				if _, err := ptySession.Write(frame.Payload); err != nil {
 					return
 				}
@@ -185,6 +195,13 @@ func (pm *PTYManager) Open(request PTYOpenPayload) {
 						if err != nil {
 							return
 						}
+					}
+				case "voice-hold":
+					if frame.On {
+						useSession()
+						hold.Start()
+					} else {
+						hold.Stop()
 					}
 				case "resize":
 					if err := ptySession.Resize(frame.Cols, frame.Rows); err != nil {

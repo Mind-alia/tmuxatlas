@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/LosFurina/tmuxatlas/pkg/files"
 	"io/fs"
 	"log"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -29,6 +31,7 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
 	"github.com/LosFurina/tmuxatlas/pkg/ingress"
 	"github.com/LosFurina/tmuxatlas/pkg/monitor"
+	"github.com/LosFurina/tmuxatlas/pkg/ops"
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
 	"github.com/LosFurina/tmuxatlas/pkg/preferences"
 	"github.com/LosFurina/tmuxatlas/pkg/socket"
@@ -55,6 +58,7 @@ type Options struct {
 	ActivityTracker  *activity.Tracker
 	PushKeys         *webpush.VAPIDKeys
 	PushStore        *webpush.Store
+	PushSender       *webpush.Sender
 	PrefStore        *preferences.Store
 	AuthEnabled      bool
 	AccountsAuth     *auth.AccountsAuth
@@ -67,8 +71,14 @@ type Options struct {
 	Watcher          *toolevents.Watcher
 	// SudoPeers pins the fingerprints of the peers allowed to open sudo
 	// terminals (TMUXATLAS_SUDO_PEERS).
-	SudoPeers      string
-	LocalOnly      bool
+	SudoPeers string
+	LocalOnly bool
+	// GuestLocalHost allows granting the hub's own host to a guest. Leave it
+	// off when the hub runs under an account that guests must not reach, such
+	// as a production account (TMUXATLAS_GUEST_LOCAL_HOST=allow).
+	GuestLocalHost bool
+	// Files serves the files of the hub's own host, under the hub's account.
+	Files          *files.Service
 	routerObserver func(chi.Routes)
 }
 
@@ -175,6 +185,7 @@ func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, 
 	msg, _ := peer.NewMessage(peer.MsgPTYOpen, peer.PTYOpenPayload{
 		StreamID: owner.StreamID, AttachToken: owner.AttachToken,
 		Generation: peerConn.Generation, Target: target, Cols: cols, Rows: rows,
+		MicID: remoteMicID(peerConn, r.URL.Query().Get("mic")),
 	})
 	if err := peerConn.Send(r.Context(), msg); err != nil {
 		return
@@ -213,8 +224,19 @@ func Run(ctx context.Context, opts *Options) error {
 		hostMonitor = monitor.New(monitorURLs(os.Getenv("TMUXATLAS_MONITOR_URLS")))
 		go hostMonitor.Run(ctx)
 	}
+	// Ops status (containers, backups) is read from files another account
+	// writes; the hub never talks to Docker itself. See docs/ops.md.
+	var opsMonitor *ops.Monitor
+	if dir := strings.TrimSpace(os.Getenv("TMUXATLAS_OPS_DIR")); dir != "" {
+		opsMonitor = ops.New(dir)
+		go opsMonitor.Run(ctx)
+	}
+	alertEngine := newAlertEngine(ctx, opts, opsMonitor, hostMonitor)
+	var lastNotificationTest atomic.Int64
 	// The browser microphone feeds programs on this host, so it needs local tmux.
 	var browserMic *voice.Mic
+	// Microphones for sessions on other hosts go to those hosts' agents.
+	micRelay := peer.NewMicRelay()
 	if opts.Client != nil && voice.Enabled(os.Getenv("TMUXATLAS_VOICE")) {
 		browserMic = voice.New(opts.Client.TmuxPath())
 		go func() {
@@ -355,6 +377,12 @@ func Run(ctx context.Context, opts *Options) error {
 	publicRouter.Use(hostValidation)
 	publicRouter.Use(httpguard.GlobalBodyLimitMiddleware(httpguard.GlobalBodyLimit))
 	accountPolicy := newAccountPolicy(opts)
+	if opts.AccountsAuth != nil && opts.PeerHandler != nil {
+		opts.PeerHandler.OnAccountPaired = func(account, hostID, _ string) error {
+			_, err := opts.AccountsAuth.Store.GrantHost(account, hostID, accountPolicy.grantableHost)
+			return err
+		}
+	}
 	if actionRouter != nil {
 		accountPolicy.router = actionRouter
 	}
@@ -379,6 +407,10 @@ func Run(ctx context.Context, opts *Options) error {
 				Post("/auth/login", opts.AccountsAuth.Login)
 			r.With(opts.AccountsAuth.Middleware, originMiddleware, auth.CSRFMiddleware(opts.SessionMgr)).
 				Post("/auth/logout", opts.AccountsAuth.Logout)
+			invitationJSON := r.With(admissionMiddleware(ingressPolicy, ingress.CategoryWebAuthn), originMiddleware,
+				httpguard.BodyReadDeadline(15*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit))
+			invitationJSON.Post("/auth/invitation/inspect", opts.AccountsAuth.InspectInvitation)
+			invitationJSON.Post("/auth/invitation/accept", opts.AccountsAuth.AcceptInvitation)
 		} else {
 			r.Get("/auth/status", auth.StatusHandler(opts.AuthEnabled, opts.PasskeyManager))
 		}
@@ -420,7 +452,7 @@ func Run(ctx context.Context, opts *Options) error {
 				mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).
 					Post("/auth/change-password", opts.AccountsAuth.ChangePassword)
 				r.Get("/accounts/directory", func(w http.ResponseWriter, r *http.Request) {
-					handleAccountDirectory(w, opts)
+					handleAccountDirectory(w, r, opts)
 				})
 				r.With(accountAdminOnly).Get("/admin/users", func(w http.ResponseWriter, r *http.Request) {
 					handleAdminUsers(w, r, opts)
@@ -433,6 +465,19 @@ func Run(ctx context.Context, opts *Options) error {
 				})
 				mutations.With(accountAdminOnly).Delete("/admin/users/{id}", func(w http.ResponseWriter, r *http.Request) {
 					handleAdminUserDelete(w, r, opts, actionRouter)
+				})
+				adminJSON := mutations.With(accountAdminOnly, httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit))
+				adminJSON.Post("/admin/users/{id}/invitation", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminInvitation(w, r, opts)
+				})
+				mutations.With(accountAdminOnly).Delete("/admin/users/{id}/invitation", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminInvitation(w, r, opts)
+				})
+				mutations.With(accountAdminOnly, admissionMiddleware(ingressPolicy, ingress.CategoryPairing)).Post("/admin/users/{id}/pairing", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminPairing(w, r, opts)
+				})
+				r.With(accountAdminOnly).Get("/admin/hosts", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminHosts(w, opts)
 				})
 				r.With(accountAdminOnly).Get("/admin/sessions", func(w http.ResponseWriter, r *http.Request) {
 					snapshot, err := coordinator.Snapshot(r.Context())
@@ -485,8 +530,8 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
-					json.NewEncoder(w).Encode(accountPolicy.verifiedProjection(snapshot.State).AccountSessionViews(identity.User.ID))
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && !identity.User.IsAdmin() {
+					json.NewEncoder(w).Encode(accountPolicy.verifiedProjection(snapshot.State.ForHosts(accountPolicy.hostFilter(identity.User))).AccountSessionViews(identity.User.ID))
 					return
 				}
 				json.NewEncoder(w).Encode(snapshot.State.SessionViews())
@@ -499,8 +544,8 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
-					json.NewEncoder(w).Encode(accountPolicy.verifiedProjection(snapshot.State).AccountHostViews(identity.User.ID))
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && !identity.User.IsAdmin() {
+					json.NewEncoder(w).Encode(accountPolicy.verifiedProjection(snapshot.State.ForHosts(accountPolicy.hostFilter(identity.User))).AccountHostViews(identity.User.ID))
 					return
 				}
 				json.NewEncoder(w).Encode(snapshot.State.HostViews())
@@ -547,8 +592,8 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 				projection := snapshot.State
-				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
-					projection = accountPolicy.verifiedProjection(projection).OwnedBy(identity.User.ID)
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && !identity.User.IsAdmin() {
+					projection = accountPolicy.verifiedProjection(projection.ForHosts(accountPolicy.hostFilter(identity.User))).OwnedBy(identity.User.ID)
 				}
 				events := projection.ToolEventViews()
 				if session != "" {
@@ -609,10 +654,7 @@ func Run(ctx context.Context, opts *Options) error {
 
 			// Voice status — whether the browser microphone can be used on this host
 			r.Get("/voice", func(w http.ResponseWriter, r *http.Request) {
-				status := voice.Status{}
-				if browserMic != nil {
-					status = browserMic.Status()
-				}
+				status := voiceStatus(opts, browserMic, r.URL.Query().Get("host"))
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Cache-Control", "no-store")
 				json.NewEncoder(w).Encode(status)
@@ -629,6 +671,50 @@ func Run(ctx context.Context, opts *Options) error {
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Cache-Control", "no-store")
 				json.NewEncoder(w).Encode(hostMonitor.Snapshot(rangeSec, after))
+			})
+
+			// Ops endpoint — containers and backups, admin only. The account
+			// policy already refuses it to "user" accounts; the handler checks
+			// again so a future allow-list change cannot expose it.
+			r.Get("/ops", func(w http.ResponseWriter, r *http.Request) {
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role != "admin" {
+					http.Error(w, "accès interdit", http.StatusForbidden)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				body := struct {
+					ops.Response
+					Notifications *ops.EngineView `json:"notifications,omitempty"`
+				}{Response: ops.Response{Alerts: []ops.Alert{}}}
+				if opsMonitor != nil {
+					body.Response = opsMonitor.Snapshot()
+				}
+				if alertEngine != nil {
+					view := alertEngine.View()
+					body.Notifications = &view
+				}
+				_ = json.NewEncoder(w).Encode(body)
+			})
+			// Sends a test notification to every channel (admin only, at most
+			// one every 30 s). Nothing in the request is used.
+			mutations.Post("/ops/notifications/test", func(w http.ResponseWriter, r *http.Request) {
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role != "admin" {
+					http.Error(w, "accès interdit", http.StatusForbidden)
+					return
+				}
+				if alertEngine == nil {
+					http.Error(w, "notifications indisponibles : ni TMUXATLAS_OPS_DIR ni monitoring", http.StatusServiceUnavailable)
+					return
+				}
+				now := time.Now().Unix()
+				if last := lastNotificationTest.Load(); now-last < 30 || !lastNotificationTest.CompareAndSwap(last, now) {
+					http.Error(w, "un test vient d'être envoyé, réessaie dans 30 s", http.StatusTooManyRequests)
+					return
+				}
+				errs := alertEngine.Test(r.Context())
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"channels": alertEngine.Notifiers(), "errors": errs})
 			})
 
 			// Stats endpoint — aggregate overview data
@@ -730,8 +816,8 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 				projection := snapshot.State
-				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
-					projection = accountPolicy.verifiedProjection(projection).OwnedBy(identity.User.ID)
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && !identity.User.IsAdmin() {
+					projection = accountPolicy.verifiedProjection(projection.ForHosts(accountPolicy.hostFilter(identity.User))).OwnedBy(identity.User.ID)
 				}
 				snapshots := projection.ActivityViews()
 				w.Header().Set("Content-Type", "application/json")
@@ -804,7 +890,7 @@ func Run(ctx context.Context, opts *Options) error {
 				} else {
 					prefs = preferences.Default()
 				}
-				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role == "user" {
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && !identity.User.IsAdmin() {
 					prefs = preferences.Default()
 				}
 				w.Header().Set("Content-Type", "application/json")
@@ -832,6 +918,22 @@ func Run(ctx context.Context, opts *Options) error {
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(&prefs)
 			})
+
+			// File browser: each host's files are served by its own account's
+			// process, within the ceiling that process sets for itself.
+			fileHandlers := newFilesAPI(opts, accountPolicy)
+			r.Get("/files/hosts", fileHandlers.hosts)
+			r.Get("/files/info", fileHandlers.info)
+			r.Get("/files/list", fileHandlers.list)
+			r.Get("/files/content", fileHandlers.content)
+			r.Get("/files/raw", fileHandlers.raw)
+			fileBodies := mutations.With(httpguard.BodyReadDeadline(60 * time.Second))
+			fileBodies.Put("/files/content", fileHandlers.save)
+			fileBodies.Post("/files/upload", fileHandlers.upload)
+			fileChanges := mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit))
+			for _, operation := range []string{"mkdir", "rename", "delete"} {
+				fileChanges.Post("/files/"+operation, fileHandlers.change(operation))
+			}
 
 			// Pairing code generation (for the hub to generate codes)
 			mutations.With(admissionMiddleware(ingressPolicy, ingress.CategoryPairing)).Post("/pair", func(w http.ResponseWriter, r *http.Request) {
@@ -867,9 +969,7 @@ func Run(ctx context.Context, opts *Options) error {
 	hub := ws.NewHub(opts.StateMgr, opts.Tracker)
 	hub.SetCoordinator(coordinator)
 	if opts.AccountsAuth != nil {
-		hub.SetAccountProjection(func(projection state.Projection, accountID string) state.AccountProjection {
-			return accountPolicy.verifiedProjection(projection).ForAccount(accountID)
-		})
+		hub.SetAccountProjection(accountPolicy.accountProjection)
 	}
 	if opts.ActivityTracker != nil {
 		var peerActivity ws.ActivitySource
@@ -906,9 +1006,7 @@ func Run(ctx context.Context, opts *Options) error {
 			// a missing header is refused.
 			publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/sudo", sudoService.HandleTerminal)
 		}
-		if browserMic != nil {
-			publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/mic", browserMic.HandleStream)
-		}
+		publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/mic", micHandler(opts, browserMic, micRelay))
 		publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
 			hostID := req.URL.Query().Get("host")
 			if opts.PeerMgr == nil || hostID == "" || !opts.PeerMgr.HasHost(hostID) {
@@ -927,9 +1025,7 @@ func Run(ctx context.Context, opts *Options) error {
 		})
 	} else {
 		publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/events", hub.HandleEvents)
-		if browserMic != nil {
-			publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/mic", browserMic.HandleStream)
-		}
+		publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/mic", micHandler(opts, browserMic, micRelay))
 		publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
 			hostID := req.URL.Query().Get("host")
 			if opts.PeerMgr == nil || hostID == "" || !opts.PeerMgr.HasHost(hostID) {
@@ -959,6 +1055,9 @@ func Run(ctx context.Context, opts *Options) error {
 	}
 	if opts.PTYRelay != nil {
 		publicRouter.With(admissionMiddleware(ingressPolicy, ingress.CategoryWSPeerPTY)).Get("/ws/peer-pty", opts.PTYRelay.HandlePeerPTY)
+	}
+	if opts.PeerHandler != nil {
+		publicRouter.With(admissionMiddleware(ingressPolicy, ingress.CategoryWSPeerPTY)).Get("/ws/peer-mic", micRelay.HandlePeerMic)
 	}
 
 	// Serve embedded frontend

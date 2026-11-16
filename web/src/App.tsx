@@ -8,6 +8,7 @@ import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
 import { StatusBar } from './components/StatusBar'
 import { Login } from './components/Login'
+import { InvitePage } from './components/InvitePage'
 import { StateConnectionNotice } from './components/StateConnectionNotice'
 import { AuthLoadingState, EmptyWorkspaceState, WorkspaceLoadingState } from './components/PageStates'
 import type { TerminalCommandActions } from './components/Terminal'
@@ -61,12 +62,14 @@ function errorMessage(err: unknown): string {
   return 'L’action sur la session a échoué.'
 }
 
-type View = 'overview' | 'session' | 'settings' | 'setup' | 'monitoring' | 'wall' | 'admin'
+type View = 'overview' | 'session' | 'settings' | 'setup' | 'monitoring' | 'wall' | 'admin' | 'ops' | 'files'
 
 const AdminPage = lazy(() => import('./components/AdminPage').then(module => ({ default: module.AdminPage })))
 const MonitoringPage = lazy(() =>
   import('./components/monitoring/MonitoringPage').then(module => ({ default: module.MonitoringPage })),
 )
+const OpsPage = lazy(() => import('./components/ops/OpsPage').then(module => ({ default: module.OpsPage })))
+const FilesPage = lazy(() => import('./components/FilesPage').then(module => ({ default: module.FilesPage })))
 const WallView = lazy(() => import('./components/WallView').then(module => ({ default: module.WallView })))
 const HelpModal = lazy(() => import('./components/HelpModal').then(module => ({ default: module.HelpModal })))
 const NewSessionModal = lazy(() =>
@@ -83,7 +86,9 @@ const Terminal = lazy(() => import('./components/Terminal').then(module => ({ de
 function getViewFromPath(): { view: View; sessionKey: string | null } {
   if (window.location.pathname === '/admin') return { view: 'admin', sessionKey: null }
   if (window.location.pathname === '/monitoring') return { view: 'monitoring', sessionKey: null }
+  if (window.location.pathname === '/ops') return { view: 'ops', sessionKey: null }
   if (window.location.pathname === '/wall') return { view: 'wall', sessionKey: null }
+  if (window.location.pathname === '/files') return { view: 'files', sessionKey: null }
   if (window.location.pathname === '/settings') {
     return { view: 'settings', sessionKey: null }
   }
@@ -200,14 +205,14 @@ function AppInner({
     })
   }, [])
   const dismissAllEvents = useCallback(async () => {
-    if (role === 'user') {
+    if (role === 'guest') {
       const actionable = allToolEvents.filter(event => event.status === 'waiting' || event.status === 'error')
       await Promise.all(actionable.map(event => dismissEvent(event)))
       return
     }
     await fetch('/api/tool-events', { method: 'DELETE' })
   }, [allToolEvents, dismissEvent, role])
-  const { pushState, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications(role !== 'user')
+  const { pushState, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications(role !== 'guest')
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
   const [currentView, setCurrentView] = useState<View>(() => getViewFromPath().view)
   const [selectedSession, setSelectedSession] = useState<string | null>(() => getViewFromPath().sessionKey)
@@ -350,7 +355,7 @@ function AppInner({
   const navigateTo = useCallback(
     (sessKey: string | null, view?: View) => {
       let path: string
-      if (view === 'monitoring' || view === 'wall' || view === 'admin') {
+      if (view === 'monitoring' || view === 'wall' || view === 'admin' || view === 'ops' || view === 'files') {
         path = `/${view}`
       } else if (view === 'settings') {
         path = '/settings'
@@ -413,7 +418,7 @@ function AppInner({
       navigateTo(null)
       return
     }
-    if (role === 'user' && currentView === 'setup') {
+    if (role === 'guest' && (currentView === 'setup' || currentView === 'monitoring' || currentView === 'ops')) {
       navigateTo(null)
     }
   }, [currentView, navigateTo, role])
@@ -714,9 +719,17 @@ function AppInner({
       document.title = 'Réglages — Atlas'
     } else if (currentView === 'admin') {
       document.title = 'Administration — Atlas'
+    } else if (currentView === 'ops') {
+      document.title = 'Conteneurs — Atlas'
     } else {
       document.title =
-        currentView === 'monitoring' ? 'Monitoring — Atlas' : currentView === 'wall' ? 'Mur — Atlas' : 'Atlas'
+        currentView === 'monitoring'
+          ? 'Monitoring — Atlas'
+          : currentView === 'wall'
+            ? 'Mur — Atlas'
+            : currentView === 'files'
+              ? 'Fichiers — Atlas'
+              : 'Atlas'
     }
     if (attentionCount > 0) document.title = `(${attentionCount}) ${document.title}`
   }, [currentView, selectedSession, sessions, attentionCount])
@@ -799,8 +812,10 @@ function AppInner({
               else setSidebarCollapsed(c => !c)
             }}
             onOverview={() => navigateTo(null)}
-            onMonitoring={() => navigateTo(null, 'monitoring')}
+            onMonitoring={role === 'guest' ? undefined : () => navigateTo(null, 'monitoring')}
             onWall={() => navigateTo(null, 'wall')}
+            onFiles={() => navigateTo(null, 'files')}
+            onOps={role !== 'guest' ? () => navigateTo(null, 'ops') : undefined}
             onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}
             onOpenPalette={() => setQuickSwitcherOpen(true)}
             onSettings={navigateToSettings}
@@ -859,7 +874,7 @@ function AppInner({
                 liveSessions={sessions}
                 onUsersChanged={setAdminUsers}
               />
-            ) : currentView === 'setup' && role !== 'user' ? (
+            ) : currentView === 'setup' && role !== 'guest' ? (
               <Setup onComplete={() => navigateTo(null)} />
             ) : currentView === 'settings' ? (
               <Settings
@@ -873,6 +888,10 @@ function AppInner({
               />
             ) : currentView === 'monitoring' ? (
               <MonitoringPage hosts={hosts} />
+            ) : currentView === 'ops' && role !== 'guest' ? (
+              <OpsPage />
+            ) : currentView === 'files' ? (
+              <FilesPage />
             ) : currentView === 'wall' ? (
               wallReady && (
                 <WallView
@@ -881,7 +900,7 @@ function AppInner({
                   onOpenSession={(key: string) => void jumpToSession(key)}
                 />
               )
-            ) : selectedSession && (role !== 'user' || activeSession || selectedSession === pendingSessionRef.current) ? (
+            ) : selectedSession && (role !== 'guest' || activeSession || selectedSession === pendingSessionRef.current) ? (
               <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
                 <Terminal
                   windows={activeSession?.windows}
@@ -926,8 +945,9 @@ function AppInner({
                   sessionAvailable={Boolean(activeSession)}
                   fullscreen={terminalFullscreen}
                   zenMode={zenMode}
-                  hostLocal={activeHost?.local === true}
-                  voiceAllowed
+                  // Same rule as the server: a guest may use the microphone of a
+                  // host granted to them, never the hub's own host.
+                  voiceAllowed={role !== 'guest' || activeHost?.local !== true}
                   claudeActive={activePane?.current_command === 'claude'}
                   talkSlot={statusBarSlot}
                   onToggleFullscreen={toggleFullscreen}
@@ -937,7 +957,7 @@ function AppInner({
                   terminalDrafts={terminalDrafts}
                 />
               </div>
-            ) : applicationState.connection === 'ready' && sessions.length === 0 && role !== 'user' ? (
+            ) : applicationState.connection === 'ready' && sessions.length === 0 && role !== 'guest' ? (
               <EmptyWorkspaceState onNewSession={openNewSessionModal} onOpenSetup={() => navigateTo(null, 'setup')} />
             ) : (
               <Overview
@@ -967,7 +987,9 @@ function AppInner({
           role={role}
           onOverview={() => navigateTo(null)}
           onSessions={() => setMobileSidebarOpen(true)}
-          onMonitoring={() => navigateTo(null, 'monitoring')}
+          onFiles={() => navigateTo(null, 'files')}
+          onMonitoring={role === 'guest' ? undefined : () => navigateTo(null, 'monitoring')}
+          onOps={role !== 'guest' ? () => navigateTo(null, 'ops') : undefined}
           onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}
           onSettings={navigateToSettings}
         />
@@ -1014,7 +1036,7 @@ export default function App() {
     logout,
     refreshAuthStatus,
   } = useAuth()
-  const prefsProvider = usePreferencesProvider({ localOnly: role === 'user' })
+  const prefsProvider = usePreferencesProvider({ localOnly: role === 'guest' })
   const [showOnboarding, setShowOnboarding] = useState(false)
 
   // Re-fetch preferences after login (initial fetch may have gotten 401)
@@ -1048,6 +1070,10 @@ export default function App() {
 
   if (loading) {
     return <AuthLoadingState />
+  }
+
+  if (authMode === 'accounts' && window.location.pathname === '/invite') {
+    return <InvitePage />
   }
 
   if (authRequired && needsSetup) {

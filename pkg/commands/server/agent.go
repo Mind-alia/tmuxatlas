@@ -11,6 +11,7 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"github.com/LosFurina/tmuxatlas/pkg/activity"
+	"github.com/LosFurina/tmuxatlas/pkg/files"
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
 	agentserver "github.com/LosFurina/tmuxatlas/pkg/server"
@@ -18,6 +19,7 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/sudoterm"
 	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
+	"github.com/LosFurina/tmuxatlas/pkg/voice"
 )
 
 func validateHubURL(raw string) error {
@@ -68,8 +70,7 @@ func ExecuteAgent(ctx context.Context, c *cli.Command) error {
 		go controlMode.Run(ctx)
 	}
 
-	hostname, _ := os.Hostname()
-	nodeIdentity, err := identity.LoadOrCreate(hostname)
+	nodeIdentity, err := identity.LoadOrCreate(identity.DefaultName())
 	if err != nil {
 		return fmt.Errorf("load identity: %w", err)
 	}
@@ -85,6 +86,24 @@ func ExecuteAgent(ctx context.Context, c *cli.Command) error {
 	peerClient := peer.NewClient(
 		hubURL, nodeIdentity, peerStore, stateMgr, peerMgr, actTracker, tracker, client.TmuxPath(),
 	)
+	fileService, err := openFileService()
+	if err != nil {
+		return err
+	}
+	defer fileService.Close()
+	peerClient.SetFiles(fileService)
+	// The agent's recorders hear only its own user's audio server, so the
+	// microphone of a browser viewing these sessions is relayed here.
+	if voice.Enabled(os.Getenv("TMUXATLAS_VOICE")) {
+		mic := voice.New(client.TmuxPath())
+		go func() {
+			if err := mic.Setup(ctx); err != nil {
+				logrus.WithError(err).Warn("voice setup failed")
+			}
+			mic.Run(ctx)
+		}()
+		peerClient.SetVoice(mic)
+	}
 	if c.Bool("sudo-terminal") {
 		runner, err := sudoterm.NewRunner(sudoterm.DefaultConfig())
 		if err != nil {
@@ -107,4 +126,19 @@ func ExecuteAgent(ctx context.Context, c *cli.Command) error {
 	}).Info("starting headless TmuxAtlas agent")
 
 	return agentserver.RunAgentSocket(ctx, c.String("socket"), tracker, peerMgr, peerClient.SudoBroker())
+}
+
+// openFileService serves this account's own files within the ceiling it sets
+// in its environment (TMUXATLAS_FILES=off|ro|rw, off by default).
+func openFileService() (*files.Service, error) {
+	config, err := files.ConfigFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	service, err := files.NewService(config)
+	if err != nil {
+		return nil, err
+	}
+	logrus.WithFields(logrus.Fields{"mode": config.Mode, "root": config.Root}).Info("file browser ceiling")
+	return service, nil
 }

@@ -40,6 +40,33 @@ type User struct {
 	Disabled          bool      `json:"disabled"`
 	CreatedAt         time.Time `json:"created_at"`
 	PasswordChangedAt time.Time `json:"password_changed_at"`
+	// Hosts lists the host IDs (peer key fingerprints) a guest may use. It is
+	// ignored for administrators, who see every host.
+	Hosts []string `json:"hosts,omitempty"`
+	// UnixUser is the Linux account the person works in. It only documents the
+	// account: access is decided by Hosts, never by this name.
+	UnixUser string      `json:"unix_user,omitempty"`
+	Invite   *Invitation `json:"invite,omitempty"`
+}
+
+// IsAdmin reports whether the account administers TmuxAtlas. Every other
+// role, including unknown ones, gets the restricted guest access.
+func (u User) IsAdmin() bool { return u.Role == RoleAdmin }
+
+// CanUseHost reports whether the account may see and use a host.
+func (u User) CanUseHost(hostID string) bool {
+	if u.IsAdmin() {
+		return true
+	}
+	if hostID == "" {
+		return false
+	}
+	for _, host := range u.Hosts {
+		if host == hostID {
+			return true
+		}
+	}
+	return false
 }
 
 type Store struct {
@@ -78,6 +105,9 @@ func (s *Store) withLock(fn func([]User) ([]User, bool, error)) error {
 	if err == nil {
 		if err := json.Unmarshal(raw, &users); err != nil {
 			return fmt.Errorf("lecture des comptes : %w", err)
+		}
+		for i := range users {
+			users[i].Role = NormalizeRole(users[i].Role)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -136,8 +166,9 @@ func (s *Store) Create(username, hash, role string) (User, error) {
 	if _, err := bcrypt.Cost([]byte(hash)); err != nil {
 		return User{}, ErrInvalidHash
 	}
-	if role != "admin" && role != "user" {
-		return User{}, errors.New("rôle invalide")
+	role, err := ValidRole(role)
+	if err != nil {
+		return User{}, err
 	}
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
@@ -145,7 +176,7 @@ func (s *Store) Create(username, hash, role string) (User, error) {
 	}
 	now := time.Now().UTC()
 	user := User{ID: hex.EncodeToString(id[:]), Username: username, PasswordHash: hash, Role: role, CreatedAt: now, PasswordChangedAt: now}
-	err := s.withLock(func(users []User) ([]User, bool, error) {
+	err = s.withLock(func(users []User) ([]User, bool, error) {
 		for _, existing := range users {
 			if strings.EqualFold(existing.Username, username) {
 				return nil, false, ErrDuplicateUsername
@@ -274,10 +305,12 @@ func (s *Store) DeleteWith(id, actor string, beforeDelete func() error) error {
 	})
 }
 
+// activeAdmins counts the administrators who can sign in now: an account still
+// waiting for its invitation does not count.
 func activeAdmins(users []User) int {
 	count := 0
 	for _, user := range users {
-		if user.Role == "admin" && !user.Disabled {
+		if user.Role == "admin" && !user.Disabled && user.PasswordHash != "" {
 			count++
 		}
 	}

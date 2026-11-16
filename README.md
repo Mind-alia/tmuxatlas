@@ -564,9 +564,16 @@ dans le dossier de configuration avec les permissions `0600`. La première
 activation attribue les sessions tmux locales existantes à l’administrateur ;
 les sessions créées ensuite en dehors d’Atlas restent libres.
 
+Il y a deux rôles : administrateur, qui voit tous les hôtes, et invité, qui ne
+voit que les hôtes qu’on lui attribue. Pour inviter quelqu’un, créez-lui un
+compte depuis `/admin` (ou `tmuxatlas users add`) : il reçoit un lien à usage
+unique pour choisir son mot de passe. Donnez-lui son propre compte Linux et
+attribuez-lui l’hôte de son peer ; l’hôte du hub n’est jamais attribué à un
+invité (`TMUXATLAS_GUEST_LOCAL_HOST=allow` pour un hub sous un compte dédié).
+
 Les routes, les formats JSON et les autorisations figurent dans
-[l’API des comptes](docs/accounts-api.md). Les comptes partagent le compte
-Unix du serveur : voir l’[avertissement de sécurité](docs/accounts-security.md).
+[l’API des comptes](docs/accounts-api.md) ; les limites d’isolation, dans
+l’[avertissement de sécurité](docs/accounts-security.md).
 
 TmuxAtlas automatically loads `~/.config/tmuxatlas/.env` at startup. Existing
 process environment variables take precedence. Start from
@@ -577,6 +584,10 @@ process environment variables take precedence. Start from
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TMUXATLAS_AUTH` | `passkey` | Mode d’authentification : `passkey` ou `accounts` |
+| `TMUXATLAS_GUEST_LOCAL_HOST` | — | `allow` permet d’attribuer l’hôte du hub à un invité (mode comptes) |
+| `TMUXATLAS_FILES` | `off` | Plafond du navigateur de fichiers pour ce compte : `off`, `ro` ou `rw` (voir [docs/files.md](docs/files.md)) |
+| `TMUXATLAS_FILES_ROOT` | `$HOME` | Racine servie par le navigateur de fichiers |
+| `TMUXATLAS_FILES_DENY` | — | Motifs refusés en plus de la liste par défaut, séparés par des virgules |
 | `TMUXATLAS_LISTEN` | `127.0.0.1:7654` | HTTP/WS origin listen address |
 | `TMUXATLAS_PUBLIC_URL` | `http://localhost:7654` | Browser-facing absolute HTTP(S) URL; HTTPS enables Secure cookies |
 | `TMUXATLAS_SESSION_TTL` | `24h` | Idle time before Passkey login is required again; accepts Go durations such as `168h` |

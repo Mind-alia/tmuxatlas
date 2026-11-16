@@ -120,9 +120,13 @@ CSRF pour les mutations, plus le contrôle « est admin ») :
 | `GET /ws/sudo` | Terminal ; le grant voyage dans la 1re trame, jamais dans l'URL |
 
 « Est admin » passe par une petite interface (`server.SudoAdmins`) : en mode
-comptes, c'est le rôle `admin` du compte ; en mode passkey (un seul
-propriétaire), toute session valide ; sans authentification, le terminal sudo
-est **désactivé**. Le modèle de comptes n'est pas modifié.
+comptes, c'est le rôle `admin` du modèle de comptes (`accounts.User.IsAdmin`),
+relu dans le magasin de comptes à chaque décision : un admin rétrogradé ou
+désactivé perd le terminal sudo aussitôt ; les invités (et l'ancien rôle
+`user`, lu comme invité) sont refusés, quels que soient leurs hôtes. En mode
+passkey (un seul propriétaire), toute session valide ; sans authentification,
+le terminal sudo est **désactivé**. En plus, la politique de comptes refuse
+`/api/sudo/*` et `/ws/sudo` à tout invité avant même le service sudo.
 
 `/ws/sudo` exige un en-tête `Origin` égal à l'URL publique (l'ancien
 `CheckSameOrigin` acceptait l'absence d'`Origin`).

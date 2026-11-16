@@ -126,3 +126,22 @@ func TestAdminAccountChangesRevokeSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPendingAccountCannotSignInWithDummyPassword(t *testing.T) {
+	store := accounts.OpenStore(filepath.Join(t.TempDir(), "users.json"))
+	if _, err := store.CreatePending("alice", accounts.RoleGuest, ""); err != nil {
+		t.Fatal(err)
+	}
+	a, err := NewAccountsAuth(store, NewSessionManager(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, password := range []string{"atlas-dummy-password", ""} {
+		body := strings.NewReader(`{"username":"alice","password":"` + password + `"}`)
+		recorder := httptest.NewRecorder()
+		a.Login(recorder, httptest.NewRequest(http.MethodPost, "/api/auth/login", body))
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("pending account signed in with %q: %d", password, recorder.Code)
+		}
+	}
+}

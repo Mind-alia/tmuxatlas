@@ -29,11 +29,14 @@ import (
 
 func TestOwnerNameIsMarkedInTmuxSession(t *testing.T)  { runAccountsIntegration(t, "owner-name") }
 func TestNewAccountCanCreateFirstSession(t *testing.T) { runAccountsIntegration(t, "first-session") }
-func TestOwnerCanTransferOwnSession(t *testing.T)      { runAccountsIntegration(t, "transfer") }
+func TestGuestCannotGiveSessionToAnotherAccount(t *testing.T) {
+	runAccountsIntegration(t, "transfer")
+}
 func TestAnyAccountCanReassignAnySession(t *testing.T) {
 	runAccountsIntegration(t, "transfer-denied")
 }
 func TestAccountDirectoryExposesOnlyNames(t *testing.T)   { runAccountsIntegration(t, "directory") }
+func TestOpsStatusIsAdminOnly(t *testing.T)               { runAccountsIntegration(t, "ops") }
 func TestAccountsModeIntegration(t *testing.T)            { runAccountsIntegration(t, "standard") }
 func TestFailedClaimDoesNotDisconnectOthers(t *testing.T) { runAccountsIntegration(t, "claim") }
 func TestPreferencesHideOtherUsersData(t *testing.T)      { runAccountsIntegration(t, "preferences") }
@@ -47,6 +50,18 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	t.Setenv("TMUX_TMPDIR", dir)
 	t.Setenv("TMUXATLAS_MONITOR", "off")
+	if scenario == "ops" {
+		opsDir := filepath.Join(dir, "ops")
+		if err := os.MkdirAll(opsDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		snapshot := fmt.Sprintf(`{"schema":1,"collected_at":%q,"docker_ok":true,"containers":[{"id":"abc","name":"/secret-db","state":"running"}]}`, time.Now().UTC().Format(time.RFC3339))
+		if err := os.WriteFile(filepath.Join(opsDir, "containers.json"), []byte(snapshot), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TMUXATLAS_OPS_DIR", opsDir)
+		t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data")) // alerts.json
+	}
 	client, err := tmux.NewClient()
 	if err != nil {
 		t.Fatal(err)
@@ -60,11 +75,11 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alice, err := store.Create("alice", string(hash), "user")
+	alice, err := store.Create("alice", string(hash), "guest")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bob, err := store.Create("bob", string(hash), "user")
+	bob, err := store.Create("bob", string(hash), "guest")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,6 +103,10 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 	stateManager := state.NewManager(client)
 	peerManager := peer.NewManager(node, nil, stateManager)
 	peerManager.UpdatePeerSessions(peerManager.LocalID(), stateManager.GetSessions())
+	// Alice is the guest of the only host; bob is a guest with no host.
+	if _, err := store.SetAccess(alice.ID, []string{peerManager.LocalID()}, "alice", nil); err != nil {
+		t.Fatal(err)
+	}
 	ttl := time.Hour
 	if scenario == "expiry" {
 		ttl = 700 * time.Millisecond
@@ -122,7 +141,7 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 		done <- Run(ctx, &Options{Role: "standalone", ListenAddress: address, PublicURL: base,
 			SocketPath: filepath.Join(dir, "server.sock"), Client: client, StateMgr: stateManager,
 			PrefStore: prefStore, Tracker: toolevents.NewTracker(), ActivityTracker: activity.NewTracker(), PeerMgr: peerManager,
-			AuthEnabled: true, AccountsAuth: a, SessionMgr: sessions})
+			AuthEnabled: true, AccountsAuth: a, SessionMgr: sessions, GuestLocalHost: true})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -190,8 +209,57 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 	adminLogin := loginAs(admin.Username)
 	aliceLogin := loginAs(alice.Username)
 	bobLogin := loginAs(bob.Username)
+	if scenario == "ops" {
+		for _, who := range []login{aliceLogin, {}} {
+			response := call(http.MethodPost, "/api/ops/notifications/test", "", who)
+			response.Body.Close()
+			if response.StatusCode != http.StatusForbidden && response.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("test de notification par un non-admin : %s", response.Status)
+			}
+		}
+		response := call(http.MethodPost, "/api/ops/notifications/test", "", adminLogin)
+		data, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK || !strings.Contains(string(data), `"channels"`) {
+			t.Fatalf("test de notification par l'admin : %s %s", response.Status, data)
+		}
+		again := call(http.MethodPost, "/api/ops/notifications/test", "", adminLogin)
+		again.Body.Close()
+		if again.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("second test immédiat : %s", again.Status)
+		}
+		for _, who := range []login{aliceLogin, bobLogin, {}} {
+			response := call(http.MethodGet, "/api/ops", "", who)
+			data, _ := io.ReadAll(response.Body)
+			response.Body.Close()
+			if response.StatusCode == http.StatusOK || strings.Contains(string(data), "secret-db") {
+				t.Fatalf("données ops exposées hors admin : %s %s", response.Status, data)
+			}
+		}
+		for deadline := time.Now().Add(5 * time.Second); ; {
+			response := call(http.MethodGet, "/api/ops", "", adminLogin)
+			data, _ := io.ReadAll(response.Body)
+			response.Body.Close()
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("admin : %s", response.Status)
+			}
+			if strings.Contains(string(data), `"secret-db"`) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("admin ne voit pas les conteneurs : %s", data)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
 	if scenario == "directory" {
-		listed := call(http.MethodGet, "/api/accounts/directory", "", aliceLogin)
+		own := call(http.MethodGet, "/api/accounts/directory", "", aliceLogin)
+		ownData, _ := io.ReadAll(own.Body)
+		own.Body.Close()
+		if own.StatusCode != http.StatusOK || !strings.Contains(string(ownData), `"alice"`) || strings.Contains(string(ownData), `"bob"`) {
+			t.Fatalf("annuaire d'un invité : %s %s", own.Status, ownData)
+		}
+		listed := call(http.MethodGet, "/api/accounts/directory", "", adminLogin)
 		defer listed.Body.Close()
 		data, _ := io.ReadAll(listed.Body)
 		if listed.StatusCode != http.StatusOK || !strings.Contains(string(data), `"bob"`) {
@@ -218,8 +286,11 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 			return response.StatusCode
 		}
 		if scenario == "transfer" {
-			if code := give("alice-work", bob.ID, aliceLogin); code != http.StatusOK {
-				t.Fatalf("transfert : %d", code)
+			if code := give("alice-work", bob.ID, aliceLogin); code != http.StatusForbidden {
+				t.Fatalf("transfert par un invité : %d", code)
+			}
+			if code := give("alice-work", bob.ID, adminLogin); code != http.StatusOK {
+				t.Fatalf("transfert par l'administrateur : %d", code)
 			}
 			if got := ownerOf("alice-work"); got != "bob" {
 				t.Fatalf("propriétaire : %q", got)
@@ -229,13 +300,17 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 			}
 			return
 		}
-		if code := give("alice-work", bob.ID, bobLogin); code != http.StatusOK {
-			t.Fatalf("réattribution par un autre compte : %d", code)
+		// A guest without the host cannot reach its sessions at all.
+		if code := give("alice-work", bob.ID, bobLogin); code != http.StatusForbidden {
+			t.Fatalf("réattribution par un invité sans l'hôte : %d", code)
+		}
+		if code := give("alice-work", bob.ID, adminLogin); code != http.StatusOK {
+			t.Fatalf("réattribution par l'administrateur : %d", code)
 		}
 		if got := ownerOf("alice-work"); got != "bob" {
 			t.Fatalf("propriétaire : %q", got)
 		}
-		if code := give("alice-work", "compte-inexistant", aliceLogin); code == http.StatusOK {
+		if code := give("alice-work", "compte-inexistant", adminLogin); code == http.StatusOK {
 			t.Fatal("transfert vers un compte inexistant accepté")
 		}
 		if got := ownerOf("alice-work"); got != "bob" {
@@ -244,10 +319,33 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 		return
 	}
 	if scenario == "first-session" {
-		if _, err := store.Create("carol", string(hash), "user"); err != nil {
+		carolAccount, err := store.Create("carol", string(hash), "guest")
+		if err != nil {
 			t.Fatal(err)
 		}
 		carol := loginAs("carol")
+		hostsOf := func(user login) []map[string]any {
+			t.Helper()
+			response := call(http.MethodGet, "/api/hosts", "", user)
+			defer response.Body.Close()
+			var hosts []map[string]any
+			if err := json.NewDecoder(response.Body).Decode(&hosts); err != nil {
+				t.Fatal(err)
+			}
+			return hosts
+		}
+		if hosts := hostsOf(carol); len(hosts) != 0 {
+			t.Fatalf("hôtes visibles sans attribution : %v", hosts)
+		}
+		if _, err := store.GrantHost(carolAccount.ID, peerManager.LocalID(), nil); err == nil {
+			t.Fatal("hôte partagé entre deux invités")
+		}
+		if _, err := store.SetAccess(alice.ID, nil, "alice", nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.GrantHost(carolAccount.ID, peerManager.LocalID(), nil); err != nil {
+			t.Fatal(err)
+		}
 		response := call(http.MethodGet, "/api/hosts", "", carol)
 		defer response.Body.Close()
 		var hosts []map[string]any
@@ -280,8 +378,11 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
+		if strings.Contains(sessionsOf(bobLogin), "carol-first") || strings.Contains(sessionsOf(aliceLogin), "carol-first") {
+			t.Fatal("un invité voit la session d'un hôte qui ne lui est pas attribué")
+		}
 		var seen []map[string]any
-		if err := json.Unmarshal([]byte(sessionsOf(bobLogin)), &seen); err != nil {
+		if err := json.Unmarshal([]byte(sessionsOf(adminLogin)), &seen); err != nil {
 			t.Fatal(err)
 		}
 		foreign := false
@@ -295,7 +396,7 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 			}
 		}
 		if !foreign {
-			t.Fatal("bob doit voir la session de carol et son propriétaire")
+			t.Fatal("l'administrateur doit voir la session de carol et son propriétaire")
 		}
 		return
 	}
@@ -353,7 +454,7 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 		return
 	}
 	if scenario == "claim" {
-		headers := http.Header{"Origin": []string{base}, "Cookie": []string{bobLogin.cookie.String()}}
+		headers := http.Header{"Origin": []string{base}, "Cookie": []string{adminLogin.cookie.String()}}
 		terminal, _, err := websocket.DefaultDialer.Dial("ws://"+address+"/ws/session?host="+peerManager.LocalID()+"&name=bob-work", headers)
 		if err != nil {
 			t.Fatal(err)
@@ -471,17 +572,35 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 		t.Fatalf("claim: %s %s", response.Status, data)
 	}
 	response.Body.Close()
-	response = call(http.MethodGet, "/api/sessions", "", bobLogin)
+	response = call(http.MethodGet, "/api/sessions", "", aliceLogin)
 	data, _ := io.ReadAll(response.Body)
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK || !bytes.Contains(data, []byte("bob-work")) || !bytes.Contains(data, []byte("still-free")) {
-		t.Fatalf("projection bob : %d %s", response.StatusCode, data)
+		t.Fatalf("projection alice : %d %s", response.StatusCode, data)
+	}
+	response = call(http.MethodGet, "/api/sessions", "", bobLogin)
+	data, _ = io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || bytes.Contains(data, []byte("work")) {
+		t.Fatalf("projection d'un invité sans hôte : %d %s", response.StatusCode, data)
+	}
+	for _, path := range []string{"/api/stats", "/api/monitor", "/api/voice", "/api/admin/users"} {
+		response = call(http.MethodGet, path, "", aliceLogin)
+		response.Body.Close()
+		if response.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s pour un invité : %d", path, response.StatusCode)
+		}
 	}
 	response = call(http.MethodGet, "/ws/session?host="+peerManager.LocalID()+"&name=free-work", "", bobLogin)
 	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("PTY d'un hôte non attribué : %d", response.StatusCode)
+	}
+	response = call(http.MethodGet, "/ws/session?host="+peerManager.LocalID()+"&name=free-work", "", aliceLogin)
+	response.Body.Close()
 	// A plain GET passes the access check, then fails the WebSocket upgrade.
 	if response.StatusCode != http.StatusBadRequest {
-		t.Fatalf("PTY d'autrui : %d", response.StatusCode)
+		t.Fatalf("PTY de l'hôte attribué : %d", response.StatusCode)
 	}
 	headers := http.Header{"Origin": []string{base}, "Cookie": []string{aliceLogin.cookie.String()}}
 	pty, _, err := websocket.DefaultDialer.Dial("ws://"+address+"/ws/session?host="+peerManager.LocalID()+"&name=alice-work", headers)
@@ -517,6 +636,16 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, _, err := conn.ReadMessage(); err != nil {
 		t.Fatal(err)
+	}
+	bobHeaders := http.Header{"Origin": []string{base}, "Cookie": []string{bobLogin.cookie.String()}}
+	bobEvents, _, err := websocket.DefaultDialer.Dial("ws://"+address+"/ws/events?schema=1", bobHeaders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bobEvents.Close()
+	_ = bobEvents.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, snapshot, err := bobEvents.ReadMessage(); err != nil || bytes.Contains(snapshot, []byte("work")) || bytes.Contains(snapshot, []byte(peerManager.LocalID())) {
+		t.Fatalf("instantané d'un invité sans hôte : %v %s", err, snapshot)
 	}
 	response = call(http.MethodPatch, "/api/admin/users/"+alice.ID, `{"disabled":true}`, adminLogin)
 	response.Body.Close()
