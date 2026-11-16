@@ -1,7 +1,6 @@
 package peer
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -177,28 +176,8 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 	}()
 	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 
-	// Send current aggregated state to the new peer
-	h.sendPeerState(peerConn)
-
-	// Subscribe to state changes and forward to this peer
-	stateCh := h.manager.Subscribe()
-	defer h.manager.Unsubscribe(stateCh)
-
-	go func() {
-		for evt := range stateCh {
-			// Don't echo a peer's own events back to it
-			if evt.Host == peerID {
-				continue
-			}
-			msg, err := NewMessage(MsgPeerState, PeerStatePayload{
-				Hosts: h.manager.GetHosts(),
-			})
-			if err != nil {
-				continue
-			}
-			_ = peerConn.Send(context.Background(), msg)
-		}
-	}()
+	// The hub never forwards other hosts' state to a peer: a peer may run under
+	// another person's Unix account, and other hosts' sessions are not theirs.
 
 	// Read loop: process messages from peer
 	for {
@@ -298,17 +277,6 @@ func (h *Handler) handlePeerMessage(peerID string, connection *PeerConnection, m
 	default:
 		log.WithField("type", msg.Type).Debug("unknown message type from peer")
 	}
-}
-
-// sendPeerState sends the full aggregated state to a peer
-func (h *Handler) sendPeerState(peerConn *PeerConnection) {
-	msg, err := NewMessage(MsgPeerState, PeerStatePayload{
-		Hosts: h.manager.GetHosts(),
-	})
-	if err != nil {
-		return
-	}
-	_ = peerConn.Send(context.Background(), msg)
 }
 
 // getPeerSessions returns the current sessions for a peer (from cache)
