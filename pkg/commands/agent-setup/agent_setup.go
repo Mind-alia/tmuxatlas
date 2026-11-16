@@ -87,6 +87,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	fmt.Println()
 
 	dryRun := c.Bool("dry-run")
+	installSudoHook = c.Bool("sudo-hook")
 	resilient := !c.Bool("block")
 
 	anySetup := false
@@ -201,7 +202,17 @@ func setupClaudeDir(configDir, tmuxatlasBin string, resilient bool) error {
 		},
 	}
 
-	settings["hooks"] = hooks
+	if installSudoHook {
+		pre := hooks["PreToolUse"].([]map[string]interface{})
+		hooks["PreToolUse"] = append(pre, map[string]interface{}{
+			"matcher": "Bash",
+			// No "|| true": the hook's JSON decision must reach Claude.
+			"hooks": []map[string]interface{}{{"type": "command", "command": tmuxatlasBin + " sudo-hook"}},
+		})
+	}
+
+	// Keep the user's own hooks: replace only those TmuxAtlas installed.
+	settings["hooks"] = mergeClaudeHooks(settings["hooks"], hooks)
 
 	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
@@ -460,8 +471,76 @@ func removeLegacyFile(path string) {
 	fmt.Printf("  Removed legacy hook %s\n", path)
 }
 
+// installSudoHook adds the PreToolUse hook that redirects sudo to sudo-request.
+var installSudoHook bool
+
+// managedHook reports whether a hook command was installed by TmuxAtlas.
+func managedHook(command string) bool {
+	for _, marker := range []string{"tmuxatlas notify", "tmuxatlas sudo-hook", "guppi notify"} {
+		if strings.Contains(command, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeClaudeHooks removes TmuxAtlas hooks from existing settings, keeps
+// every other hook, then appends ours. Unknown shapes are kept untouched.
+func mergeClaudeHooks(existing interface{}, ours map[string]interface{}) map[string]interface{} {
+	merged := make(map[string]interface{})
+	if current, ok := existing.(map[string]interface{}); ok {
+		for event, groups := range current {
+			merged[event] = groups
+		}
+	}
+	for event, value := range ours {
+		var kept []interface{}
+		if groups, ok := merged[event].([]interface{}); ok {
+			for _, group := range groups {
+				object, ok := group.(map[string]interface{})
+				if !ok {
+					kept = append(kept, group)
+					continue
+				}
+				entries, ok := object["hooks"].([]interface{})
+				if !ok {
+					kept = append(kept, group)
+					continue
+				}
+				var remaining []interface{}
+				for _, entry := range entries {
+					hook, ok := entry.(map[string]interface{})
+					command, _ := hook["command"].(string)
+					if ok && managedHook(command) {
+						continue
+					}
+					remaining = append(remaining, entry)
+				}
+				if len(remaining) == 0 {
+					continue
+				}
+				copied := make(map[string]interface{}, len(object))
+				for key, v := range object {
+					copied[key] = v
+				}
+				copied["hooks"] = remaining
+				kept = append(kept, copied)
+			}
+		}
+		for _, group := range value.([]map[string]interface{}) {
+			kept = append(kept, group)
+		}
+		merged[event] = kept
+	}
+	return merged
+}
+
 func init() {
 	flags := []cli.Flag{
+		&cli.BoolFlag{
+			Name:  "sudo-hook",
+			Usage: "also install a Claude Code PreToolUse hook that redirects sudo to 'tmuxatlas sudo-request'",
+		},
 		&cli.BoolFlag{
 			Name:  "dry-run",
 			Usage: "show what would be configured without making changes",
