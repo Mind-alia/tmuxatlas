@@ -119,6 +119,25 @@ func TestCollectCLIAccounts(t *testing.T) {
 	if len(got2) != 3 || got2[0].Tokens5h.Total != 1260 || got2[1].Tokens5h.Total != 1750 || got2[2].Tokens5h.Total != 2550 {
 		t.Fatalf("cached collect mismatch: %+v", got2)
 	}
+
+	// Live Codex probe newer than JSONL overrides stale session_events quota
+	c.codexMu.Lock()
+	c.codexQuotas["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"] = codexQuotaResult{
+		fetchedAt: now.Add(-1 * time.Minute).Unix(),
+		email:     "aris@example.com",
+		plan:      "Plus",
+		windows: []QuotaWindow{
+			{Label: "5 h", UsedPercent: 100, WindowMin: 300, ResetsAt: now.Add(20 * time.Minute).Unix()},
+			{Label: "7 j", UsedPercent: 16, WindowMin: 10080, ResetsAt: now.Add(5 * 24 * time.Hour).Unix()},
+		},
+	}
+	c.codexMu.Unlock()
+
+	got3 := c.collect(now)
+	cx3 := got3[1]
+	if cx3.QuotaSource != "codex_app_server" || cx3.Account != "aris@example.com" || cx3.Windows[0].UsedPercent != 100 || cx3.Windows[1].UsedPercent != 16 {
+		t.Fatalf("expected live codex quota to override stale jsonl quota, got: %+v", cx3)
+	}
 }
 
 func mustMkdir(t *testing.T, path string) {

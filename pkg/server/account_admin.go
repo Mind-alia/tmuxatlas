@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/LosFurina/tmuxatlas/pkg/accounts"
 	"github.com/LosFurina/tmuxatlas/pkg/auth"
+	"github.com/LosFurina/tmuxatlas/pkg/monitor"
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
 	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 	"github.com/go-chi/chi/v5"
@@ -153,7 +156,110 @@ func handleAdminUserDelete(w http.ResponseWriter, r *http.Request, opts *Options
 		writeAccountError(w, err)
 		return
 	}
+	// The account is gone: its CLI sessions become unassigned.
+	_ = opts.AccountsAuth.Store.CLIAssignments().RemoveUser(id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type cliPersonProfileView struct {
+	CLI       string `json:"cli"`
+	Name      string `json:"name"`
+	Account   string `json:"account,omitempty"`
+	Connected bool   `json:"connected"`
+}
+
+type cliPersonView struct {
+	Person   string                 `json:"person"`
+	Owner    *string                `json:"owner"`
+	Profiles []cliPersonProfileView `json:"profiles"`
+	// Missing is true when an assignment remains for a person that no longer
+	// has any ai-accounts profile on this host.
+	Missing bool `json:"missing,omitempty"`
+}
+
+// listCLIProfiles is replaceable in tests.
+var listCLIProfiles = monitor.ListCLIProfiles
+
+// handleAdminCLIAssignments lists the ai-accounts CLI persons (Aris, Aris2…)
+// with the TmuxAtlas account they belong to (GET), or changes one assignment
+// (PUT {"person": "...", "owner": "<user id>" | ""}).
+func handleAdminCLIAssignments(w http.ResponseWriter, r *http.Request, opts *Options) {
+	store := opts.AccountsAuth.Store.CLIAssignments()
+	if r.Method == http.MethodPut {
+		var request struct {
+			Person string `json:"person"`
+			Owner  string `json:"owner"`
+		}
+		if json.NewDecoder(r.Body).Decode(&request) != nil || accounts.NormalizeCLIPerson(request.Person) == "" {
+			http.Error(w, "requête invalide", http.StatusBadRequest)
+			return
+		}
+		if request.Owner != "" {
+			users, err := opts.AccountsAuth.Store.List()
+			if err != nil {
+				writeAccountError(w, err)
+				return
+			}
+			found := false
+			for _, user := range users {
+				if user.ID == request.Owner {
+					found = true
+					break
+				}
+			}
+			if !found {
+				writeAccountError(w, accounts.ErrNotFound)
+				return
+			}
+		}
+		if err := store.Set(request.Person, request.Owner); err != nil {
+			if errors.Is(err, accounts.ErrInvalidCLIPerson) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeAccountError(w, err)
+			return
+		}
+	}
+	assignments, err := store.All()
+	if err != nil {
+		writeAccountError(w, err)
+		return
+	}
+	byPerson := make(map[string]*cliPersonView)
+	order := make([]string, 0)
+	for _, profile := range listCLIProfiles() {
+		key := accounts.NormalizeCLIPerson(profile.Person)
+		view, ok := byPerson[key]
+		if !ok {
+			view = &cliPersonView{Person: profile.Person, Profiles: []cliPersonProfileView{}}
+			if owner, assigned := assignments[key]; assigned {
+				owner := owner
+				view.Owner = &owner
+			}
+			byPerson[key] = view
+			order = append(order, key)
+		}
+		view.Profiles = append(view.Profiles, cliPersonProfileView{
+			CLI: profile.CLI, Name: profile.Name, Account: profile.Account, Connected: profile.Connected,
+		})
+	}
+	for key, owner := range assignments {
+		if _, ok := byPerson[key]; ok {
+			continue
+		}
+		owner := owner
+		byPerson[key] = &cliPersonView{Person: key, Owner: &owner, Profiles: []cliPersonProfileView{}, Missing: true}
+		order = append(order, key)
+	}
+	sort.Strings(order)
+	persons := make([]cliPersonView, 0, len(order))
+	for _, key := range order {
+		persons = append(persons, *byPerson[key])
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]any{"persons": persons})
 }
 
 func accountAdminOnly(next http.Handler) http.Handler {
@@ -250,4 +356,48 @@ func handleAccountDirectory(w http.ResponseWriter, opts *Options) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(directory)
+}
+
+// annotateCLIOwners fills snapshot.CLIUsers with active TmuxAtlas accounts and
+// populates Owner/OwnerName on each CLI account so the monitoring view can
+// filter by account. snapshot.CLIAccounts is a per-request copy.
+func annotateCLIOwners(snapshot *monitor.Response, opts *Options) {
+	if snapshot == nil || opts == nil || opts.AccountsAuth == nil {
+		return
+	}
+	users, err := opts.AccountsAuth.Store.List()
+	if err != nil {
+		return
+	}
+	names := make(map[string]string, len(users))
+	cliUsers := make([]monitor.CLIUser, 0, len(users))
+	for _, user := range users {
+		names[user.ID] = user.Username
+		if !user.Disabled {
+			cliUsers = append(cliUsers, monitor.CLIUser{ID: user.ID, Username: user.Username})
+		}
+	}
+	sort.Slice(cliUsers, func(i, j int) bool {
+		return strings.ToLower(cliUsers[i].Username) < strings.ToLower(cliUsers[j].Username)
+	})
+	snapshot.CLIUsers = cliUsers
+	if len(snapshot.CLIAccounts) == 0 {
+		return
+	}
+	assignments, err := opts.AccountsAuth.Store.CLIAssignments().All()
+	if err != nil || len(assignments) == 0 {
+		return
+	}
+	for i := range snapshot.CLIAccounts {
+		owner, ok := assignments[accounts.NormalizeCLIPerson(snapshot.CLIAccounts[i].Person)]
+		if !ok {
+			continue
+		}
+		name, known := names[owner]
+		if !known {
+			continue
+		}
+		snapshot.CLIAccounts[i].Owner = owner
+		snapshot.CLIAccounts[i].OwnerName = name
+	}
 }

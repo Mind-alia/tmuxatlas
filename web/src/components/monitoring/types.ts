@@ -233,6 +233,9 @@ export interface MonitorCLIAccount {
   cli: 'claude' | 'codex' | 'agy' | string
   name: string
   person?: string
+  /** TmuxAtlas account ID this CLI person is assigned to (admin settings). */
+  owner?: string
+  owner_name?: string
   account?: string
   plan?: string
   connected: boolean
@@ -252,6 +255,11 @@ export interface MonitorCLIAccount {
   recent_sessions?: MonitorCLISessionActivity[]
 }
 
+export interface MonitorCLIUser {
+  id: string
+  username: string
+}
+
 export interface MonitorResponse {
   supported: boolean
   interval: number
@@ -269,6 +277,8 @@ export interface MonitorResponse {
   endpoints: MonitorEndpoint[] | null
   logs: MonitorLogs
   cli_accounts?: MonitorCLIAccount[] | null
+  cli_users?: MonitorCLIUser[] | null
+  quota_refreshing?: boolean
   alerts: MonitorAlert[] | null
 }
 

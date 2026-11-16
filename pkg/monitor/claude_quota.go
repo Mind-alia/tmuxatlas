@@ -134,7 +134,7 @@ func probeAllClaudeQuotas(ctx context.Context, root string, now time.Time, hints
 		if quotaAt <= 0 {
 			quotaAt = readClaudeFetchedAtMs(filepath.Join(profileDir, "config", ".claude.json")) / 1000
 		}
-		if !shouldProbeClaude(quotaAt, hint.windows, hint.live, hint.lastActivity, now) {
+		if !hint.force && !shouldProbeClaude(quotaAt, hint.windows, hint.live, hint.lastActivity, now) {
 			skipped++
 			continue
 		}

@@ -16,16 +16,19 @@ export function useMonitor(range: MonitorRange, enabled = true) {
   const [status, setStatus] = useState<MonitorStatus>('loading')
   const [lastUpdate, setLastUpdate] = useState<number>(0)
   const [failed, setFailed] = useState(false)
+  const [manualRefreshing, setManualRefreshing] = useState(false)
   const lastT = useRef(0)
   const rangeRef = useRef(range)
 
-  const fetchOnce = useCallback(async () => {
+  const fetchOnce = useCallback(async (forceRefresh = false) => {
     if (!enabled) return
     const currentRange = rangeRef.current
     try {
-      const res = await fetch(`/api/monitor?range=${currentRange}&after=${lastT.current}`, { cache: 'no-store' })
+      const url = `/api/monitor?range=${currentRange}&after=${lastT.current}${forceRefresh ? '&refresh=1' : ''}`
+      const res = await fetch(url, { cache: 'no-store' })
       if (res.status === 404) {
         setStatus('unavailable')
+        setManualRefreshing(false)
         return
       }
       if (!res.ok) throw new Error(String(res.status))
@@ -33,6 +36,7 @@ export function useMonitor(range: MonitorRange, enabled = true) {
       if (rangeRef.current !== currentRange) return // range changed mid-flight
       if (!body.supported) {
         setStatus('unavailable')
+        setManualRefreshing(false)
         return
       }
       const incoming = body.series ?? []
@@ -47,11 +51,22 @@ export function useMonitor(range: MonitorRange, enabled = true) {
       setStatus('ready')
       setLastUpdate(Date.now())
       setFailed(false)
+      setManualRefreshing(Boolean(body.quota_refreshing))
     } catch {
       setFailed(true)
+      setManualRefreshing(false)
       setStatus(prev => (prev === 'ready' ? 'ready' : 'error'))
     }
   }, [enabled])
+
+  const refreshing = manualRefreshing || Boolean(data?.quota_refreshing)
+
+  const refresh = useCallback(() => fetchOnce(false), [fetchOnce])
+
+  const refreshAll = useCallback(async () => {
+    setManualRefreshing(true)
+    await fetchOnce(true)
+  }, [fetchOnce])
 
   useEffect(() => {
     if (!enabled) return
@@ -59,9 +74,14 @@ export function useMonitor(range: MonitorRange, enabled = true) {
     // The previous series stays on screen until the new range arrives.
     lastT.current = 0
     void fetchOnce()
+  }, [range, fetchOnce, enabled])
+
+  useEffect(() => {
+    if (!enabled) return
+    const pollMs = refreshing ? 2000 : POLL_MS
     let timer: ReturnType<typeof setInterval> | null = null
     const start = () => {
-      if (timer === null) timer = setInterval(() => void fetchOnce(), POLL_MS)
+      if (timer === null) timer = setInterval(() => void fetchOnce(), pollMs)
     }
     const stop = () => {
       if (timer !== null) clearInterval(timer)
@@ -80,7 +100,7 @@ export function useMonitor(range: MonitorRange, enabled = true) {
       stop()
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [range, fetchOnce, enabled])
+  }, [fetchOnce, enabled, refreshing])
 
-  return { data, series, status, lastUpdate, failed, refresh: fetchOnce }
+  return { data, series, status, lastUpdate, failed, refreshing, refresh, refreshAll }
 }

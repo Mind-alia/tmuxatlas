@@ -79,33 +79,25 @@ export function MonitoringPage({
         : []
 
   const cliAccounts = monitor.data?.cli_accounts ?? []
-  const showSideBySide = hosts.length <= 1 && cliAccounts.length > 0
+  const cliUsers = monitor.data?.cli_users ?? undefined
   const overview =
     cliAccounts.length > 0 ? (
       <CLIAccountsOverview
         accounts={cliAccounts}
+        users={cliUsers}
         selectedId={selectedAccountId}
         onSelectAccount={setSelectedAccountId}
         onOpenSessionName={onOpenSession ? openSessionByName : undefined}
+        onRefresh={monitor.refreshAll}
+        refreshing={monitor.refreshing}
       />
     ) : null
 
   return (
     <main className="flex-1 overflow-y-auto p-4 text-sm sm:p-6">
       <h1 className="mb-5 text-2xl font-medium">Monitoring</h1>
-      {showSideBySide ? (
-        <div className="mb-6 grid gap-6 lg:grid-cols-12 lg:items-start">
-          <div className="lg:col-span-4">
-            <FleetHealth compact />
-          </div>
-          <div className="min-w-0 lg:col-span-8">{overview}</div>
-        </div>
-      ) : (
-        <>
-          <FleetHealth />
-          {overview && <div className="mb-6">{overview}</div>}
-        </>
-      )}
+      {overview && <div className="mb-6">{overview}</div>}
+      <FleetHealth />
       {processGroups.length > 0 && (
         <section className="mb-6">
           <h2 className="mb-3 text-sm font-medium">Processus</h2>

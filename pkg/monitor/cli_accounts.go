@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"math"
@@ -93,6 +94,8 @@ type CLIAccountUsage struct {
 	CLI            string               `json:"cli"` // claude | codex | agy
 	Name           string               `json:"name"`
 	Person         string               `json:"person,omitempty"`
+	Owner          string               `json:"owner,omitempty"`      // TmuxAtlas account ID owning this CLI person
+	OwnerName      string               `json:"owner_name,omitempty"` // TmuxAtlas username owning this CLI person
 	Account        string               `json:"account,omitempty"`
 	Plan           string               `json:"plan,omitempty"`
 	Connected      bool                 `json:"connected"`
@@ -182,15 +185,25 @@ type cachedAgyMeta struct {
 	items   map[string]agyConvSummary
 }
 
+type cachedCodexAuth struct {
+	modTime int64
+	size    int64
+	email   string
+	plan    string
+}
+
 type cliAccountsCollector struct {
 	dirOverride    string
 	collectMu      sync.Mutex
 	fileCache      map[string]cachedParsedFile
 	claudeCfgCache map[string]cachedClaudeConfig
+	codexAuthCache map[string]cachedCodexAuth
 	agyMetaCache   map[string]cachedAgyMeta
 	liveSessionsFn func() map[cliPersonKey][]CLILiveSession
 	agyMu          sync.RWMutex
 	agyQuotas      map[string]agyQuotaResult
+	codexMu        sync.RWMutex
+	codexQuotas    map[string]codexQuotaResult
 }
 
 func newCLIAccountsCollector(dirOverride string) *cliAccountsCollector {
@@ -202,9 +215,11 @@ func newCLIAccountsCollector(dirOverride string) *cliAccountsCollector {
 		dirOverride:    dirOverride,
 		fileCache:      make(map[string]cachedParsedFile),
 		claudeCfgCache: make(map[string]cachedClaudeConfig),
+		codexAuthCache: make(map[string]cachedCodexAuth),
 		agyMetaCache:   make(map[string]cachedAgyMeta),
 		liveSessionsFn: liveFn,
 		agyQuotas:      make(map[string]agyQuotaResult),
+		codexQuotas:    make(map[string]codexQuotaResult),
 	}
 }
 
@@ -229,6 +244,30 @@ func (c *cliAccountsCollector) refreshAgyQuotas(ctx context.Context, now time.Ti
 		c.agyQuotas[id] = q
 	}
 	c.agyMu.Unlock()
+	return len(res), errs, skipped
+}
+
+func (c *cliAccountsCollector) refreshCodexQuotas(ctx context.Context, now time.Time, hints map[string]agyProbeTarget) (int, []string, int) {
+	root := resolveAccountsDir(c.dirOverride)
+	if root == "" {
+		return 0, nil, 0
+	}
+	c.codexMu.RLock()
+	prevSnap := make(map[string]codexQuotaResult, len(c.codexQuotas))
+	for k, v := range c.codexQuotas {
+		prevSnap[k] = v
+	}
+	c.codexMu.RUnlock()
+
+	res, errs, skipped := probeAllCodexQuotas(ctx, root, now, prevSnap, hints)
+	if len(res) == 0 {
+		return 0, errs, skipped
+	}
+	c.codexMu.Lock()
+	for id, q := range res {
+		c.codexQuotas[id] = q
+	}
+	c.codexMu.Unlock()
 	return len(res), errs, skipped
 }
 
@@ -672,6 +711,8 @@ func parseClaudeJSONL(path string) (cachedParsedFile, error) {
 
 func (c *cliAccountsCollector) collectCodex(u *CLIAccountUsage, configDir string, now time.Time, seen map[string]bool) {
 	u.QuotaSource = "session_events"
+	c.readCodexAuth(u, filepath.Join(configDir, "auth.json"))
+
 	files, newest := findRecentFiles(filepath.Join(configDir, "sessions"), ".jsonl", now.Add(-window7d-time.Hour))
 	if newest != "" {
 		files = appendUnique(files, newest)
@@ -712,10 +753,38 @@ func (c *cliAccountsCollector) collectCodex(u *CLIAccountUsage, configDir string
 	}
 	u.ContextWindow = latestCtx
 
+	c.codexMu.RLock()
+	cachedQuota, hasQuota := c.codexQuotas[u.ID]
+	c.codexMu.RUnlock()
+	if hasQuota && cachedQuota.email != "" && u.Account == "" {
+		u.Account = cachedQuota.email
+	}
+
+	nowUnix := now.Unix()
+	if hasQuota && len(cachedQuota.windows) > 0 && (latestRL == nil || cachedQuota.fetchedAt >= latestRL.ts) {
+		u.QuotaSource = "codex_app_server"
+		u.QuotaAt = cachedQuota.fetchedAt
+		if cachedQuota.plan != "" {
+			u.Plan = cachedQuota.plan
+		}
+		wins := make([]QuotaWindow, len(cachedQuota.windows))
+		for i, w := range cachedQuota.windows {
+			w.Expired = w.ResetsAt > 0 && w.ResetsAt <= nowUnix
+			wins[i] = w
+		}
+		u.Windows = wins
+		if cachedQuota.extra != nil {
+			cp := *cachedQuota.extra
+			u.Extra = &cp
+		}
+		return
+	}
+
 	if latestRL != nil {
 		u.QuotaAt = latestRL.ts
-		u.Plan = formatCodexPlan(latestRL.planType)
-		nowUnix := now.Unix()
+		if p := formatCodexPlan(latestRL.planType); p != "" {
+			u.Plan = p
+		}
 		for _, w := range []*codexWindowRaw{latestRL.primary, latestRL.secondary} {
 			if w == nil {
 				continue
@@ -736,6 +805,61 @@ func (c *cliAccountsCollector) collectCodex(u *CLIAccountUsage, configDir string
 			}
 		}
 	}
+}
+
+func (c *cliAccountsCollector) readCodexAuth(u *CLIAccountUsage, path string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	mod := info.ModTime().UnixNano()
+	size := info.Size()
+
+	apply := func(cached cachedCodexAuth) {
+		if u.Account == "" && cached.email != "" {
+			u.Account = cached.email
+		}
+		if u.Plan == "" && cached.plan != "" {
+			u.Plan = cached.plan
+		}
+	}
+
+	if cached, ok := c.codexAuthCache[path]; ok && cached.modTime == mod && cached.size == size {
+		apply(cached)
+		return
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var doc struct {
+		Tokens *struct {
+			IDToken string `json:"id_token"`
+		} `json:"tokens"`
+	}
+	parsed := cachedCodexAuth{modTime: mod, size: size}
+	if json.Unmarshal(raw, &doc) == nil && doc.Tokens != nil && doc.Tokens.IDToken != "" {
+		parts := strings.Split(doc.Tokens.IDToken, ".")
+		if len(parts) >= 2 {
+			if payload, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
+				var claims struct {
+					Email string `json:"email"`
+					Auth  *struct {
+						PlanType string `json:"chatgpt_plan_type"`
+					} `json:"https://api.openai.com/auth"`
+				}
+				if json.Unmarshal(payload, &claims) == nil {
+					parsed.email = strings.TrimSpace(claims.Email)
+					if claims.Auth != nil {
+						parsed.plan = formatCodexPlan(claims.Auth.PlanType)
+					}
+				}
+			}
+		}
+	}
+	c.codexAuthCache[path] = parsed
+	apply(parsed)
 }
 
 func formatCodexPlan(plan string) string {
@@ -863,9 +987,9 @@ func parseCodexJSONL(path string) (cachedParsedFile, error) {
 		var p struct {
 			Type string `json:"type"`
 			Info *struct {
-				TotalTokenUsage   *codexUsageRaw `json:"total_token_usage"`
-				LastTokenUsage    *codexUsageRaw `json:"last_token_usage"`
-				ModelContextWin   int64          `json:"model_context_window"`
+				TotalTokenUsage *codexUsageRaw `json:"total_token_usage"`
+				LastTokenUsage  *codexUsageRaw `json:"last_token_usage"`
+				ModelContextWin int64          `json:"model_context_window"`
 			} `json:"info"`
 			RateLimits *struct {
 				PlanType             string           `json:"plan_type"`

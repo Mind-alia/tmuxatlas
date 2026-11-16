@@ -1,7 +1,8 @@
+import { RefreshCw } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { formatClock, formatMoney, formatNumber, formatPercent, formatRelative, formatTokens } from './format'
 import { Kpi, Meter, StatusBadge, pctTone, toneColor, type Tone } from './primitives'
-import type { MonitorCLIAccount, MonitorQuotaWindow, MonitorTokenCounts } from './types'
+import type { MonitorCLIAccount, MonitorCLIUser, MonitorQuotaWindow, MonitorTokenCounts } from './types'
 
 export type CLIFilter = 'all' | 'claude' | 'codex' | 'agy'
 
@@ -452,6 +453,117 @@ function AccountDetailCard({
   )
 }
 
+function isShortQuotaWindow(w: MonitorQuotaWindow): boolean {
+  return w.label.includes('5 h') || ((w.window_minutes ?? 0) > 0 && (w.window_minutes ?? 0) <= 360)
+}
+
+function isLongQuotaWindow(w: MonitorQuotaWindow): boolean {
+  return w.label.includes('7 j') || (w.window_minutes ?? 0) >= 1440
+}
+
+type CompactWindowSlot =
+  | { kind: 'window'; window: MonitorQuotaWindow }
+  | { kind: 'fallback'; label: '5 h' | '7 j'; tokens: number }
+
+function resolveCompactWindowSlots(account: MonitorCLIAccount): CompactWindowSlot[] {
+  const windows = account.windows ?? []
+  if (windows.length === 0) {
+    return [
+      { kind: 'fallback', label: '5 h', tokens: account.tokens_5h.total },
+      { kind: 'fallback', label: '7 j', tokens: account.tokens_7d.total },
+    ]
+  }
+
+  if (account.cli === 'agy') {
+    const visible = windows.filter(w => !w.label.startsWith('Argon') || w.used_percent > 0)
+    if (visible.length === 0) {
+      return [
+        { kind: 'fallback', label: '5 h', tokens: account.tokens_5h.total },
+        { kind: 'fallback', label: '7 j', tokens: account.tokens_7d.total },
+      ]
+    }
+    const has5h = visible.some(isShortQuotaWindow)
+    const has7d = visible.some(isLongQuotaWindow)
+    const windowSlots: CompactWindowSlot[] = visible.map(window => ({ kind: 'window', window }))
+    if (has5h && has7d) return windowSlots
+    if (has5h && !has7d) {
+      return [...windowSlots, { kind: 'fallback', label: '7 j', tokens: account.tokens_7d.total }]
+    }
+    if (!has5h && has7d) {
+      return [{ kind: 'fallback', label: '5 h', tokens: account.tokens_5h.total }, ...windowSlots]
+    }
+    return windowSlots
+  }
+
+  const shortWin = windows.find(isShortQuotaWindow)
+  const longWin = windows.find(isLongQuotaWindow)
+  if (!shortWin && !longWin) {
+    return windows.map(window => ({ kind: 'window', window }))
+  }
+  return [
+    shortWin
+      ? { kind: 'window', window: shortWin }
+      : { kind: 'fallback', label: '5 h', tokens: account.tokens_5h.total },
+    longWin
+      ? { kind: 'window', window: longWin }
+      : { kind: 'fallback', label: '7 j', tokens: account.tokens_7d.total },
+  ]
+}
+
+function CompactQuotaSlot({
+  account,
+  slot,
+  nowSec,
+}: {
+  account: MonitorCLIAccount
+  slot: CompactWindowSlot
+  nowSec: number
+}) {
+  if (slot.kind === 'fallback') {
+    return (
+      <div className="flex min-w-0 flex-col gap-1">
+        <div className="flex items-baseline justify-between gap-1.5 text-2xs">
+          <span className="font-medium text-foreground">{slot.label}</span>
+          <span className="shrink-0 tabular-nums text-muted-foreground">{formatTokens(slot.tokens)} tok</span>
+        </div>
+        <div className="h-1 w-full rounded-full bg-secondary opacity-60" role="presentation" />
+      </div>
+    )
+  }
+
+  const w = slot.window
+  const expired = isWindowExpired(w, nowSec)
+  const activitySinceReset = hasActivitySinceReset(account, w, nowSec)
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <div className="flex items-baseline justify-between gap-1.5 text-2xs">
+        <span className="flex min-w-0 items-baseline gap-1 truncate">
+          <span className="font-medium text-foreground">{w.label}</span>
+          {!expired && Boolean(w.resets_at) && (
+            <span className="truncate text-muted-foreground">· {formatRelative(w.resets_at, nowSec * 1000)}</span>
+          )}
+        </span>
+        <span
+          className={`shrink-0 tabular-nums ${
+            expired ? 'font-medium text-muted-foreground' : 'font-semibold text-foreground'
+          }`}
+        >
+          {expired ? (activitySinceReset ? 'À actualiser' : 'Réinitialisé') : formatPercent(w.used_percent)}
+        </span>
+      </div>
+      {activitySinceReset ? (
+        <StaleMeter />
+      ) : (
+        <Meter
+          value={expired ? 0 : w.used_percent}
+          tone={expired ? 'ok' : pctTone(w.used_percent, 75, 95)}
+        />
+      )}
+    </div>
+  )
+}
+
 function CompactAccountRow({
   account,
   selected,
@@ -467,13 +579,7 @@ function CompactAccountRow({
   const status = accountStatus(account, nowSec)
   const liveCount = (account.live_sessions ?? []).length
   const liveNow = isAccountLive(account, nowSec)
-  const windows = account.windows ?? []
-  const primary = windows[0]
-  const secondary = windows[1]
-
-  const primaryExpired = primary ? isWindowExpired(primary, nowSec) : false
-  const primaryActivitySinceReset =
-    primary && primaryExpired && Boolean(primary.resets_at && account.last_activity && account.last_activity > primary.resets_at)
+  const slots = resolveCompactWindowSlots(account)
 
   return (
     <button
@@ -492,6 +598,14 @@ function CompactAccountRow({
             {meta.short}
           </span>
           <span className="truncate text-xs font-semibold text-foreground">{account.person || account.name}</span>
+          {account.owner_name && (
+            <span
+              title={`Utilisateur Atlas : ${account.owner_name}`}
+              className="shrink-0 rounded bg-secondary px-1.5 py-[1px] text-2xs text-muted-foreground"
+            >
+              {account.owner_name}
+            </span>
+          )}
           {account.plan && (
             <span className="shrink-0 rounded border border-border px-1 text-2xs text-muted-foreground">
               {account.plan}
@@ -515,66 +629,92 @@ function CompactAccountRow({
         </div>
       </div>
 
-      {primary ? (
-        <div className="flex items-center gap-2 text-2xs">
-          <span className="min-w-11 shrink-0 text-muted-foreground">{primary.label}</span>
-          <div className="min-w-0 flex-1">
-            {primaryActivitySinceReset ? (
-              <StaleMeter />
-            ) : (
-              <Meter
-                value={primaryExpired ? 0 : primary.used_percent}
-                tone={primaryExpired ? 'ok' : pctTone(primary.used_percent, 75, 95)}
-              />
-            )}
-          </div>
-          <span className="w-20 shrink-0 text-right tabular-nums text-foreground">
-            {primaryExpired ? (primaryActivitySinceReset ? 'À actualiser' : 'Réinitialisé') : formatPercent(primary.used_percent)}
-          </span>
-          {secondary && (
-            <span className="hidden shrink-0 tabular-nums text-muted-foreground sm:inline">
-              · {secondary.label}{' '}
-              {isWindowExpired(secondary, nowSec)
-                ? hasActivitySinceReset(account, secondary, nowSec)
-                  ? '—'
-                  : '0 %'
-                : formatPercent(secondary.used_percent)}
-            </span>
-          )}
-          <span className="shrink-0 tabular-nums text-muted-foreground">
-            · {formatTokens(account.tokens_5h.total)}
-          </span>
-        </div>
-      ) : (
-        <div className="flex items-center justify-between gap-2 text-2xs text-muted-foreground">
-          <span className="truncate">{account.last_model || 'Suivi local'}</span>
-          <span className="tabular-nums text-foreground">
-            5 h : {formatTokens(account.tokens_5h.total)} · 7 j : {formatTokens(account.tokens_7d.total)}
-          </span>
-        </div>
-      )}
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+        {slots.map((slot, idx) => (
+          <CompactQuotaSlot
+            key={slot.kind === 'window' ? slot.window.label : `fallback-${slot.label}-${idx}`}
+            account={account}
+            slot={slot}
+            nowSec={nowSec}
+          />
+        ))}
+      </div>
+
+      <div className="flex items-center justify-between gap-2 text-2xs text-muted-foreground">
+        <span className="truncate">
+          {account.last_model || (account.quota_source === 'local_logs_only' ? 'Suivi local' : '')}
+        </span>
+        <span className="shrink-0 tabular-nums">
+          5 h : {formatTokens(account.tokens_5h.total)} · 7 j : {formatTokens(account.tokens_7d.total)}
+        </span>
+      </div>
     </button>
   )
 }
 
+const OWNER_ALL = '__all__'
+const OWNER_NONE = '__none__'
+
+/** Lists the TmuxAtlas owners present in users/accounts, plus "Non assignés" when relevant. */
+export function cliOwnerOptions(
+  accounts: MonitorCLIAccount[],
+  users?: MonitorCLIUser[],
+): { value: string; label: string }[] {
+  const owners = new Map<string, string>()
+  for (const user of users ?? []) {
+    if (user.id && user.username) owners.set(user.id, user.username)
+  }
+  let unassigned = false
+  for (const acc of accounts) {
+    if (acc.owner) owners.set(acc.owner, acc.owner_name || acc.owner)
+    else unassigned = true
+  }
+  const options = [...owners.entries()]
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+  if (unassigned && options.length > 0) options.push({ value: OWNER_NONE, label: 'Non assignés' })
+  return options
+}
+
+export function filterAccountsByOwner(accounts: MonitorCLIAccount[], owner: string): MonitorCLIAccount[] {
+  if (owner === OWNER_ALL) return accounts
+  if (owner === OWNER_NONE) return accounts.filter(a => !a.owner)
+  return accounts.filter(a => a.owner === owner)
+}
+
 export function CLIAccountsOverview({
   accounts,
+  users,
   selectedId,
   onSelectAccount,
   onOpenSessionName,
+  onRefresh,
+  refreshing = false,
 }: {
   accounts: MonitorCLIAccount[]
+  users?: MonitorCLIUser[]
   selectedId?: string | null
   onSelectAccount?: (id: string) => void
   onOpenSessionName?: (sessionName: string) => void
+  onRefresh?: () => void
+  refreshing?: boolean
 }) {
   const [filter, setFilter] = useState<CLIFilter>('all')
+  const [ownerFilter, setOwnerFilter] = useState<string>(OWNER_ALL)
   const [internalSelected, setInternalSelected] = useState<string | null>(null)
 
   const nowSec = Math.floor(Date.now() / 1000)
+  const ownerOptions = useMemo(() => cliOwnerOptions(accounts, users), [accounts, users])
+  const hasOwners = ownerOptions.some(opt => opt.value !== OWNER_NONE)
+  // A filter on a user who no longer owns anything falls back to everyone.
+  const effectiveOwner = ownerOptions.some(opt => opt.value === ownerFilter) ? ownerFilter : OWNER_ALL
+  const ownerAccounts = useMemo(
+    () => filterAccountsByOwner(accounts, effectiveOwner),
+    [accounts, effectiveOwner],
+  )
   const filtered = useMemo(
-    () => (filter === 'all' ? accounts : accounts.filter(a => a.cli === filter)),
-    [accounts, filter],
+    () => (filter === 'all' ? ownerAccounts : ownerAccounts.filter(a => a.cli === filter)),
+    [ownerAccounts, filter],
   )
 
   const activeId = selectedId ?? internalSelected
@@ -592,9 +732,10 @@ export function CLIAccountsOverview({
 
   if (accounts.length === 0) return null
 
-  const saturated = accounts.filter(a => isAccountSaturated(a, nowSec)).length
-  const totalLiveTmux = accounts.reduce((sum, a) => sum + (a.live_sessions?.length ?? 0), 0)
-  const total5h = accounts.reduce((sum, a) => sum + a.tokens_5h.total, 0)
+  const saturated = ownerAccounts.filter(a => isAccountSaturated(a, nowSec)).length
+  const totalLiveTmux = ownerAccounts.reduce((sum, a) => sum + (a.live_sessions?.length ?? 0), 0)
+  const total5h = ownerAccounts.reduce((sum, a) => sum + a.tokens_5h.total, 0)
+  const total7d = ownerAccounts.reduce((sum, a) => sum + a.tokens_7d.total, 0)
 
   const handleSelect = (id: string) => {
     setInternalSelected(id)
@@ -609,13 +750,38 @@ export function CLIAccountsOverview({
             Comptes CLI
           </h2>
           <span className="text-2xs text-muted-foreground tabular-nums">
-            {accounts.length} comptes · {totalLiveTmux} session{totalLiveTmux > 1 ? 's' : ''} tmux · {formatTokens(total5h)} tok (5 h)
+            {ownerAccounts.length} comptes · {totalLiveTmux} session{totalLiveTmux > 1 ? 's' : ''} tmux ·{' '}
+            {formatTokens(total5h)} tok (5 h) · {formatTokens(total7d)} tok (7 j)
           </span>
           {saturated > 0 && (
             <StatusBadge tone="warning" label={`${saturated} saturé${saturated > 1 ? 's' : ''}`} />
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {hasOwners && (
+            <select
+              aria-label="Filtrer par utilisateur TmuxAtlas"
+              value={effectiveOwner}
+              onChange={event => setOwnerFilter(event.target.value)}
+              className="min-h-7 rounded-md border border-border bg-card px-2 text-2xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <option value={OWNER_ALL}>Tout le monde</option>
+              {ownerOptions.map(opt => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          )}
+          <button
+            type="button"
+            onClick={() => onRefresh?.()}
+            disabled={refreshing}
+            className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-2xs font-medium text-foreground transition-colors hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <RefreshCw size={12} aria-hidden="true" className={refreshing ? 'animate-spin' : ''} />
+            {refreshing ? 'Actualisation…' : 'Actualiser'}
+          </button>
           <div className="inline-flex rounded-md bg-secondary p-0.5" role="group" aria-label="Filtre CLI vue d'ensemble">
             {(
               [
@@ -643,11 +809,11 @@ export function CLIAccountsOverview({
         </div>
       </div>
 
-      <div className="grid gap-3 xl:grid-cols-2 xl:items-start">
-        <div className="flex flex-col gap-1.5">
+      <div className="grid gap-3 lg:grid-cols-12 lg:items-start">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:col-span-7 xl:col-span-8">
           {filtered.length === 0 ? (
-            <div className="rounded-lg border border-border bg-card px-3 py-4 text-center text-2xs text-muted-foreground">
-              Aucun compte pour ce CLI.
+            <div className="col-span-full rounded-lg border border-border bg-card px-3 py-4 text-center text-2xs text-muted-foreground">
+              {effectiveOwner === OWNER_ALL ? 'Aucun compte pour ce CLI.' : 'Aucun compte pour ce filtre.'}
             </div>
           ) : (
             filtered.map(acc => (
@@ -663,12 +829,14 @@ export function CLIAccountsOverview({
         </div>
 
         {selectedAccount && (
-          <AccountDetailCard
-            account={selectedAccount}
-            nowSec={nowSec}
-            onOpenSessionName={onOpenSessionName}
-            inspector
-          />
+          <div className="min-w-0 lg:col-span-5 xl:col-span-4">
+            <AccountDetailCard
+              account={selectedAccount}
+              nowSec={nowSec}
+              onOpenSessionName={onOpenSessionName}
+              inspector
+            />
+          </div>
         )}
       </div>
     </section>

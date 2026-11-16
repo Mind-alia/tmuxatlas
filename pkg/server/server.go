@@ -456,6 +456,12 @@ func Run(ctx context.Context, opts *Options) error {
 				mutations.With(accountAdminOnly).Delete("/admin/users/{id}", func(w http.ResponseWriter, r *http.Request) {
 					handleAdminUserDelete(w, r, opts, actionRouter)
 				})
+				r.With(accountAdminOnly).Get("/admin/cli-assignments", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminCLIAssignments(w, r, opts)
+				})
+				mutations.With(accountAdminOnly, httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Put("/admin/cli-assignments", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminCLIAssignments(w, r, opts)
+				})
 				r.With(accountAdminOnly).Get("/admin/sessions", func(w http.ResponseWriter, r *http.Request) {
 					snapshot, err := coordinator.Snapshot(r.Context())
 					if err != nil {
@@ -692,11 +698,16 @@ func Run(ctx context.Context, opts *Options) error {
 					http.Error(w, "monitoring unavailable on this role", http.StatusNotFound)
 					return
 				}
+				if r.URL.Query().Get("refresh") == "1" {
+					hostMonitor.TriggerRefresh(r.Context())
+				}
 				rangeSec := monitorRange(r.URL.Query().Get("range"))
 				after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Cache-Control", "no-store")
-				json.NewEncoder(w).Encode(hostMonitor.Snapshot(rangeSec, after))
+				snapshot := hostMonitor.Snapshot(rangeSec, after)
+				annotateCLIOwners(&snapshot, opts)
+				json.NewEncoder(w).Encode(snapshot)
 			})
 
 			// Stats endpoint — aggregate overview data

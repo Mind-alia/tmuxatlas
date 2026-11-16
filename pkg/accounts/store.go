@@ -43,8 +43,9 @@ type User struct {
 }
 
 type Store struct {
-	mu   sync.Mutex
-	path string
+	mu             sync.Mutex
+	path           string
+	cliAssignments *CLIAssignments
 }
 
 func NewStore() (*Store, error) {

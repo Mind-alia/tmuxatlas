@@ -109,6 +109,7 @@ type agyProbeTarget struct {
 	lastActivity int64
 	quotaAt      int64
 	windows      []QuotaWindow
+	force        bool
 }
 
 // shouldProbeQuota determines whether a CLI account needs a /usage quota refresh.
@@ -118,16 +119,20 @@ func shouldProbeQuota(quotaAt int64, windows []QuotaWindow, idleMaxAge time.Dura
 	}
 	nowUnix := now.Unix()
 	expiredAfterFetch := false
+	expiredStillUsed := false
 	for _, w := range windows {
 		if w.ResetsAt > quotaAt && w.ResetsAt <= nowUnix && (w.UsedPercent > 0 || live || lastActivity >= w.ResetsAt) {
 			expiredAfterFetch = true
 			break
 		}
+		if w.ResetsAt > 0 && w.ResetsAt <= nowUnix && w.UsedPercent > 0 {
+			expiredStillUsed = true
+		}
 	}
 	if !expiredAfterFetch && nowUnix-quotaAt < int64(quotaMinFreshAge/time.Second) {
 		return false
 	}
-	if expiredAfterFetch {
+	if expiredAfterFetch || expiredStillUsed {
 		return true
 	}
 	if nowUnix-quotaAt >= int64(idleMaxAge/time.Second) {
@@ -197,7 +202,7 @@ func probeAllAgyQuotas(ctx context.Context, root string, now time.Time, prev map
 		}
 		hint := hints[id]
 		prevRes, hasPrev := prev[id]
-		if !shouldProbeAgy(prevRes, hasPrev, hint.live, hint.lastActivity, now) {
+		if !hint.force && !shouldProbeAgy(prevRes, hasPrev, hint.live, hint.lastActivity, now) {
 			skipped++
 			continue
 		}

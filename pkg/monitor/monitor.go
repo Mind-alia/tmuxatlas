@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LosFurina/tmuxatlas/pkg/paths"
@@ -305,25 +306,33 @@ type Command struct {
 	Command string `json:"command"`
 }
 
+// CLIUser identifies an active TmuxAtlas account for filtering CLI accounts.
+type CLIUser struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+}
+
 // Response is the payload of GET /api/monitor.
 type Response struct {
-	Supported   bool         `json:"supported"`
-	Interval    int          `json:"interval"` // seconds between series points
-	CollectedAt int64        `json:"collected_at"`
-	Host        HostInfo     `json:"host"`
-	Now         Current      `json:"now"`
-	Series      []Sample     `json:"series"`
-	Filesystems []Filesystem `json:"filesystems"`
-	Interfaces  []Interface  `json:"interfaces"`
-	Disks       []Disk       `json:"disks"`
-	Processes   []Process    `json:"processes"`
-	Listeners   []Listener   `json:"listeners"`
-	Services    []Service    `json:"services"`
-	Timers      []Timer      `json:"timers"`
-	Endpoints   []Endpoint        `json:"endpoints"`
-	Logs        LogStats          `json:"logs"`
-	CLIAccounts []CLIAccountUsage `json:"cli_accounts,omitempty"`
-	Alerts      []Alert           `json:"alerts"`
+	Supported       bool              `json:"supported"`
+	Interval        int               `json:"interval"` // seconds between series points
+	CollectedAt     int64             `json:"collected_at"`
+	Host            HostInfo          `json:"host"`
+	Now             Current           `json:"now"`
+	Series          []Sample          `json:"series"`
+	Filesystems     []Filesystem      `json:"filesystems"`
+	Interfaces      []Interface       `json:"interfaces"`
+	Disks           []Disk            `json:"disks"`
+	Processes       []Process         `json:"processes"`
+	Listeners       []Listener        `json:"listeners"`
+	Services        []Service         `json:"services"`
+	Timers          []Timer           `json:"timers"`
+	Endpoints       []Endpoint        `json:"endpoints"`
+	Logs            LogStats          `json:"logs"`
+	CLIAccounts     []CLIAccountUsage `json:"cli_accounts,omitempty"`
+	CLIUsers        []CLIUser         `json:"cli_users,omitempty"`
+	QuotaRefreshing bool              `json:"quota_refreshing,omitempty"`
+	Alerts          []Alert           `json:"alerts"`
 }
 
 // ring is a fixed-capacity FIFO of samples.
@@ -382,10 +391,14 @@ type Monitor struct {
 	cliAccounts []CLIAccountUsage
 	collectedAt int64
 
-	cliCollector  *cliAccountsCollector
-	statePath     string
-	extraURLs     []string
-	restoredUsage []usagePoint
+	cliCollector    *cliAccountsCollector
+	sampleMu        sync.Mutex
+	quotaProbeMu    sync.Mutex
+	quotaRefreshing atomic.Bool
+	runCtx          context.Context
+	statePath       string
+	extraURLs       []string
+	restoredUsage   []usagePoint
 }
 
 // New creates a monitor. extraURLs are probed in addition to the hosts
@@ -415,6 +428,7 @@ func (m *Monitor) Run(ctx context.Context) {
 	m.load()
 	m.collector = newCollector(m.restoredUsage)
 	m.mu.Lock()
+	m.runCtx = ctx
 	m.host = m.collector.hostInfo()
 	m.mu.Unlock()
 
@@ -426,7 +440,7 @@ func (m *Monitor) Run(ctx context.Context) {
 		{SampleInterval, m.sample},
 		{15 * time.Second, m.refreshSystemd},
 		{30 * time.Second, m.refreshListeners},
-		{30 * time.Second, m.refreshCLIAccounts},
+		{15 * time.Second, m.refreshCLIAccounts},
 		{2 * time.Minute, m.refreshCLIQuotas},
 		{60 * time.Second, m.refreshEndpoints},
 		{5 * time.Minute, m.refreshLogs},
@@ -465,6 +479,11 @@ func (m *Monitor) Run(ctx context.Context) {
 }
 
 func (m *Monitor) sample(context.Context) {
+	m.sampleMu.Lock()
+	defer m.sampleMu.Unlock()
+	if m.collector == nil {
+		return
+	}
 	snap := m.collector.sample(time.Now())
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -527,20 +546,12 @@ func (m *Monitor) refreshCLIAccounts(context.Context) {
 	m.mu.Unlock()
 }
 
-func (m *Monitor) refreshCLIQuotas(ctx context.Context) {
-	if m.cliCollector == nil {
-		return
-	}
+func (m *Monitor) buildQuotaHints(force bool) (codexHints, agyHints, claudeHints map[string]agyProbeTarget) {
 	m.mu.RLock()
-	emptyAccounts := len(m.cliAccounts) == 0
-	m.mu.RUnlock()
-	if emptyAccounts {
-		m.refreshCLIAccounts(ctx)
-	}
-
-	m.mu.RLock()
-	agyHints := make(map[string]agyProbeTarget)
-	claudeHints := make(map[string]agyProbeTarget)
+	defer m.mu.RUnlock()
+	codexHints = make(map[string]agyProbeTarget)
+	agyHints = make(map[string]agyProbeTarget)
+	claudeHints = make(map[string]agyProbeTarget)
 	for _, acc := range m.cliAccounts {
 		target := agyProbeTarget{
 			id:           acc.ID,
@@ -548,25 +559,110 @@ func (m *Monitor) refreshCLIQuotas(ctx context.Context) {
 			lastActivity: acc.LastActivity,
 			quotaAt:      acc.QuotaAt,
 			windows:      append([]QuotaWindow(nil), acc.Windows...),
+			force:        force,
 		}
 		switch acc.CLI {
+		case "codex":
+			codexHints[acc.ID] = target
 		case "agy":
 			agyHints[acc.ID] = target
 		case "claude":
 			claudeHints[acc.ID] = target
 		}
 	}
+	return codexHints, agyHints, claudeHints
+}
+
+// TriggerRefresh immediately refreshes local metrics, tmux sessions, and CLI token logs,
+// and launches an asynchronous forced quota probe across all providers if none is running.
+func (m *Monitor) TriggerRefresh(ctx context.Context) {
+	m.sample(ctx)
+	m.refreshCLIAccounts(ctx)
+	if m.cliCollector == nil {
+		return
+	}
+	if !m.quotaRefreshing.CompareAndSwap(false, true) {
+		return
+	}
+
+	m.mu.RLock()
+	baseCtx := m.runCtx
 	m.mu.RUnlock()
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+
+	go func() {
+		defer m.quotaRefreshing.Store(false)
+		m.quotaProbeMu.Lock()
+		defer m.quotaProbeMu.Unlock()
+
+		probeCtx, cancel := context.WithTimeout(baseCtx, 60*time.Second)
+		defer cancel()
+
+		codexHints, agyHints, claudeHints := m.buildQuotaHints(true)
+		var wg sync.WaitGroup
+		runProvider := func(name string, fn func(context.Context, time.Time, map[string]agyProbeTarget) (int, []string, int), hints map[string]agyProbeTarget) {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				count, errs, skipped := fn(probeCtx, time.Now(), hints)
+				if len(errs) > 0 {
+					m.logger.WithFields(logrus.Fields{"accounts": count, "skipped": skipped, "errors": errs}).Warn(name + " quota probe warnings")
+				} else if count > 0 {
+					m.logger.WithFields(logrus.Fields{"accounts": count, "skipped": skipped}).Info("refreshed " + name + " quotas")
+				}
+				if count > 0 {
+					m.refreshCLIAccounts(probeCtx)
+				}
+			}()
+		}
+		runProvider("codex", m.cliCollector.refreshCodexQuotas, codexHints)
+		runProvider("agy", m.cliCollector.refreshAgyQuotas, agyHints)
+		runProvider("claude", m.cliCollector.refreshClaudeQuotas, claudeHints)
+		wg.Wait()
+	}()
+}
+
+func (m *Monitor) refreshCLIQuotas(ctx context.Context) {
+	if m.cliCollector == nil {
+		return
+	}
+	if !m.quotaRefreshing.CompareAndSwap(false, true) {
+		return
+	}
+	defer m.quotaRefreshing.Store(false)
+	m.quotaProbeMu.Lock()
+	defer m.quotaProbeMu.Unlock()
+
+	m.mu.RLock()
+	emptyAccounts := len(m.cliAccounts) == 0
+	m.mu.RUnlock()
+	if emptyAccounts {
+		m.refreshCLIAccounts(ctx)
+	}
+
+	codexHints, agyHints, claudeHints := m.buildQuotaHints(false)
 
 	now := time.Now()
-	agyCount, agyErrs, agySkipped := m.cliCollector.refreshAgyQuotas(ctx, now, agyHints)
+	codexCount, codexErrs, codexSkipped := m.cliCollector.refreshCodexQuotas(ctx, now, codexHints)
+	if len(codexErrs) > 0 {
+		m.logger.WithFields(logrus.Fields{"accounts": codexCount, "skipped": codexSkipped, "errors": codexErrs}).Warn("codex quota probe warnings")
+	} else if codexCount > 0 {
+		m.logger.WithFields(logrus.Fields{"accounts": codexCount, "skipped": codexSkipped}).Info("refreshed codex quotas")
+	}
+	if codexCount > 0 {
+		m.refreshCLIAccounts(ctx)
+	}
+
+	agyCount, agyErrs, agySkipped := m.cliCollector.refreshAgyQuotas(ctx, time.Now(), agyHints)
 	if len(agyErrs) > 0 {
 		m.logger.WithFields(logrus.Fields{"accounts": agyCount, "skipped": agySkipped, "errors": agyErrs}).Warn("agy quota probe warnings")
 	} else if agyCount > 0 {
 		m.logger.WithFields(logrus.Fields{"accounts": agyCount, "skipped": agySkipped}).Info("refreshed agy quotas")
 	}
 
-	claudeCount, claudeErrs, claudeSkipped := m.cliCollector.refreshClaudeQuotas(ctx, now, claudeHints)
+	claudeCount, claudeErrs, claudeSkipped := m.cliCollector.refreshClaudeQuotas(ctx, time.Now(), claudeHints)
 	if len(claudeErrs) > 0 {
 		m.logger.WithFields(logrus.Fields{"accounts": claudeCount, "skipped": claudeSkipped, "errors": claudeErrs}).Warn("claude quota probe warnings")
 	} else if claudeCount > 0 {
@@ -665,6 +761,7 @@ func (m *Monitor) Snapshot(rangeSec int64, afterMS int64) Response {
 		}
 		resp.CLIAccounts = accounts
 	}
+	resp.QuotaRefreshing = m.quotaRefreshing.Load()
 	resp.Alerts = m.buildAlerts(&resp)
 	return resp
 }
