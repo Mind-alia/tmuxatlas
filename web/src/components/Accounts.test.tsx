@@ -149,7 +149,7 @@ describe('Tableau de bord /admin', () => {
     {
       id: 'bbbbbbbb22222222bbbbbbbb22222222',
       username: 'alice',
-      role: 'user' as const,
+      role: 'guest' as const,
       disabled: false,
       created_at: '2026-01-02T00:00:00Z',
     },
@@ -181,7 +181,7 @@ describe('Tableau de bord /admin', () => {
             JSON.stringify({
               id: 'cccccccc33333333cccccccc33333333',
               username: 'bob',
-              role: 'user',
+              role: 'guest',
               disabled: false,
               created_at: '2026-01-03T00:00:00Z',
             }),
@@ -206,11 +206,9 @@ describe('Tableau de bord /admin', () => {
     render(<AdminPage currentUsername="admin" />)
 
     expect(
-      screen.getByText(
-        'Tous les comptes partagent le même utilisateur système du serveur. Un terminal donne ses droits.',
-      ),
+      screen.getByText(/Donnez à chaque invité son propre compte\s+Linux/),
     ).toBeInTheDocument()
-    expect(screen.getByText(/10 à 200 caractères/)).toBeInTheDocument()
+    expect(screen.getByText(/Laissez le mot de passe vide/)).toBeInTheDocument()
 
     await screen.findByTestId('admin-user-row-alice')
     expect(screen.getByTestId('admin-session-owner-badge')).toHaveTextContent('alice')
@@ -244,13 +242,13 @@ describe('Tableau de bord /admin', () => {
 })
 
 describe('Vue non-admin : claim, release, erreur 409 et absence de routes interdites', () => {
-  it('affiche sessions et ressources à un non-admin', async () => {
+  it('affiche ses sessions à un invité, sans les ressources du hub', async () => {
     const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
 
     render(
       <Overview
-        role="user"
+        role="guest"
         currentUsername="alice"
         sessions={[sampleSession({ name: 'ma-session' })]}
         hosts={[{ id: 'h1', name: 'Serveur', online: true, sessions: [], last_seen: '' }]}
@@ -264,11 +262,12 @@ describe('Vue non-admin : claim, release, erreur 409 et absence de routes interd
       />,
     )
 
-    expect(screen.getByText(/CPU/)).toBeInTheDocument()
+    expect(screen.queryByText(/CPU/)).not.toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/stats', expect.anything())
     expect(screen.getByText('ma-session')).toBeInTheDocument()
   })
 
-  it('montre Monitoring et masque Administration pour un utilisateur non-admin et réduit les Réglages', () => {
+  it('masque Monitoring et Administration pour un invité et réduit les Réglages', () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -277,11 +276,10 @@ describe('Vue non-admin : claim, release, erreur 409 et absence de routes interd
         <TopBar
           currentView="overview"
           sidebarHidden={false}
-          role="user"
+          role="guest"
           authMode="accounts"
           onToggleCollapse={vi.fn()}
           onOverview={vi.fn()}
-          onMonitoring={vi.fn()}
           onWall={vi.fn()}
           onAdmin={vi.fn()}
           onOpenPalette={vi.fn()}
@@ -295,10 +293,9 @@ describe('Vue non-admin : claim, release, erreur 409 et absence de routes interd
         <MobileNav
           currentView="overview"
           attentionCount={0}
-          role="user"
+          role="guest"
           onOverview={vi.fn()}
           onSessions={vi.fn()}
-          onMonitoring={vi.fn()}
           onSettings={vi.fn()}
         />
         <PreferencesContext.Provider
@@ -318,14 +315,14 @@ describe('Vue non-admin : claim, release, erreur 409 et absence de routes interd
             onPushSubscribe={vi.fn()}
             onPushUnsubscribe={vi.fn()}
             authMode="accounts"
-            role="user"
+            role="guest"
             pwaInstall={pwaInstall}
           />
         </PreferencesContext.Provider>
       </>,
     )
 
-    expect(screen.getAllByRole('button', { name: 'Monitoring' }).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: 'Monitoring' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Administration' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Se déconnecter' })).toBeInTheDocument()
     expect(screen.getByText('Changer le mot de passe')).toBeInTheDocument()

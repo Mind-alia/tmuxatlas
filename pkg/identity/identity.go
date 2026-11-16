@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	osuser "os/user"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -187,6 +188,20 @@ func identityPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "identity.json"), nil
+}
+
+// DefaultName names a new identity after the Unix user and the host, so the
+// peers of several accounts on one server do not collide.
+func DefaultName() string {
+	hostname, _ := os.Hostname()
+	user := os.Getenv("USER")
+	if current, err := osuser.Current(); err == nil && current.Username != "" {
+		user = current.Username
+	}
+	if user == "" {
+		return hostname
+	}
+	return user + "@" + hostname
 }
 
 // LoadOrCreate loads the identity from disk, or generates a new one

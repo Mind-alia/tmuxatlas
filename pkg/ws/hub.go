@@ -336,12 +336,14 @@ func (h *Hub) handleCanonicalEvents(conn *websocket.Conn, r *http.Request) {
 		return conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 	})
 	identity, account := auth.AccountFromContext(r.Context())
-	filtered := account && identity.User.Role == "user"
+	filtered := account && !identity.User.IsAdmin()
 	writeSnapshot := func(snapshot state.SnapshotEnvelope) error {
 		if !filtered {
 			return writeCanonicalEnvelope(c, snapshot)
 		}
-		projection := snapshot.State.ForAccount(identity.User.ID)
+		// Without the server's policy, fall back to the hosts granted when the
+		// connection was opened.
+		projection := snapshot.State.ForHosts(identity.User.CanUseHost).ForAccount(identity.User.ID)
 		if h.accountProjection != nil {
 			projection = h.accountProjection(snapshot.State, identity.User.ID)
 		}

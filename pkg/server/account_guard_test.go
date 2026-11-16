@@ -107,7 +107,7 @@ func TestAccountPolicyRejectsRevokedRequestWaitingForLock(t *testing.T) {
 	}
 }
 
-func TestAnyAccountCanUseAnySession(t *testing.T) {
+func TestGuestUsesOnlySessionsOfGrantedHost(t *testing.T) {
 	dir, err := os.MkdirTemp("/tmp", "atlas-accounts-")
 	if err != nil {
 		t.Fatal(err)
@@ -123,11 +123,11 @@ func TestAnyAccountCanUseAnySession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alice, err := store.Create("alice", string(hash), "user")
+	alice, err := store.Create("alice", string(hash), "guest")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bob, err := store.Create("bob", string(hash), "user")
+	bob, err := store.Create("bob", string(hash), "guest")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,35 +153,49 @@ func TestAnyAccountCanUseAnySession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := a.Middleware(newAccountPolicy(&Options{Client: client, StateMgr: manager, PeerMgr: peers}).Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	options := &Options{Client: client, StateMgr: manager, PeerMgr: peers}
+	h := a.Middleware(newAccountPolicy(options).Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})))
-	for _, name := range []string{"alice", "bob"} {
-		for _, operation := range []string{"preview", "rename", "kill", "select-window", "select-pane", "reply", "release"} {
-			method := http.MethodPost
-			url := "/api/session/" + operation
-			body := fmt.Sprintf(`{"host_id":%q,"session":%q}`, peers.LocalID(), name)
-			if operation == "preview" {
-				method = http.MethodGet
-				url += "?host_id=" + peers.LocalID() + "&session=" + name
+	check := func(want int) {
+		t.Helper()
+		for _, name := range []string{"alice", "bob"} {
+			for _, operation := range []string{"preview", "rename", "kill", "select-window", "select-pane", "reply", "release"} {
+				method := http.MethodPost
+				url := "/api/session/" + operation
+				body := fmt.Sprintf(`{"host_id":%q,"session":%q}`, peers.LocalID(), name)
+				if operation == "preview" {
+					method = http.MethodGet
+					url += "?host_id=" + peers.LocalID() + "&session=" + name
+				}
+				r := httptest.NewRequest(method, url, strings.NewReader(body))
+				r.AddCookie(&http.Cookie{Name: "tmuxatlas_session", Value: token})
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, r)
+				if w.Code != want {
+					t.Errorf("%s %s: %d, want %d", name, operation, w.Code, want)
+				}
 			}
-			r := httptest.NewRequest(method, url, strings.NewReader(body))
+			url := "/ws/session?host=" + peers.LocalID() + "&name=" + name
+			r := httptest.NewRequest(http.MethodGet, url, nil)
 			r.AddCookie(&http.Cookie{Name: "tmuxatlas_session", Value: token})
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, r)
-			if w.Code != http.StatusNoContent {
-				t.Errorf("%s %s: %d", name, operation, w.Code)
+			if w.Code != want {
+				t.Errorf("%s pty: %d, want %d", name, w.Code, want)
 			}
 		}
-		url := "/ws/session?host=" + peers.LocalID() + "&name=" + name
-		r := httptest.NewRequest(http.MethodGet, url, nil)
-		r.AddCookie(&http.Cookie{Name: "tmuxatlas_session", Value: token})
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
-		if w.Code != http.StatusNoContent {
-			t.Errorf("%s pty: %d", name, w.Code)
-		}
 	}
+	// No grant: every session of the host is out of reach.
+	check(http.StatusForbidden)
+	if _, err := store.SetAccess(alice.ID, []string{peers.LocalID()}, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	// The hub's own host stays forbidden unless explicitly allowed.
+	check(http.StatusForbidden)
+	options.GuestLocalHost = true
+	// On a granted host the owner is a label: every session can be used.
+	check(http.StatusNoContent)
 	// Atlas's internal session and unknown sessions stay out of reach.
 	for _, name := range []string{"tmuxatlas-ctrl", "inexistante"} {
 		r := httptest.NewRequest(http.MethodGet, "/ws/session?host="+peers.LocalID()+"&name="+name, nil)
@@ -219,4 +233,81 @@ func TestToolEventDeleteCannotTargetAnotherHost(t *testing.T) {
 	if w.Code != 400 || invoked {
 		t.Fatalf("status=%d handler=%v", w.Code, invoked)
 	}
+}
+
+// The microphone follows terminal access: a guest may feed the microphone of a
+// host granted to them (never the hub's own host, nor a missing host), an
+// admin any host.
+func TestMicrophoneFollowsTerminalAccess(t *testing.T) {
+	dir := t.TempDir()
+	store := accounts.OpenStore(filepath.Join(dir, "users.json"))
+	hash, err := bcrypt.GenerateFromPassword([]byte("mot de passe"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := store.Create("admin", string(hash), "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice, err := store.Create("alice", string(hash), "guest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := identity.Generate("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peers := peer.NewManager(local, nil, state.NewManager(nil))
+	const granted, other = "hote-alice", "hote-autre"
+	if _, err := store.SetAccess(alice.ID, []string{granted}, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	sessions := auth.NewSessionManager(time.Hour)
+	a, err := auth.NewAccountsAuth(store, sessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := &Options{PeerMgr: peers}
+	h := a.Middleware(newAccountPolicy(options).Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})))
+	check := func(account accounts.User, host string, want int) {
+		t.Helper()
+		token, err := sessions.CreateForAccount(account.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range []string{"/ws/mic?id=abcdefgh12", "/api/voice?x=1"} {
+			url := path
+			if host != "" {
+				url += "&host=" + host
+			}
+			r := httptest.NewRequest(http.MethodGet, url, nil)
+			r.AddCookie(&http.Cookie{Name: "tmuxatlas_session", Value: token})
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != want {
+				t.Errorf("%s %s host=%q: %d, want %d", account.Username, path, host, w.Code, want)
+			}
+		}
+	}
+	check(alice, granted, http.StatusNoContent)
+	check(alice, other, http.StatusForbidden)
+	check(alice, "", http.StatusForbidden)              // the hub's own microphone
+	check(alice, peers.LocalID(), http.StatusForbidden) // same, named
+	check(admin, granted, http.StatusNoContent)
+	check(admin, other, http.StatusNoContent)
+	check(admin, "", http.StatusNoContent)
+	// Revoking the host revokes its microphone.
+	if _, err := store.SetAccess(alice.ID, nil, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	check(alice, granted, http.StatusForbidden)
+	// Same rule as the terminal: the hub's host only with GuestLocalHost.
+	if _, err := store.SetAccess(alice.ID, []string{peers.LocalID()}, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	check(alice, peers.LocalID(), http.StatusForbidden)
+	options.GuestLocalHost = true
+	check(alice, peers.LocalID(), http.StatusNoContent)
 }

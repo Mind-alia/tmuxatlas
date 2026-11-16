@@ -265,8 +265,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 	}
 
 	// Initialize identity for peer system
-	hostname, _ := os.Hostname()
-	nodeIdentity, err := identity.LoadOrCreate(hostname)
+	nodeIdentity, err := identity.LoadOrCreate(identity.DefaultName())
 	if err != nil {
 		return fmt.Errorf("failed to load identity: %w", err)
 	}
@@ -347,6 +346,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		PTYRelay:        ptyRelay,
 		Watcher:         watcher,
 		LocalOnly:       localOnly,
+		GuestLocalHost:  os.Getenv("TMUXATLAS_GUEST_LOCAL_HOST") == "allow",
 		Role:            map[bool]string{true: "hub", false: "standalone"}[pureHub],
 		Deployment:      os.Getenv("TMUXATLAS_DEPLOYMENT"),
 	}

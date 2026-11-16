@@ -71,9 +71,11 @@ export function Overview({
   const { prefs } = usePreferences()
   const appState = useApplicationState()
   const hostLabel = useHostLabel()
-  const isNonAdminUser = role === 'user'
+  const isNonAdminUser = role === 'guest'
 
   useEffect(() => {
+    // Host statistics describe the hub's account: the server refuses them to guests.
+    if (isNonAdminUser) return
     const controller = new AbortController()
     const load = async () => {
       try {
@@ -89,7 +91,7 @@ export function Overview({
       controller.abort()
       clearInterval(timer)
     }
-  }, [prefs.overview_refresh_interval])
+  }, [isNonAdminUser, prefs.overview_refresh_interval])
 
   const visibleSessions = sessions
 
@@ -160,7 +162,7 @@ export function Overview({
               <strong className="font-medium text-foreground">{errors}</strong> erreur{errors === 1 ? '' : 's'}
             </span>
           )}
-          {
+          {!isNonAdminUser && (
             <button
               type="button"
               onClick={onOpenMonitoring}
@@ -169,7 +171,7 @@ export function Overview({
               CPU {stats?.system?.cpu_percent != null ? `${Math.round(stats.system.cpu_percent)} %` : '—'} · Mémoire{' '}
               {stats?.system?.memory ? `${Math.round(stats.system.memory.percent)} %` : '—'}
             </button>
-          }
+          )}
         </div>
         {onCreateSession && (
           <Button
@@ -197,7 +199,7 @@ export function Overview({
         onOpen={e => onJumpToSession(e.host ? `${e.host}/${e.session}` : e.session, e.window, e.pane)}
         onDismiss={onDismissAlert}
       />
-      {reason && (
+      {reason && !isNonAdminUser && (
         <button
           type="button"
           onClick={onOpenMonitoring}

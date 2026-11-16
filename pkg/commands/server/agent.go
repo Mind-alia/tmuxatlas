@@ -68,8 +68,7 @@ func ExecuteAgent(ctx context.Context, c *cli.Command) error {
 		go controlMode.Run(ctx)
 	}
 
-	hostname, _ := os.Hostname()
-	nodeIdentity, err := identity.LoadOrCreate(hostname)
+	nodeIdentity, err := identity.LoadOrCreate(identity.DefaultName())
 	if err != nil {
 		return fmt.Errorf("load identity: %w", err)
 	}

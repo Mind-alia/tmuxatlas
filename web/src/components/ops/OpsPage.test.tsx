@@ -69,7 +69,7 @@ describe('Onglet Conteneurs', () => {
   }
 
   it('n’apparaît que si la vue est autorisée', () => {
-    const { rerender } = render(<TopBar {...props} role="user" />)
+    const { rerender } = render(<TopBar {...props} role="guest" />)
     expect(screen.queryByRole('button', { name: 'Conteneurs' })).toBeNull()
     const onOps = vi.fn()
     rerender(<TopBar {...props} role="admin" onOps={onOps} />)

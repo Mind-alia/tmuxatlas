@@ -39,6 +39,10 @@ On the peer: run 'tmuxatlas pair --hub <address> --code <code>' to complete pair
 				Usage: "Pairing code from the hub",
 			},
 			&cli.StringFlag{
+				Name:  "name",
+				Usage: "Peer name shown on the hub (default: the identity name, user@host)",
+			},
+			&cli.StringFlag{
 				Name:    "socket",
 				Usage:   "Path to tmuxatlas server socket (for generating codes)",
 				Sources: cli.EnvVars("TMUXATLAS_SOCKET", "GUPPI_SOCKET"),
@@ -54,7 +58,7 @@ On the peer: run 'tmuxatlas pair --hub <address> --code <code>' to complete pair
 						return fmt.Errorf("%s is no longer supported; the hub must use a system-trusted HTTPS certificate", name)
 					}
 				}
-				return pairWithHub(hubAddr, code)
+				return pairWithHub(hubAddr, code, c.String("name"))
 			}
 
 			if hubAddr == "" && code == "" {
@@ -93,11 +97,16 @@ func newPairHTTPClient() *http.Client {
 }
 
 // pairWithHub completes the pairing handshake with a remote hub via HTTP POST
-func pairWithHub(hubAddr, code string) error {
-	hostname, _ := os.Hostname()
-	id, err := identity.LoadOrCreate(hostname)
+func pairWithHub(hubAddr, code, name string) error {
+	id, err := identity.LoadOrCreate(identity.DefaultName())
 	if err != nil {
 		return fmt.Errorf("load identity: %w", err)
+	}
+	if name == "" {
+		name = id.Name
+	}
+	if name, err = identity.NormalizeName(name); err != nil {
+		return fmt.Errorf("invalid --name: %w", err)
 	}
 
 	peerStore, err := identity.NewPeerStore()
@@ -116,10 +125,10 @@ func pairWithHub(hubAddr, code string) error {
 
 	reqBody, _ := json.Marshal(map[string]string{
 		"code":       code,
-		"name":       id.Name,
+		"name":       name,
 		"public_key": id.PublicKey,
 	})
-	signature, err := id.Sign(identity.PairingTranscript(hubBaseURL, code, id.Name, id.PublicKey))
+	signature, err := id.Sign(identity.PairingTranscript(hubBaseURL, code, name, id.PublicKey))
 	if err != nil {
 		return fmt.Errorf("sign pairing proof: %w", err)
 	}

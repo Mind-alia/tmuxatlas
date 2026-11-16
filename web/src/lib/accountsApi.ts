@@ -1,13 +1,41 @@
 import { apiFetch } from './api'
 import { RuntimeAPIError, type RuntimeAPIErrorBody } from './runtimeApi'
 
+export type AccountRoleName = 'admin' | 'guest'
+
 export interface AccountUser {
   id: string
   username: string
-  role: 'admin' | 'user'
+  role: AccountRoleName
   disabled: boolean
   created_at: string
   password_changed_at?: string
+  /** Host IDs a guest may use. Administrators see every host. */
+  hosts?: string[]
+  unix_user?: string
+  /** No password yet: the account waits for its invitation. */
+  pending?: boolean
+  invitation_expires_at?: string
+}
+
+export interface InvitationLink {
+  token: string
+  /** Relative link, `/invite#<token>`: the token stays in the URL fragment. */
+  path: string
+  expires_at: string
+}
+
+export interface CreatedAccount extends AccountUser {
+  invitation?: InvitationLink
+}
+
+export interface AdminHost {
+  id: string
+  name: string
+  online: boolean
+  local: boolean
+  grantable: boolean
+  guest?: string
 }
 
 export interface AdminSession {
@@ -34,7 +62,7 @@ export function resolveOwnerName(
   options: {
     usersById?: ReadonlyMap<string, string> | Record<string, string>
     currentUsername?: string | null
-    currentRole?: 'admin' | 'user' | null
+    currentRole?: AccountRoleName | null
   } = {},
 ): string | null {
   const raw = owner?.trim()
@@ -91,6 +119,15 @@ export function translateAccountServerError(raw: string, fallback: string): stri
   if (/dernier administrateur/i.test(text)) {
     return 'Impossible de désactiver ou supprimer le dernier administrateur actif.'
   }
+  if (/déjà attribué à un autre invité/i.test(text)) {
+    return 'Cet hôte est déjà attribué à un autre invité : un compte Linux par personne.'
+  }
+  if (/ne peut pas être attribué/i.test(text)) {
+    return 'Cet hôte est celui du hub (compte de production) : il ne peut pas être attribué à un invité.'
+  }
+  if (/opération interdite sur cet administrateur/i.test(text)) {
+    return 'Impossible : c’est votre propre compte ou le dernier administrateur actif.'
+  }
   if (/introuvable/i.test(text)) {
     return 'Ce compte est introuvable.'
   }
@@ -123,21 +160,37 @@ export async function fetchAdminUsers(): Promise<AccountUser[]> {
   return data?.users ?? []
 }
 
-export async function createAdminUser(username: string, password: string): Promise<AccountUser> {
+/** Creates an account. Without a password, the response carries a one-time invitation link. */
+export async function createAdminUser(
+  username: string,
+  password: string,
+  options: { role?: AccountRoleName; unixUser?: string } = {},
+): Promise<CreatedAccount> {
   const res = await apiFetch('/api/admin/users', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: username.trim(), password }),
+    body: JSON.stringify({
+      username: username.trim(),
+      password,
+      role: options.role ?? 'guest',
+      unix_user: options.unixUser?.trim() ?? '',
+    }),
   })
   if (!res.ok) {
     throw new Error(await parseErrorMessage(res, 'Impossible de créer le compte.'))
   }
-  return (await res.json()) as AccountUser
+  return (await res.json()) as CreatedAccount
 }
 
 export async function updateAdminUser(
   id: string,
-  patch: { password?: string; disabled?: boolean },
+  patch: {
+    password?: string
+    disabled?: boolean
+    role?: AccountRoleName
+    hosts?: string[]
+    unix_user?: string
+  },
 ): Promise<AccountUser> {
   const res = await apiFetch(`/api/admin/users/${encodeURIComponent(id)}`, {
     method: 'PATCH',
@@ -223,5 +276,71 @@ export async function changeOwnPassword(oldPassword: string, newPassword: string
       throw new Error('Trop de tentatives. Réessayez dans quelques instants.')
     }
     throw new Error(await parseErrorMessage(res, 'Impossible de modifier le mot de passe.'))
+  }
+}
+
+export async function fetchAdminHosts(): Promise<AdminHost[]> {
+  const res = await apiFetch('/api/admin/hosts')
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res, 'Impossible de charger les hôtes.'))
+  }
+  const data = (await res.json()) as { hosts?: AdminHost[] }
+  return data.hosts ?? []
+}
+
+export async function createInvitation(id: string, hours?: number): Promise<InvitationLink> {
+  const res = await apiFetch(`/api/admin/users/${encodeURIComponent(id)}/invitation`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(hours ? { hours } : {}),
+  })
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res, 'Impossible de créer le lien d’invitation.'))
+  }
+  return (await res.json()) as InvitationLink
+}
+
+export async function cancelInvitation(id: string): Promise<void> {
+  const res = await apiFetch(`/api/admin/users/${encodeURIComponent(id)}/invitation`, { method: 'DELETE' })
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res, 'Impossible d’annuler l’invitation.'))
+  }
+}
+
+export async function createAccountPairingCode(id: string): Promise<{ code: string; expires_at: string }> {
+  const res = await apiFetch(`/api/admin/users/${encodeURIComponent(id)}/pairing`, { method: 'POST' })
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res, 'Impossible de créer le code d’appairage.'))
+  }
+  return (await res.json()) as { code: string; expires_at: string }
+}
+
+/** Absolute invitation URL. The token is in the fragment and never reaches the server's logs. */
+export function invitationURL(link: InvitationLink, origin = window.location.origin): string {
+  return `${origin}${link.path}`
+}
+
+export async function inspectInvitation(token: string): Promise<{ username: string; expires_at: string; has_password: boolean }> {
+  const res = await apiFetch('/api/auth/invitation/inspect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  })
+  if (!res.ok) {
+    if (res.status === 429) throw new Error('Trop de tentatives. Réessayez dans quelques instants.')
+    throw new Error('Ce lien d’invitation est invalide, déjà utilisé ou expiré.')
+  }
+  return (await res.json()) as { username: string; expires_at: string; has_password: boolean }
+}
+
+export async function acceptInvitation(token: string, password: string): Promise<void> {
+  const res = await apiFetch('/api/auth/invitation/accept', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, password }),
+  })
+  if (!res.ok) {
+    if (res.status === 404) throw new Error('Ce lien d’invitation est invalide, déjà utilisé ou expiré.')
+    throw new Error(await parseErrorMessage(res, 'Impossible d’enregistrer le mot de passe.'))
   }
 }

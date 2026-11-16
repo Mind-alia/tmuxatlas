@@ -1,10 +1,10 @@
 package peer
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -28,10 +28,13 @@ var wsUpgrader = websocket.Upgrader{
 
 // Handler handles incoming peer WebSocket connections (hub side)
 type Handler struct {
-	manager          *Manager
-	peerStore        *identity.PeerStore
-	tracker          *toolevents.Tracker
-	pairing          *identity.PairingManager
+	manager   *Manager
+	peerStore *identity.PeerStore
+	tracker   *toolevents.Tracker
+	pairing   *identity.PairingManager
+	// OnAccountPaired grants a host paired with an account's code to that
+	// account. It runs before the code is consumed.
+	OnAccountPaired  func(account, hostID, name string) error
 	ptyRelay         *PTYRelay
 	publicURL        string
 	handshakeTimeout time.Duration
@@ -177,28 +180,8 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 	}()
 	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 
-	// Send current aggregated state to the new peer
-	h.sendPeerState(peerConn)
-
-	// Subscribe to state changes and forward to this peer
-	stateCh := h.manager.Subscribe()
-	defer h.manager.Unsubscribe(stateCh)
-
-	go func() {
-		for evt := range stateCh {
-			// Don't echo a peer's own events back to it
-			if evt.Host == peerID {
-				continue
-			}
-			msg, err := NewMessage(MsgPeerState, PeerStatePayload{
-				Hosts: h.manager.GetHosts(),
-			})
-			if err != nil {
-				continue
-			}
-			_ = peerConn.Send(context.Background(), msg)
-		}
-	}()
+	// The hub never forwards other hosts' state to a peer: a peer may run under
+	// another person's Unix account, and other hosts' sessions are not theirs.
 
 	// Read loop: process messages from peer
 	for {
@@ -300,17 +283,6 @@ func (h *Handler) handlePeerMessage(peerID string, connection *PeerConnection, m
 	}
 }
 
-// sendPeerState sends the full aggregated state to a peer
-func (h *Handler) sendPeerState(peerConn *PeerConnection) {
-	msg, err := NewMessage(MsgPeerState, PeerStatePayload{
-		Hosts: h.manager.GetHosts(),
-	})
-	if err != nil {
-		return
-	}
-	_ = peerConn.Send(context.Background(), msg)
-}
-
 // getPeerSessions returns the current sessions for a peer (from cache)
 func (h *Handler) getPeerSessions(peerID string) []*tmux.Session {
 	h.manager.mu.RLock()
@@ -347,10 +319,25 @@ func (h *Handler) HandlePairing(w http.ResponseWriter, r *http.Request) {
 
 	log := logrus.WithField("remote", r.RemoteAddr)
 
-	if err := h.pairing.Complete(req.Code, func() error {
-		return h.peerStore.Add(identity.Peer{
-			Name: name, PublicKey: req.PublicKey, PairedAt: time.Now(),
-		})
+	if err := h.pairing.CompleteFor(req.Code, func(account string) error {
+		paired := identity.Peer{Name: name, PublicKey: req.PublicKey, PairedAt: time.Now()}
+		if err := h.peerStore.Add(paired); err != nil {
+			return err
+		}
+		if account == "" {
+			return nil
+		}
+		// The code was made for one account: grant it the new host, or undo
+		// the pairing so that no host is left without its intended owner.
+		if h.OnAccountPaired == nil {
+			_ = h.peerStore.Remove(name)
+			return fmt.Errorf("account pairing unavailable")
+		}
+		if err := h.OnAccountPaired(account, paired.Fingerprint(), name); err != nil {
+			_ = h.peerStore.Remove(name)
+			return err
+		}
+		return nil
 	}); err != nil {
 		log.WithField("result", "rejected").Warn("pairing completion rejected")
 		http.Error(w, "pairing failed", http.StatusUnauthorized)

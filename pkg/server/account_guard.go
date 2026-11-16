@@ -9,14 +9,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LosFurina/tmuxatlas/pkg/accounts"
 	"github.com/LosFurina/tmuxatlas/pkg/auth"
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
 	"github.com/LosFurina/tmuxatlas/pkg/state"
 	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 )
 
+// accountUserRoutes are the routes a guest may call. Every other protected
+// route is denied to guests by default. Routes in accountHostScopedRoutes must
+// also name a host granted to the guest.
 var accountUserRoutes = map[string]bool{
-	"GET /api/voice": true, "GET /api/monitor": true, "GET /api/stats": true, "GET /ws/mic": true,
 	"GET /api/preferences": true, "POST /api/auth/change-password": true, "GET /api/accounts/directory": true,
 	"GET /api/sessions": true, "GET /api/hosts": true, "GET /api/tool-events": true,
 	"GET /api/activity": true, "GET /api/session/directories": true,
@@ -25,7 +28,27 @@ var accountUserRoutes = map[string]bool{
 	"POST /api/session/rename": true, "POST /api/session/kill": true,
 	"POST /api/session/select-window": true, "POST /api/session/select-pane": true,
 	"DELETE /api/tool-event": true, "GET /ws/session": true, "GET /ws/events": true,
+	"GET /api/voice": true, "GET /ws/mic": true,
 }
+
+// accountTargetedRoutes act on an existing session, which must exist on a
+// host granted to the guest.
+var accountTargetedRoutes = map[string]bool{
+	"/ws/session": true, "/api/session/preview": true, "/api/session/reply": true,
+	"/api/session/rename": true, "/api/session/kill": true, "/api/session/select-window": true,
+	"/api/session/select-pane": true, "/api/session/release": true, "/api/tool-event": true,
+}
+
+// accountHostScopedRoutes name a host but no existing session.
+var accountHostScopedRoutes = map[string]bool{
+	"/api/session/new": true, "/api/session/claim": true, "/api/session/directories": true,
+	"/api/voice": true, "/ws/mic": true,
+}
+
+// accountMicRoutes feed the microphone of the host named by ?host= (empty =
+// the hub's own host). A guest may use the microphone of a host they may use
+// in a terminal, and never the hub's own host; an admin may use any host.
+var accountMicRoutes = map[string]bool{"/api/voice": true, "/ws/mic": true}
 
 // Routes outside the user allow-list are recorded explicitly so a router walk
 // can detect newly introduced routes that have not received a security review.
@@ -34,7 +57,12 @@ var accountOtherRoutes = map[string]string{
 	"POST /api/auth/logout": "authenticated", "GET /api/version": "public",
 	"GET /api/admin/users": "admin", "POST /api/admin/users": "admin",
 	"PATCH /api/admin/users/{id}": "admin", "DELETE /api/admin/users/{id}": "admin",
-	"GET /api/admin/sessions": "admin", "GET /api/ops": "admin", "POST /api/ops/notifications/test": "admin", "GET /api/peers": "admin",
+	"GET /api/admin/sessions": "admin", "GET /api/peers": "admin", "GET /api/admin/hosts": "admin",
+	"GET /api/ops": "admin", "POST /api/ops/notifications/test": "admin",
+	"POST /api/admin/users/{id}/invitation": "admin", "DELETE /api/admin/users/{id}/invitation": "admin",
+	"POST /api/admin/users/{id}/pairing": "admin",
+	"POST /api/auth/invitation/inspect":  "public", "POST /api/auth/invitation/accept": "public",
+	"GET /api/monitor": "admin", "GET /api/stats": "admin",
 	"GET /api/agent-status": "admin", "DELETE /api/tool-events": "admin",
 	"GET /api/push/vapid-key": "admin", "POST /api/push/subscribe": "admin",
 	"POST /api/push/unsubscribe": "admin", "PUT /api/preferences": "admin", "POST /api/pair": "admin",
@@ -115,6 +143,60 @@ func (p *accountPolicy) closeForChange(w http.ResponseWriter) bool {
 	}
 	http.Error(w, "fermeture des connexions expirée", http.StatusServiceUnavailable)
 	return false
+}
+
+// guestMayUseHost reports whether a guest may use a host: it must be granted
+// to them and must not be the hub's own host, which runs under the hub's Unix
+// account.
+func (p *accountPolicy) guestMayUseHost(user accounts.User, host string) bool {
+	if user.IsAdmin() {
+		return true
+	}
+	if host == "" || !user.CanUseHost(host) {
+		return false
+	}
+	return p.opts.GuestLocalHost || p.opts.PeerMgr == nil || !p.opts.PeerMgr.IsLocal(host)
+}
+
+// grantableHost rejects hosts that must never be granted to a guest.
+func (p *accountPolicy) grantableHost(host string) error {
+	if p.opts.PeerMgr != nil && p.opts.PeerMgr.IsLocal(host) && !p.opts.GuestLocalHost {
+		return accounts.ErrHostForbidden
+	}
+	return nil
+}
+
+// hostFilter returns the hosts an account may see in state projections.
+func (p *accountPolicy) hostFilter(user accounts.User) func(string) bool {
+	return func(host string) bool { return p.guestMayUseHost(user, host) }
+}
+
+// currentUser reloads an account, so that grants changed after a WebSocket
+// connected apply to its next snapshot.
+func (p *accountPolicy) currentUser(id string) (accounts.User, bool) {
+	if p.opts.AccountsAuth == nil {
+		return accounts.User{}, false
+	}
+	users, err := p.opts.AccountsAuth.Store.List()
+	if err != nil {
+		return accounts.User{}, false
+	}
+	for _, user := range users {
+		if user.ID == id && !user.Disabled {
+			return user, true
+		}
+	}
+	return accounts.User{}, false
+}
+
+// accountProjection is the state a non-admin account receives: granted hosts
+// only, with verified ownership. An unknown account receives nothing.
+func (p *accountPolicy) accountProjection(projection state.Projection, accountID string) state.AccountProjection {
+	user, ok := p.currentUser(accountID)
+	if !ok {
+		return projection.ForHosts(func(string) bool { return false }).ForAccount("")
+	}
+	return p.verifiedProjection(projection.ForHosts(p.hostFilter(user))).ForAccount(accountID)
 }
 
 // owns reports whether an account may use a session. Ownership is a label, so
@@ -319,8 +401,9 @@ func (p *accountPolicy) Middleware(next http.Handler) http.Handler {
 			http.Error(w, "authentification requise", http.StatusUnauthorized)
 			return
 		}
-		user := identity.User.Role == "user"
-		if identity.User.Role != "admin" && (!user || !accountUserRoutes[r.Method+" "+r.URL.Path]) {
+		// Guests get the allow-list only. The role is reloaded on each request.
+		user := !identity.User.IsAdmin()
+		if user && !accountUserRoutes[r.Method+" "+r.URL.Path] {
 			http.Error(w, "accès interdit", http.StatusForbidden)
 			return
 		}
@@ -333,11 +416,13 @@ func (p *accountPolicy) Middleware(next http.Handler) http.Handler {
 		default:
 		}
 		path := r.URL.Path
-		targeted := path == "/ws/session" || path == "/api/session/preview" || path == "/api/session/reply" || path == "/api/session/rename" || path == "/api/session/kill" || path == "/api/session/select-window" || path == "/api/session/select-pane" || path == "/api/session/release" || path == "/api/tool-event"
-		if user && targeted {
+		targeted := accountTargetedRoutes[path]
+		if user && (targeted || accountHostScopedRoutes[path]) {
 			host, session, pane := r.URL.Query().Get("host_id"), r.URL.Query().Get("session"), r.URL.Query().Get("pane")
 			if path == "/ws/session" {
 				host, session = r.URL.Query().Get("host"), r.URL.Query().Get("name")
+			} else if accountMicRoutes[path] {
+				host = r.URL.Query().Get("host")
 			} else if r.Method != http.MethodGet {
 				controller := http.NewResponseController(w)
 				if controller.SetReadDeadline(time.Now().Add(10*time.Second)) == nil {
@@ -371,7 +456,8 @@ func (p *accountPolicy) Middleware(next http.Handler) http.Handler {
 					host = target.Host
 				}
 			}
-			if !p.owns(host, session, pane, identity.User.ID) {
+			// The host must be granted to the guest; the hub's own host never is.
+			if !p.guestMayUseHost(identity.User, host) || (targeted && !p.owns(host, session, pane, identity.User.ID)) {
 				p.mu.Unlock()
 				http.Error(w, "accès interdit", http.StatusForbidden)
 				return
