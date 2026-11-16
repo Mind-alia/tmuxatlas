@@ -144,6 +144,11 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 			return fmt.Errorf("la durée de session doit être d'au moins une minute")
 		}
 		accountSessions = auth.NewSessionManager(c.Duration("session-ttl"))
+		if err := auth.ConfigureTrustedProxy(os.Getenv("TMUXATLAS_PROXY_SECRET_HEADER"), os.Getenv("TMUXATLAS_PROXY_SECRET")); err != nil {
+			logrus.WithError(err).Warn("reverse proxy not trusted")
+		} else if os.Getenv("TMUXATLAS_PROXY_SECRET") == "" {
+			logrus.Info("TMUXATLAS_PROXY_SECRET unset: X-Forwarded-For is ignored, login limits use the peer address")
+		}
 		accountAuth, err = auth.NewAccountsAuth(store, accountSessions)
 		if err != nil {
 			return err

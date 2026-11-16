@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LosFurina/tmuxatlas/pkg/auth"
 	"github.com/LosFurina/tmuxatlas/pkg/ingress"
 )
 
@@ -72,11 +73,17 @@ func TestAdmissionUsesRealClientBehindLocalProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	const secret = "0123456789abcdef0123456789abcdef"
+	if err := auth.ConfigureTrustedProxy("", secret); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = auth.ConfigureTrustedProxy("", "") })
 	h := admissionMiddleware(policy, ingress.CategoryWebAuthn)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
 	call := func(remote, forwarded string) int {
 		r := httptest.NewRequest("POST", "/", nil)
 		r.RemoteAddr = remote
 		r.Header.Set("X-Forwarded-For", forwarded)
+		r.Header.Set(auth.DefaultProxySecretHeader, secret)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
 		return w.Code
