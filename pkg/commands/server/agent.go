@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"github.com/LosFurina/tmuxatlas/pkg/files"
 	"net/url"
 	"time"
 
@@ -82,10 +83,31 @@ func ExecuteAgent(ctx context.Context, c *cli.Command) error {
 	peerClient := peer.NewClient(
 		hubURL, nodeIdentity, peerStore, stateMgr, peerMgr, actTracker, tracker, client.TmuxPath(),
 	)
+	fileService, err := openFileService()
+	if err != nil {
+		return err
+	}
+	defer fileService.Close()
+	peerClient.SetFiles(fileService)
 	go peerClient.Run(ctx)
 	logrus.WithFields(logrus.Fields{
 		"hub": hubURL, "name": nodeIdentity.Name, "fingerprint": nodeIdentity.Fingerprint(),
 	}).Info("starting headless TmuxAtlas agent")
 
 	return agentserver.RunAgentSocket(ctx, c.String("socket"), tracker, peerMgr)
+}
+
+// openFileService serves this account's own files within the ceiling it sets
+// in its environment (TMUXATLAS_FILES=off|ro|rw, off by default).
+func openFileService() (*files.Service, error) {
+	config, err := files.ConfigFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	service, err := files.NewService(config)
+	if err != nil {
+		return nil, err
+	}
+	logrus.WithFields(logrus.Fields{"mode": config.Mode, "root": config.Root}).Info("file browser ceiling")
+	return service, nil
 }

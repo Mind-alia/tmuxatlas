@@ -17,6 +17,7 @@ import (
 
 	"github.com/LosFurina/tmuxatlas/pkg/activity"
 	"github.com/LosFurina/tmuxatlas/pkg/common"
+	"github.com/LosFurina/tmuxatlas/pkg/files"
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
 	"github.com/LosFurina/tmuxatlas/pkg/state"
 	"github.com/LosFurina/tmuxatlas/pkg/stats"
@@ -84,6 +85,14 @@ type Client struct {
 	runtimeCapabilities map[string]struct{}
 	outcomeCache        *OutcomeCache
 	dispatcher          *RequestDispatcher
+	files               *files.Service
+}
+
+// SetFiles gives the Agent the service that serves its own files.
+func (c *Client) SetFiles(service *files.Service) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.files = service
 }
 
 // NewClient creates a new peer client
@@ -266,7 +275,7 @@ func (c *Client) connectAndRun(ctx context.Context) error {
 	c.dispatcher = &RequestDispatcher{
 		Generation: helloAck.Generation, HostID: c.peerMgr.LocalID(),
 		Capabilities: c.runtimeCapabilities, Executor: tmuxRuntimeExecutor{client: c.tmuxClient},
-		Cache: c.outcomeCache,
+		Cache: c.outcomeCache, Files: c.files,
 	}
 	c.mu.Unlock()
 	log.WithField("generation", helloAck.Generation).Info("runtime protocol negotiated")

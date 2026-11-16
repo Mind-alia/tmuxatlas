@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/LosFurina/tmuxatlas/pkg/files"
 	"io/fs"
 	"log"
 	"net"
@@ -70,6 +71,8 @@ type Options struct {
 	// off when the hub runs under an account that guests must not reach, such
 	// as a production account (TMUXATLAS_GUEST_LOCAL_HOST=allow).
 	GuestLocalHost bool
+	// Files serves the files of the hub's own host, under the hub's account.
+	Files          *files.Service
 	routerObserver func(chi.Routes)
 }
 

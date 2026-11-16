@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"github.com/LosFurina/tmuxatlas/pkg/files"
 	"net"
 	"net/url"
 	"os"
@@ -297,6 +298,16 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 	// Initialize PTY relay for remote sessions
 	ptyRelay := peer.NewPTYRelay()
 
+	// The hub's own host serves its files from this process, which runs under
+	// that host's Unix account. A pure hub has no host of its own.
+	var fileService *files.Service
+	if !pureHub {
+		if fileService, err = openFileService(); err != nil {
+			return err
+		}
+		defer fileService.Close()
+	}
+
 	// Initialize peer handler (accepts incoming peer connections)
 	peerHandler := peer.NewHandler(peerMgr, peerStore, tracker, pairingMgr, ptyRelay, publicURL.String())
 
@@ -313,6 +324,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 			stateMgr, peerMgr, actTracker, tracker,
 			client.TmuxPath(),
 		)
+		peerClient.SetFiles(fileService)
 		go peerClient.Run(ctx)
 		logrus.WithField("hub", hubURL).Info("connecting to hub as peer")
 	}
@@ -345,6 +357,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		Watcher:         watcher,
 		LocalOnly:       localOnly,
 		GuestLocalHost:  os.Getenv("TMUXATLAS_GUEST_LOCAL_HOST") == "allow",
+		Files:           fileService,
 		Role:            map[bool]string{true: "hub", false: "standalone"}[pureHub],
 		Deployment:      os.Getenv("TMUXATLAS_DEPLOYMENT"),
 	}

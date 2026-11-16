@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/LosFurina/tmuxatlas/pkg/files"
 	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 )
 
@@ -150,7 +152,9 @@ type RequestDispatcher struct {
 	Capabilities map[string]struct{}
 	Executor     RuntimeExecutor
 	Cache        *OutcomeCache
-	Now          func() time.Time
+	// Files serves this Agent's own files. Nil means files are off.
+	Files *files.Service
+	Now   func() time.Time
 }
 
 func (dispatcher *RequestDispatcher) Dispatch(ctx context.Context, request RuntimeRequest) (RuntimeAck, RequestOutcome) {
@@ -166,6 +170,9 @@ func (dispatcher *RequestDispatcher) Dispatch(ctx context.Context, request Runti
 	}
 	if request.Target.HostID != dispatcher.HostID {
 		return RuntimeAck{}, errorOutcome(request, ErrorInvalidTarget, "target host does not match this Agent")
+	}
+	if isFileOperation(request.Operation) {
+		return dispatcher.dispatchFiles(ctx, request)
 	}
 	if _, ok := dispatcher.Capabilities[CapabilitySessionActions]; !ok {
 		return RuntimeAck{}, errorOutcome(request, ErrorCapabilityUnsupported, "")
@@ -223,4 +230,23 @@ func errorOutcome(request RuntimeRequest, code ErrorCode, message string) Reques
 		Code: code, Message: message,
 	}
 	return RequestOutcome{Error: &runtimeError}
+}
+
+// dispatchFiles runs a file operation on this Agent's own files. Results are
+// not cached: a retried read must see the current file, and chunks are larger
+// than the outcome cache bound.
+func (dispatcher *RequestDispatcher) dispatchFiles(ctx context.Context, request RuntimeRequest) (RuntimeAck, RequestOutcome) {
+	if _, ok := dispatcher.Capabilities[CapabilityFiles]; !ok {
+		return RuntimeAck{}, errorOutcome(request, ErrorCapabilityUnsupported, "")
+	}
+	ack := RuntimeAck{RequestID: request.RequestID, Generation: request.Generation, Accepted: true}
+	operation := strings.TrimPrefix(request.Operation, FileOperationPrefix)
+	ctx, cancel := context.WithDeadline(ctx, request.Deadline)
+	defer cancel()
+	result, err := dispatcher.Files.Execute(ctx, operation, request.Payload)
+	if err != nil {
+		return ack, errorOutcome(request, ErrorExecutionFailed, EncodeFileError(err))
+	}
+	terminal := RuntimeResult{RequestID: request.RequestID, Generation: request.Generation, Result: result}
+	return ack, RequestOutcome{Result: &terminal}
 }
