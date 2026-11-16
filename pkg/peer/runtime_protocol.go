@@ -28,6 +28,9 @@ const (
 	// CapabilityFiles covers the fs.* operations, served by the Agent under
 	// its own Unix account within its local ceiling (TMUXATLAS_FILES).
 	CapabilityFiles = "files-v1"
+	// CapabilityVoice is advertised only by agents running with TMUXATLAS_VOICE=on:
+	// they accept browser microphones (mic-open) and voice-hold control frames.
+	CapabilityVoice = "voice"
 
 	maxRuntimeIDLength = 128
 	maxOperationLength = 64
@@ -45,6 +48,20 @@ var RuntimeCapabilities = []string{
 	CapabilitySessionOwnership,
 	CapabilitySessionOwnerName,
 	CapabilityFiles,
+	CapabilityVoice,
+}
+
+// helloCapabilities lists what an agent offers the hub. Voice is offered only
+// when the agent has a virtual microphone.
+func helloCapabilities(voice bool) []string {
+	capabilities := make([]string, 0, len(RuntimeCapabilities))
+	for _, capability := range RuntimeCapabilities {
+		if capability == CapabilityVoice && !voice {
+			continue
+		}
+		capabilities = append(capabilities, capability)
+	}
+	return capabilities
 }
 
 // FileOperationPrefix marks the operations that target a host's files rather

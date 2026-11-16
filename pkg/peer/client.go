@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -86,6 +87,9 @@ type Client struct {
 	outcomeCache        *OutcomeCache
 	dispatcher          *RequestDispatcher
 	files               *files.Service
+
+	voiceMu sync.RWMutex
+	voice   VoiceEndpoint
 }
 
 // SetFiles gives the Agent the service that serves its own files.
@@ -93,6 +97,32 @@ func (c *Client) SetFiles(service *files.Service) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.files = service
+}
+
+// VoiceEndpoint is this agent's virtual microphone (pkg/voice.Mic).
+type VoiceEndpoint interface {
+	// ServeConn plays one browser tab's PCM frames until conn closes.
+	ServeConn(conn *websocket.Conn, id string)
+	// UseSession records that a tab is working in a tmux session.
+	UseSession(session, id string)
+}
+
+// SetVoice gives the agent a virtual microphone. Call it before Run: the hub
+// learns about voice support when the agent connects.
+func (c *Client) SetVoice(voice VoiceEndpoint) {
+	c.voiceMu.Lock()
+	defer c.voiceMu.Unlock()
+	c.voice = voice
+}
+
+// Voice returns the agent's virtual microphone, or nil when voice is off.
+func (c *Client) Voice() VoiceEndpoint {
+	if c == nil {
+		return nil
+	}
+	c.voiceMu.RLock()
+	defer c.voiceMu.RUnlock()
+	return c.voice
 }
 
 // NewClient creates a new peer client
@@ -240,7 +270,7 @@ func (c *Client) connectAndRun(ctx context.Context) error {
 
 	helloMessage, _ := NewMessage(MsgHello, HelloPayload{
 		MinVersion: RuntimeProtocolMin, MaxVersion: RuntimeProtocolMax,
-		Capabilities: RuntimeCapabilities, BuildVersion: common.VERSION,
+		Capabilities: helloCapabilities(c.Voice() != nil), BuildVersion: common.VERSION,
 		AgentInstanceID: c.instanceID,
 	})
 	if err := conn.WriteJSON(helloMessage); err != nil {
@@ -369,6 +399,14 @@ func (c *Client) handleHubMessage(msg *Message, conn *websocket.Conn, log *logru
 			return
 		}
 		go c.ptyManager.Open(payload)
+
+	case MsgMicOpen:
+		var payload MicOpenPayload
+		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+			log.WithError(err).Debug("invalid mic-open")
+			return
+		}
+		go c.openMic(payload)
 
 	case MsgRequestState:
 		c.sendStateUpdate(conn)
@@ -559,4 +597,34 @@ func (c *Client) RuntimeGeneration() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.runtimeGeneration
+}
+
+// openMic connects a browser microphone relayed by the hub to this agent's
+// virtual microphone.
+func (c *Client) openMic(request MicOpenPayload) {
+	log := logrus.WithField("stream", request.StreamID)
+	voice := c.Voice()
+	if voice == nil || request.StreamID == "" || request.AttachToken == "" || request.MicID == "" ||
+		request.Generation == 0 || request.Generation != c.RuntimeGeneration() {
+		log.Warn("rejected invalid or stale microphone open")
+		return
+	}
+	u, err := hubWebSocketURL(c.HubURL(), "/ws/peer-mic")
+	if err != nil {
+		log.WithError(err).Warn("invalid hub URL for the microphone")
+		return
+	}
+	query := u.Query()
+	query.Set("stream", request.StreamID)
+	query.Set("host", c.peerMgr.LocalID())
+	query.Set("generation", strconv.FormatUint(request.Generation, 10))
+	query.Set("token", request.AttachToken)
+	u.RawQuery = query.Encode()
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		log.WithError(err).Warn("failed to attach the microphone channel")
+		return
+	}
+	defer conn.Close()
+	voice.ServeConn(conn, request.MicID)
 }

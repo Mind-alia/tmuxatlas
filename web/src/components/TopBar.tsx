@@ -20,6 +20,8 @@ interface TopBarProps {
   onMonitoring?: () => void
   onWall: () => void
   onFiles?: () => void
+  /** Containers and backups; only passed to accounts allowed to see them. */
+  onOps?: () => void
   onAdmin?: () => void
   onOpenPalette: () => void
   onSettings: () => void
@@ -52,6 +54,7 @@ export function TopBar({
   onMonitoring,
   onWall,
   onFiles,
+  onOps,
   onAdmin,
   onOpenPalette,
   onSettings,
@@ -95,6 +98,7 @@ export function TopBar({
     ['wall', 'Mur', onWall],
     ...(onFiles ? ([['files', 'Fichiers', onFiles]] as const) : []),
     ...(onMonitoring ? ([['monitoring', 'Monitoring', onMonitoring]] as const) : []),
+    ...(onOps ? ([['ops', 'Conteneurs', onOps]] as const) : []),
     ...(role === 'admin' && onAdmin ? ([['admin', 'Administration', onAdmin]] as const) : []),
   ]
   const alertColor = actionable.some(event => event.status === 'error')

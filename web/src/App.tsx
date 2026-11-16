@@ -62,12 +62,13 @@ function errorMessage(err: unknown): string {
   return 'L’action sur la session a échoué.'
 }
 
-type View = 'overview' | 'session' | 'settings' | 'setup' | 'monitoring' | 'wall' | 'admin' | 'files'
+type View = 'overview' | 'session' | 'settings' | 'setup' | 'monitoring' | 'wall' | 'admin' | 'ops' | 'files'
 
 const AdminPage = lazy(() => import('./components/AdminPage').then(module => ({ default: module.AdminPage })))
 const MonitoringPage = lazy(() =>
   import('./components/monitoring/MonitoringPage').then(module => ({ default: module.MonitoringPage })),
 )
+const OpsPage = lazy(() => import('./components/ops/OpsPage').then(module => ({ default: module.OpsPage })))
 const FilesPage = lazy(() => import('./components/FilesPage').then(module => ({ default: module.FilesPage })))
 const WallView = lazy(() => import('./components/WallView').then(module => ({ default: module.WallView })))
 const HelpModal = lazy(() => import('./components/HelpModal').then(module => ({ default: module.HelpModal })))
@@ -85,6 +86,7 @@ const Terminal = lazy(() => import('./components/Terminal').then(module => ({ de
 function getViewFromPath(): { view: View; sessionKey: string | null } {
   if (window.location.pathname === '/admin') return { view: 'admin', sessionKey: null }
   if (window.location.pathname === '/monitoring') return { view: 'monitoring', sessionKey: null }
+  if (window.location.pathname === '/ops') return { view: 'ops', sessionKey: null }
   if (window.location.pathname === '/wall') return { view: 'wall', sessionKey: null }
   if (window.location.pathname === '/files') return { view: 'files', sessionKey: null }
   if (window.location.pathname === '/settings') {
@@ -353,7 +355,7 @@ function AppInner({
   const navigateTo = useCallback(
     (sessKey: string | null, view?: View) => {
       let path: string
-      if (view === 'monitoring' || view === 'wall' || view === 'admin' || view === 'files') {
+      if (view === 'monitoring' || view === 'wall' || view === 'admin' || view === 'ops' || view === 'files') {
         path = `/${view}`
       } else if (view === 'settings') {
         path = '/settings'
@@ -416,7 +418,7 @@ function AppInner({
       navigateTo(null)
       return
     }
-    if (role === 'guest' && (currentView === 'setup' || currentView === 'monitoring')) {
+    if (role === 'guest' && (currentView === 'setup' || currentView === 'monitoring' || currentView === 'ops')) {
       navigateTo(null)
     }
   }, [currentView, navigateTo, role])
@@ -717,6 +719,8 @@ function AppInner({
       document.title = 'Réglages — Atlas'
     } else if (currentView === 'admin') {
       document.title = 'Administration — Atlas'
+    } else if (currentView === 'ops') {
+      document.title = 'Conteneurs — Atlas'
     } else {
       document.title =
         currentView === 'monitoring'
@@ -811,6 +815,7 @@ function AppInner({
             onMonitoring={role === 'guest' ? undefined : () => navigateTo(null, 'monitoring')}
             onWall={() => navigateTo(null, 'wall')}
             onFiles={() => navigateTo(null, 'files')}
+            onOps={role !== 'guest' ? () => navigateTo(null, 'ops') : undefined}
             onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}
             onOpenPalette={() => setQuickSwitcherOpen(true)}
             onSettings={navigateToSettings}
@@ -883,6 +888,8 @@ function AppInner({
               />
             ) : currentView === 'monitoring' ? (
               <MonitoringPage hosts={hosts} />
+            ) : currentView === 'ops' && role !== 'guest' ? (
+              <OpsPage />
             ) : currentView === 'files' ? (
               <FilesPage />
             ) : currentView === 'wall' ? (
@@ -938,8 +945,9 @@ function AppInner({
                   sessionAvailable={Boolean(activeSession)}
                   fullscreen={terminalFullscreen}
                   zenMode={zenMode}
-                  hostLocal={activeHost?.local === true}
-                  voiceAllowed={role !== 'guest'}
+                  // Same rule as the server: a guest may use the microphone of a
+                  // host granted to them, never the hub's own host.
+                  voiceAllowed={role !== 'guest' || activeHost?.local !== true}
                   claudeActive={activePane?.current_command === 'claude'}
                   talkSlot={statusBarSlot}
                   onToggleFullscreen={toggleFullscreen}
@@ -981,6 +989,7 @@ function AppInner({
           onSessions={() => setMobileSidebarOpen(true)}
           onFiles={() => navigateTo(null, 'files')}
           onMonitoring={role === 'guest' ? undefined : () => navigateTo(null, 'monitoring')}
+          onOps={role !== 'guest' ? () => navigateTo(null, 'ops') : undefined}
           onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}
           onSettings={navigateToSettings}
         />

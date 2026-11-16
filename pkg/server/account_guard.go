@@ -31,7 +31,7 @@ var accountUserRoutes = map[string]bool{
 	"GET /api/files/hosts": true, "GET /api/files/info": true, "GET /api/files/list": true,
 	"GET /api/files/content": true, "GET /api/files/raw": true, "PUT /api/files/content": true,
 	"POST /api/files/upload": true, "POST /api/files/mkdir": true, "POST /api/files/rename": true,
-	"POST /api/files/delete": true,
+	"POST /api/files/delete": true, "GET /api/voice": true, "GET /ws/mic": true,
 }
 
 // accountQueryHostRoutes name their host in the host_id query parameter, for
@@ -53,7 +53,13 @@ var accountTargetedRoutes = map[string]bool{
 // accountHostScopedRoutes name a host but no existing session.
 var accountHostScopedRoutes = map[string]bool{
 	"/api/session/new": true, "/api/session/claim": true, "/api/session/directories": true,
+	"/api/voice": true, "/ws/mic": true,
 }
+
+// accountMicRoutes feed the microphone of the host named by ?host= (empty =
+// the hub's own host). A guest may use the microphone of a host they may use
+// in a terminal, and never the hub's own host; an admin may use any host.
+var accountMicRoutes = map[string]bool{"/api/voice": true, "/ws/mic": true}
 
 // Routes outside the user allow-list are recorded explicitly so a router walk
 // can detect newly introduced routes that have not received a security review.
@@ -63,14 +69,15 @@ var accountOtherRoutes = map[string]string{
 	"GET /api/admin/users": "admin", "POST /api/admin/users": "admin",
 	"PATCH /api/admin/users/{id}": "admin", "DELETE /api/admin/users/{id}": "admin",
 	"GET /api/admin/sessions": "admin", "GET /api/peers": "admin", "GET /api/admin/hosts": "admin",
+	"GET /api/ops": "admin", "POST /api/ops/notifications/test": "admin",
 	"POST /api/admin/users/{id}/invitation": "admin", "DELETE /api/admin/users/{id}/invitation": "admin",
 	"POST /api/admin/users/{id}/pairing": "admin",
 	"POST /api/auth/invitation/inspect":  "public", "POST /api/auth/invitation/accept": "public",
-	"GET /api/voice": "admin", "GET /api/monitor": "admin", "GET /api/stats": "admin", "GET /ws/mic": "admin",
+	"GET /api/monitor": "admin", "GET /api/stats": "admin",
 	"GET /api/agent-status": "admin", "DELETE /api/tool-events": "admin",
 	"GET /api/push/vapid-key": "admin", "POST /api/push/subscribe": "admin",
 	"POST /api/push/unsubscribe": "admin", "PUT /api/preferences": "admin", "POST /api/pair": "admin",
-	"GET /ws/peer": "peer", "GET /ws/peer-pty": "peer",
+	"GET /ws/peer": "peer", "GET /ws/peer-pty": "peer", "GET /ws/peer-mic": "peer",
 	"POST /api/pair/complete": "peer", "GET /*": "public",
 	"CONNECT /api/*": "denied", "DELETE /api/*": "denied", "GET /api/*": "denied",
 	"HEAD /api/*": "denied", "OPTIONS /api/*": "denied", "PATCH /api/*": "denied",
@@ -437,6 +444,8 @@ func (p *accountPolicy) Middleware(next http.Handler) http.Handler {
 			host, session, pane := r.URL.Query().Get("host_id"), r.URL.Query().Get("session"), r.URL.Query().Get("pane")
 			if path == "/ws/session" {
 				host, session = r.URL.Query().Get("host"), r.URL.Query().Get("name")
+			} else if accountMicRoutes[path] {
+				host = r.URL.Query().Get("host")
 			} else if r.Method != http.MethodGet {
 				controller := http.NewResponseController(w)
 				if controller.SetReadDeadline(time.Now().Add(10*time.Second)) == nil {

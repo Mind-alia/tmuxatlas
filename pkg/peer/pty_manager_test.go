@@ -185,3 +185,96 @@ func TestAgentPTYRejectsStaleGenerationBeforeCreatingDevice(t *testing.T) {
 		t.Fatal("stale generation created a PTY device")
 	}
 }
+
+type recordingVoice struct {
+	mu   sync.Mutex
+	uses []string
+}
+
+func (voice *recordingVoice) ServeConn(*websocket.Conn, string) {}
+
+func (voice *recordingVoice) UseSession(session, id string) {
+	voice.mu.Lock()
+	defer voice.mu.Unlock()
+	voice.uses = append(voice.uses, session+"/"+id)
+}
+
+func (voice *recordingVoice) used() []string {
+	voice.mu.Lock()
+	defer voice.mu.Unlock()
+	return append([]string(nil), voice.uses...)
+}
+
+func TestAgentPTYHoldsSpaceForVoiceAndRoutesTheTabMicrophone(t *testing.T) {
+	attached := make(chan *websocket.Conn, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		conn, err := upgrader.Upgrade(w, request, nil)
+		if err == nil {
+			attached <- conn
+		}
+	}))
+	defer server.Close()
+
+	node, _ := identity.Generate("agent")
+	manager := NewManager(node, nil, nil)
+	manager.localID = "agent-host"
+	client := &Client{hubURL: strings.Replace(server.URL, "http://", "ws://", 1), peerMgr: manager, runtimeGeneration: 3}
+	voice := &recordingVoice{}
+	client.SetVoice(voice)
+	device := newFakePTYDevice()
+	ptyManager := NewPTYManager("fake-tmux", nil, client)
+	ptyManager.openPTY = func(string, string, uint16, uint16) (ptyDevice, error) { return device, nil }
+	done := make(chan struct{})
+	go func() {
+		ptyManager.Open(PTYOpenPayload{
+			StreamID: "stream", AttachToken: "token", Generation: 3, MicID: "tab-0123456789",
+			Target: SessionTarget{HostID: "agent-host", Session: "claude"}, Cols: 80, Rows: 24,
+		})
+		close(done)
+	}()
+	hubConn := <-attached
+	for deadline := time.Now().Add(time.Second); len(voice.used()) == 0 && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := voice.used(); len(got) != 1 || got[0] != "claude/tab-0123456789" {
+		t.Fatalf("session use on open = %v", got)
+	}
+
+	start, _ := EncodePTYControlFrame(PTYControlFrame{Version: PTYFrameVersion, Type: "voice-hold", Sequence: 1, On: true})
+	if err := hubConn.WriteMessage(websocket.TextMessage, start); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		select {
+		case data := <-device.input:
+			if string(data) != " " {
+				t.Fatalf("hold wrote %q", data)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("voice-hold did not repeat space")
+		}
+	}
+	stop, _ := EncodePTYControlFrame(PTYControlFrame{Version: PTYFrameVersion, Type: "voice-hold", Sequence: 2})
+	if err := hubConn.WriteMessage(websocket.TextMessage, stop); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	for len(device.input) > 0 {
+		<-device.input
+	}
+	select {
+	case data := <-device.input:
+		t.Fatalf("space still repeated after stop: %q", data)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if got := voice.used(); len(got) != 2 {
+		t.Fatalf("voice-hold must route the tab microphone: %v", got)
+	}
+	_ = hubConn.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("PTY relay leaked")
+	}
+}

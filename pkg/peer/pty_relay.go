@@ -262,9 +262,25 @@ func (owner *PTYOwner) Bridge() {
 					Rows  uint16 `json:"rows"`
 					Data  string `json:"data"`
 					Final bool   `json:"final"`
+					On    bool   `json:"on"`
 				}
 				if err := jsonUnmarshalStrict(data, &browserResize); err != nil {
 					return
+				}
+				if browserResize.Type == "voice-hold" {
+					// An agent without a virtual microphone cannot dictate: ignore
+					// the hold rather than closing the terminal.
+					if !owner.connection.Supports(CapabilityVoice) {
+						continue
+					}
+					controlSequence++
+					frame, err := EncodePTYControlFrame(PTYControlFrame{
+						Version: PTYFrameVersion, Type: "voice-hold", Sequence: controlSequence, On: browserResize.On,
+					})
+					if err != nil || peerWS.WriteMessage(websocket.TextMessage, frame) != nil {
+						return
+					}
+					continue
 				}
 				if browserResize.Type == "image" && !owner.connection.Supports(CapabilityClipboardImage) {
 					if !unsupportedImage {
