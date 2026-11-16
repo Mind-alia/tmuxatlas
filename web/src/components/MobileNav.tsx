@@ -1,4 +1,4 @@
-import { Inbox, List, Activity, Settings, Shield } from 'lucide-react'
+import { Inbox, List, Activity, FolderOpen, Settings, Shield } from 'lucide-react'
 import type { AccountRole } from '../hooks/useAuth'
 
 export function MobileNav({
@@ -8,6 +8,7 @@ export function MobileNav({
   onOverview,
   onSessions,
   onMonitoring,
+  onFiles,
   onAdmin,
   onSettings,
 }: {
@@ -17,6 +18,7 @@ export function MobileNav({
   onOverview: () => void
   onSessions: () => void
   onMonitoring?: () => void
+  onFiles?: () => void
   onAdmin?: () => void
   onSettings: () => void
 }) {
@@ -26,6 +28,7 @@ export function MobileNav({
     ...(onMonitoring
       ? [{ label: 'Monitoring', icon: Activity, action: onMonitoring, active: currentView === 'monitoring' }]
       : []),
+    ...(onFiles ? [{ label: 'Fichiers', icon: FolderOpen, action: onFiles, active: currentView === 'files' }] : []),
     ...(role === 'admin' && onAdmin
       ? [{ label: 'Administration', icon: Shield, action: onAdmin, active: currentView === 'admin' }]
       : []),

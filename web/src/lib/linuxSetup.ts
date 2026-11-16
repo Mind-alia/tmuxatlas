@@ -34,6 +34,8 @@ export function linuxSetupCommands({ unixUser, hubURL, pairingCode }: LinuxSetup
     '# 3. Sous ce compte (session complète pour systemd --user)',
     `machinectl shell ${unixUser}@`,
     `/opt/tmuxatlas/tmuxatlas pair --hub ${hubURL} --code ${code} --name ${unixUser}@$(hostname)`,
+    '# Plafond local des fichiers, que le hub ne peut pas dépasser : off, ro ou rw',
+    `printf 'TMUXATLAS_FILES=rw\\n' >> ~/.config/tmuxatlas/.env`,
     `/opt/tmuxatlas/tmuxatlas install --mode agent`,
   ].join('\n')
 }
