@@ -25,7 +25,8 @@ type hookInput struct {
 const denyReason = `sudo ne peut pas marcher ici : pas de TTY, et ce compte n'a pas de droits sudo.
 Demande à un humain avec :
   tmuxatlas sudo-request --reason "<pourquoi>" -- "<commande sans sudo>"
-Un administrateur l'approuvera et tapera le mot de passe dans TmuxAtlas ; tu recevras le résultat relu (JSON).
+Un administrateur ouvrira un terminal où ta commande sera proposée ; il la lancera lui-même (ou autre chose).
+Tu recevras seulement {status: done|refused|expired|cancelled, note} : jamais la sortie. Vérifie ensuite toi-même l'effet.
 Si la commande sort avec 75, relance : tmuxatlas sudo-request --wait <id>`
 
 // shellWords splits a command line into words, keeping quoted strings whole

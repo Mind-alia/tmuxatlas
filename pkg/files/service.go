@@ -484,6 +484,9 @@ func (s *Service) rename(from, to string) (any, error) {
 	if source == "." || target == "." {
 		return nil, errInvalid("chemin invalide")
 	}
+	if holdsDenied(source, s.config.Deny) {
+		return nil, errDenied
+	}
 	info, err := s.root.Lstat(source)
 	if err != nil {
 		return nil, mapError(err)

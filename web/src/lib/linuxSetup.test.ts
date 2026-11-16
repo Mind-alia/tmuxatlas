@@ -13,6 +13,15 @@ describe('linuxSetupCommands', () => {
     expect(text).not.toMatch(/usermod -aG|--groups/)
   })
 
+  it('never installs a binary from the current directory', () => {
+    const text = linuxSetupCommands({ unixUser: 'inv-alice', hubURL: 'https://atlas.example' })
+    expect(text).not.toMatch(/\.\/tmuxatlas|install -o root/)
+    expect(text).toContain("stat -c '%U:%G %a %n' /opt/tmuxatlas /opt/tmuxatlas/tmuxatlas")
+    for (const line of text.split('\n').filter(line => /tmuxatlas (pair|install)/.test(line))) {
+      expect(line.startsWith('/opt/tmuxatlas/tmuxatlas ')).toBe(true)
+    }
+  })
+
   it('refuses names that could inject shell syntax', () => {
     expect(linuxSetupCommands({ unixUser: 'alice; rm -rf /', hubURL: 'https://h' })).toBe('')
     expect(linuxSetupCommands({ unixUser: 'Root', hubURL: 'https://h' })).toBe('')

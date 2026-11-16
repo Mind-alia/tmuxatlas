@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -30,6 +32,11 @@ func AccountFromContext(ctx context.Context) (AccountIdentity, bool) {
 	identity, ok := ctx.Value(accountContextKey{}).(AccountIdentity)
 	return identity, ok
 }
+
+const (
+	userFreeFailures = 10 // failures on one username, all addresses together
+	userFailureCap   = 20 // from there, 5 minutes between attempts
+)
 
 type loginFailures struct {
 	count int
@@ -63,6 +70,55 @@ func trustedLoopback(remote string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// DefaultProxySecretHeader carries the secret shared with the reverse proxy.
+const DefaultProxySecretHeader = "X-Tmuxatlas-Proxy-Secret"
+
+// MinProxySecretLength rejects secrets short enough to guess.
+const MinProxySecretLength = 32
+
+var trustedProxy struct {
+	sync.RWMutex
+	header string
+	secret string
+}
+
+// ConfigureTrustedProxy sets the header and secret that the reverse proxy
+// adds to every request (TMUXATLAS_PROXY_SECRET_HEADER, TMUXATLAS_PROXY_SECRET).
+// X-Forwarded-For is only believed on requests that carry this secret: any
+// local account can reach the loopback listener and forge the header. An
+// empty or too short secret disables the trust entirely.
+func ConfigureTrustedProxy(header, secret string) error {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		header = DefaultProxySecretHeader
+	}
+	if secret != "" && len(secret) < MinProxySecretLength {
+		trustedProxy.Lock()
+		trustedProxy.header, trustedProxy.secret = header, ""
+		trustedProxy.Unlock()
+		return errors.New("TMUXATLAS_PROXY_SECRET trop court : X-Forwarded-For ignoré")
+	}
+	trustedProxy.Lock()
+	trustedProxy.header, trustedProxy.secret = http.CanonicalHeaderKey(header), secret
+	trustedProxy.Unlock()
+	return nil
+}
+
+// fromTrustedProxy reports whether r comes over loopback and carries the
+// proxy secret.
+func fromTrustedProxy(r *http.Request) bool {
+	if !trustedLoopback(r.RemoteAddr) {
+		return false
+	}
+	trustedProxy.RLock()
+	header, secret := trustedProxy.header, trustedProxy.secret
+	trustedProxy.RUnlock()
+	if secret == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(r.Header.Get(header)), []byte(secret)) == 1
+}
+
 func accountRequestSecure(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
@@ -70,12 +126,15 @@ func accountRequestSecure(r *http.Request) bool {
 	return trustedLoopback(r.RemoteAddr) && strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
 }
 
+// ClientIP returns the peer address of r, or the client address reported in
+// X-Forwarded-For when r comes from the local reverse proxy, proven by the
+// shared secret. Without a configured secret the header is never trusted.
 func ClientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
-	if trustedLoopback(r.RemoteAddr) {
+	if fromTrustedProxy(r) {
 		parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
 		for i := len(parts) - 1; i >= 0; i-- {
 			ip := net.ParseIP(strings.TrimSpace(parts[i]))
@@ -118,9 +177,16 @@ func (a *AccountsAuth) failed(keys ...string) {
 		entry := a.failures[key]
 		entry.count++
 		entry.last = now
-		if entry.count >= 3 {
-			delay := time.Second << min(entry.count-3, 6)
-			if entry.count >= 8 {
+		// A username is shared by every address: it tolerates more failures
+		// before slowing down, so one attacker cannot lock out its owner as
+		// fast, but it still caps the global guessing rate.
+		free, ceiling := 3, 8
+		if strings.HasPrefix(key, "user:") {
+			free, ceiling = userFreeFailures, userFailureCap
+		}
+		if entry.count >= free {
+			delay := time.Second << min(entry.count-free, 6)
+			if entry.count >= ceiling {
 				delay = 5 * time.Minute
 			}
 			entry.until = now.Add(delay)
@@ -189,7 +255,8 @@ func (a *AccountsAuth) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := ClientIP(r)
-	keys := []string{"ip:" + ip, "pair:" + ip + "\x00" + strings.ToLower(request.Username)}
+	// "user:" bounds guesses on one account from any number of addresses.
+	keys := []string{"ip:" + ip, "pair:" + ip + "\x00" + strings.ToLower(request.Username), "user:" + strings.ToLower(request.Username)}
 	if a.blocked(keys...) {
 		writeError(w, http.StatusTooManyRequests, "trop de tentatives")
 		return

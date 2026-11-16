@@ -144,6 +144,11 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 			return fmt.Errorf("la durée de session doit être d'au moins une minute")
 		}
 		accountSessions = auth.NewSessionManager(c.Duration("session-ttl"))
+		if err := auth.ConfigureTrustedProxy(os.Getenv("TMUXATLAS_PROXY_SECRET_HEADER"), os.Getenv("TMUXATLAS_PROXY_SECRET")); err != nil {
+			logrus.WithError(err).Warn("reverse proxy not trusted")
+		} else if os.Getenv("TMUXATLAS_PROXY_SECRET") == "" {
+			logrus.Info("TMUXATLAS_PROXY_SECRET unset: X-Forwarded-For is ignored, login limits use the peer address")
+		}
 		accountAuth, err = auth.NewAccountsAuth(store, accountSessions)
 		if err != nil {
 			return err
@@ -303,7 +308,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 	// that host's Unix account. A pure hub has no host of its own.
 	var fileService *files.Service
 	if !pureHub {
-		if fileService, err = openFileService(); err != nil {
+		if fileService, err = openFileService(true); err != nil {
 			return err
 		}
 		defer fileService.Close()
@@ -363,6 +368,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		Role:            map[bool]string{true: "hub", false: "standalone"}[pureHub],
 		Deployment:      os.Getenv("TMUXATLAS_DEPLOYMENT"),
 		SudoPeers:       c.String("sudo-peers"),
+		SudoRequesters:  c.String("sudo-requesters"),
 	}
 
 	// Start the HTTP server (blocks until ctx is cancelled)
@@ -425,6 +431,10 @@ func serverFlags() []cli.Flag {
 			Name: "sudo-peers", Usage: "Comma-separated fingerprints of the peers allowed to open sudo terminals",
 			Sources: cli.EnvVars("TMUXATLAS_SUDO_PEERS"),
 		},
+		&cli.StringFlag{
+			Name: "sudo-requesters", Usage: "Comma-separated fingerprints of the hosts allowed to file sudo requests (empty refuses all)",
+			Sources: cli.EnvVars("TMUXATLAS_SUDO_REQUESTERS"),
+		},
 	}
 }
 
@@ -454,6 +464,10 @@ func hubFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name: "sudo-peers", Usage: "Comma-separated fingerprints of the peers allowed to open sudo terminals",
 			Sources: cli.EnvVars("TMUXATLAS_SUDO_PEERS"),
+		},
+		&cli.StringFlag{
+			Name: "sudo-requesters", Usage: "Comma-separated fingerprints of the hosts allowed to file sudo requests (empty refuses all)",
+			Sources: cli.EnvVars("TMUXATLAS_SUDO_REQUESTERS"),
 		},
 	}
 }

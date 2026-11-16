@@ -398,3 +398,28 @@ func TestTruncateReason(t *testing.T) {
 		t.Fatal("short reason changed")
 	}
 }
+
+func TestHandleStreamClosesWhenTheRequestContextEnds(t *testing.T) {
+	sink := newFakeSink()
+	mic := newTestMic(t, &fakePulse{running: true})
+	mic.start = func(string) (playback, error) { return sink, nil }
+	revoke := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		go func() {
+			select {
+			case <-revoke:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		mic.HandleStream(w, r.WithContext(ctx))
+	}))
+	t.Cleanup(server.Close)
+	conn := dial(t, server)
+	sendAndWait(t, conn, sink, []byte{1, 2})
+	// The browser keeps the socket open; the account is revoked.
+	close(revoke)
+	waitClosed(t, sink)
+}

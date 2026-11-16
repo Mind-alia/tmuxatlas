@@ -6,7 +6,20 @@
 
 * refresh the Atlas interface with an attention inbox, session previews, quick replies, window tabs, Wall and Monitoring views
 * add project directory and agent selection for new sessions, host aliases and navigation shortcuts
-* add a sudo terminal: agents ask with `tmuxatlas sudo-request`, an administrator approves the exact command, types the password in an ephemeral PTY on a pinned `--sudo-terminal` peer and reviews the output before it is sent back (see `docs/sudo-terminal.md`)
+* add a sudo terminal: agents propose a command with `tmuxatlas sudo-request`, an administrator approves the exact version and gets an interactive shell on a pinned `--sudo-terminal` peer with the command typed at the prompt, not run; the agent only learns done or refused and a note (see `docs/sudo-terminal.md`)
+
+### Security
+
+* reject sudo commands and reasons with control, format or separator characters, runs of blanks or more than 1000 characters; show them whole with length and sha256
+* ignore OSC 52 clipboard reads and writes from panes
+* install guest binaries only from the root-owned `/opt/tmuxatlas`; add `docs/deploiement.md`
+* warn permanently on hosts that are neither the hub nor a pinned sudo peer
+* keep a silent peer from stalling the API (no lock held during handlers, cached and rate-limited owner checks)
+* limit logins per username; trust `X-Forwarded-For` only with the Caddy secret (`TMUXATLAS_PROXY_SECRET`)
+* accept sudo requests only from `TMUXATLAS_SUDO_REQUESTERS`, with per-host caps
+* bind push subscriptions to accounts and filter recipients at send time
+* bound file listings and reads, close deny-list gaps, refuse `TMUXATLAS_FILES=rw` on the hub
+* close the hub's own microphone on revocation; compare attachment tokens in constant time
 
 ## [0.9.0](https://github.com/LosFurina/tmuxatlas/compare/v0.8.0...v0.9.0) (2026-07-27)
 

@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/LosFurina/tmuxatlas/pkg/auth"
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
 )
@@ -60,5 +62,24 @@ func TestMicHandlerRoutesByHost(t *testing.T) {
 				t.Fatalf("status = %d, want %d", recorder.Code, test.status)
 			}
 		})
+	}
+}
+
+func TestRevocableContextEndsOnRevocation(t *testing.T) {
+	done := make(chan struct{})
+	r := httptest.NewRequest(http.MethodGet, "/ws/mic", nil)
+	r = r.WithContext(auth.WithAccount(r.Context(), auth.AccountIdentity{Done: done}))
+	ctx, cancel := revocableContext(r)
+	defer cancel()
+	select {
+	case <-ctx.Done():
+		t.Fatal("context ended before revocation")
+	default:
+	}
+	close(done)
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("context still open after revocation")
 	}
 }

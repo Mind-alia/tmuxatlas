@@ -231,10 +231,44 @@ func TestLargeFilesAreRefused(t *testing.T) {
 	}
 }
 
+func TestRenameCannotExposeAnchoredSecrets(t *testing.T) {
+	s, home := newTestService(t, ModeReadWrite)
+	for _, dir := range []string{".config/rclone", ".local/share/tmuxatlas", ".local/share/docs"} {
+		_ = os.MkdirAll(filepath.Join(home, dir), 0o700)
+	}
+	_ = os.WriteFile(filepath.Join(home, ".config/rclone/rclone.conf"), []byte("R2 SECRET"), 0o600)
+	for _, source := range []string{"/.config", "/.local", "/.local/share"} {
+		if _, err := call(t, s, "rename", map[string]any{"path": source, "to": "/c"}); code(err) != CodeDenied {
+			t.Fatalf("rename %s: %v", source, err)
+		}
+	}
+	if _, err := readAll(t, s, "/c/rclone/rclone.conf"); err == nil {
+		t.Fatal("secret exposed under a new name")
+	}
+	// A parent holding no protected path can still move.
+	if _, err := call(t, s, "rename", map[string]any{"path": "/.local/share/docs", "to": "/docs"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHubRefusesReadWrite(t *testing.T) {
+	if err := (Config{Mode: ModeReadWrite}).CheckHub(); !errors.Is(err, ErrHubReadWrite) {
+		t.Fatalf("rw on the hub: %v", err)
+	}
+	for _, mode := range []Mode{ModeOff, ModeReadOnly} {
+		if err := (Config{Mode: mode}).CheckHub(); err != nil {
+			t.Fatalf("%s on the hub: %v", mode, err)
+		}
+	}
+}
+
 func TestDenyMatching(t *testing.T) {
 	for p, want := range map[string]bool{
 		".ssh": true, "a/.ssh/x": true, ".config/tmuxatlas/x": true, ".config/other": false,
 		"app/.env": true, "app/.envrc": true, "cert.pem": true, "environment.txt": false, ".": false,
+		".config/rclone/rclone.conf": true, ".claude/.credentials.json": true, ".bash_history": true,
+		".config/gh/hosts.yml": true, ".npmrc": true, ".local/share/tmuxatlas/x": true, ".local/state/x": true,
+		".local/share/docs": false,
 	} {
 		if got := denied(p, DefaultDeny); got != want {
 			t.Errorf("denied(%q)=%v", p, got)

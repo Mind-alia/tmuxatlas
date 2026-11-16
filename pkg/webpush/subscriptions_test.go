@@ -16,12 +16,12 @@ func TestStorePersistsDeduplicatesAndReloads(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := &wp.Subscription{Endpoint: "https://push.example/a"}
-	if err := store.Add(first); err != nil {
+	if err := store.Add(first, "u-admin"); err != nil {
 		t.Fatal(err)
 	}
 	updated := &wp.Subscription{Endpoint: first.Endpoint}
 	updated.Keys.Auth = "new-auth"
-	if err := store.Add(updated); err != nil {
+	if err := store.Add(updated, "u-admin"); err != nil {
 		t.Fatal(err)
 	}
 	if store.Count() != 1 {
@@ -59,13 +59,13 @@ func TestStoreWriteFailurePreservesPreviousFileAndMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Add(&wp.Subscription{Endpoint: "https://push.example/old"}); err != nil {
+	if err := store.Add(&wp.Subscription{Endpoint: "https://push.example/old"}, "u-admin"); err != nil {
 		t.Fatal(err)
 	}
-	store.write = func(string, map[string]*wp.Subscription) error {
+	store.write = func(string, map[string]*Subscription) error {
 		return errors.New("injected write failure")
 	}
-	if err := store.Add(&wp.Subscription{Endpoint: "https://push.example/new"}); err == nil {
+	if err := store.Add(&wp.Subscription{Endpoint: "https://push.example/new"}, "u-admin"); err == nil {
 		t.Fatal("expected write failure")
 	}
 	if store.Count() != 1 || store.All()[0].Endpoint != "https://push.example/old" {

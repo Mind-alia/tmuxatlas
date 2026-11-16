@@ -3,7 +3,7 @@ import { Terminal, type IDisposable } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
-import { ClipboardAddon, type ClipboardSelectionType, type IClipboardProvider } from '@xterm/addon-clipboard'
+import { ClipboardAddon } from '@xterm/addon-clipboard'
 import type { ISearchOptions, SearchAddon } from '@xterm/addon-search'
 import { usePreferences } from './usePreferences'
 import { getXtermTheme } from '../theme'
@@ -21,6 +21,7 @@ import {
 import { ensureTerminalFont } from '../fonts'
 import '@xterm/xterm/css/xterm.css'
 import { micTabId } from '../lib/micTab'
+import { osc52ClipboardProvider } from '../lib/terminalClipboard'
 
 export type PtyConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
 
@@ -343,22 +344,12 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
         macOptionClickForcesSelection: true,
       })
       const fitAddon = new FitAddon()
-      const clipboardProvider: IClipboardProvider = {
-        readText(selection: ClipboardSelectionType): Promise<string> {
-          if (selection !== 'c') return Promise.resolve('')
-          return navigator.clipboard?.readText?.() ?? Promise.resolve('')
-        },
-        writeText(selection: ClipboardSelectionType, text: string): Promise<void> {
-          if (selection !== 'c') return Promise.resolve()
-          return writeClipboard(text, true)
-        },
-      }
 
       term.loadAddon(new Unicode11Addon())
       term.unicode.activeVersion = '11'
       term.loadAddon(fitAddon)
       term.loadAddon(new WebLinksAddon())
-      term.loadAddon(new ClipboardAddon(undefined, clipboardProvider))
+      term.loadAddon(new ClipboardAddon(undefined, osc52ClipboardProvider))
       termRef.current = term
       fitAddonRef.current = fitAddon
       term.open(container)

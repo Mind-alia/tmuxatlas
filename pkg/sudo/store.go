@@ -17,18 +17,24 @@ type Limits struct {
 	TTL          time.Duration // pending/approved request lifetime
 	GrantTTL     time.Duration // window to open the terminal after approval
 	RunTTL       time.Duration // hard ceiling for a running terminal, seen from the hub
-	ReviewTTL    time.Duration // unreviewed output is withheld after this
+	ClosedTTL    time.Duration // a closed terminal without decision expires after this
 	Retention    time.Duration // final requests are forgotten after this
-	MaxPerHost   int
+	MaxPerHost   int           // open requests per host
 	MaxOpen      int
 	MaxRevisions int
+	// CreateWindow and MaxCreatesPerWindow bound how many requests one host
+	// may file, cancelled ones included, so a host cannot flood the panel
+	// and the notifications by filing and cancelling in a loop.
+	CreateWindow        time.Duration
+	MaxCreatesPerWindow int
 }
 
 func DefaultLimits() Limits {
 	return Limits{
 		TTL: 15 * time.Minute, GrantTTL: 60 * time.Second, RunTTL: 16 * time.Minute,
-		ReviewTTL: 30 * time.Minute, Retention: 30 * time.Minute,
-		MaxPerHost: 8, MaxOpen: 32, MaxRevisions: 32,
+		ClosedTTL: 30 * time.Minute, Retention: 30 * time.Minute,
+		MaxPerHost: 4, MaxOpen: 32, MaxRevisions: 32,
+		CreateWindow: 10 * time.Minute, MaxCreatesPerWindow: 12,
 	}
 }
 
@@ -67,6 +73,7 @@ type Store struct {
 	limits   Limits
 	now      func() time.Time
 	entries  map[string]*entry
+	created  map[string][]time.Time // per host, within CreateWindow
 	onChange func(Request)
 }
 
@@ -74,7 +81,7 @@ func NewStore(limits Limits, now func() time.Time) *Store {
 	if now == nil {
 		now = time.Now
 	}
-	return &Store{limits: limits, now: now, entries: make(map[string]*entry)}
+	return &Store{limits: limits, now: now, entries: make(map[string]*entry), created: make(map[string][]time.Time)}
 }
 
 // OnChange registers a callback run after each change, outside the lock.
@@ -128,7 +135,7 @@ func (s *Store) Create(input CreateInput) (Request, error) {
 	if err := ValidateCommand(input.Command); err != nil {
 		return Request{}, err
 	}
-	if err := validateText(input.Reason, MaxReasonBytes); err != nil {
+	if err := ValidateReason(input.Reason); err != nil {
 		return Request{}, err
 	}
 	s.mu.Lock()
@@ -143,11 +150,14 @@ func (s *Store) Create(input CreateInput) (Request, error) {
 			}
 		}
 	}
-	if open >= s.limits.MaxOpen || perHost >= s.limits.MaxPerHost {
+	recent := s.recentCreatesLocked(input.Origin.HostID, now)
+	if open >= s.limits.MaxOpen || perHost >= s.limits.MaxPerHost ||
+		(s.limits.MaxCreatesPerWindow > 0 && len(recent) >= s.limits.MaxCreatesPerWindow) {
 		s.mu.Unlock()
 		s.notify(expired...)
 		return Request{}, ErrTooMany
 	}
+	s.created[input.Origin.HostID] = append(recent, now)
 	e := &entry{changed: make(chan struct{}), request: Request{
 		ID: newID(), Status: StatusPending, Version: 1, Command: input.Command,
 		Reason: input.Reason, Origin: input.Origin, CreatedAt: now, UpdatedAt: now,
@@ -159,6 +169,24 @@ func (s *Store) Create(input CreateInput) (Request, error) {
 	s.mu.Unlock()
 	s.notify(append(expired, created)...)
 	return created, nil
+}
+
+// recentCreatesLocked returns the creation times of host within the window,
+// forgetting older ones.
+func (s *Store) recentCreatesLocked(host string, now time.Time) []time.Time {
+	times := s.created[host]
+	kept := times[:0]
+	for _, at := range times {
+		if now.Sub(at) < s.limits.CreateWindow {
+			kept = append(kept, at)
+		}
+	}
+	if len(kept) == 0 {
+		delete(s.created, host)
+		return nil
+	}
+	s.created[host] = kept
+	return kept
 }
 
 // Get returns one request.
@@ -237,19 +265,33 @@ func (s *Store) Edit(id string, expected int, command string, by Actor) (Request
 	})
 }
 
-// Refuse ends a request that has not started running.
+// Refuse ends a request at any stage before a decision: the agent learns it
+// was refused, with the note.
 func (s *Store) Refuse(id string, by Actor, note string) (Request, error) {
+	return s.decide(id, by, note, StatusRefused, StatusPending, StatusApproved, StatusRunning, StatusClosed)
+}
+
+// Done marks a request whose terminal was opened as done. What the human ran
+// stays between the human and the terminal.
+func (s *Store) Done(id string, by Actor, note string) (Request, error) {
+	return s.decide(id, by, note, StatusDone, StatusRunning, StatusClosed)
+}
+
+func (s *Store) decide(id string, by Actor, note string, status Status, from ...Status) (Request, error) {
 	if err := validateText(note, MaxNoteBytes); err != nil {
 		return Request{}, err
 	}
 	return s.mutate(id, func(e *entry, _ time.Time) error {
-		if e.request.Status != StatusPending && e.request.Status != StatusApproved && e.request.Status != StatusAwaitingReview {
+		allowed := false
+		for _, candidate := range from {
+			allowed = allowed || e.request.Status == candidate
+		}
+		if !allowed {
 			return ErrInvalidState
 		}
-		e.request.Status = StatusRefused
+		e.request.Status = status
 		e.request.Approver = &by
 		e.request.Note = note
-		e.request.Capture = nil
 		e.grant = nil
 		return nil
 	})
@@ -310,87 +352,36 @@ func (s *Store) Redeem(token string, by Actor) (Request, error) {
 	return changed, nil
 }
 
-// Finish stores the capture of a run and holds it for review.
-func (s *Store) Finish(id string, capture Capture) (Request, error) {
-	if len(capture.Output) > MaxOutputBytes {
-		capture.Output = capture.Output[:MaxOutputBytes]
-		capture.OutputTruncated = true
+// Close records that the terminal of a running request ended. The request
+// then waits for the administrator's decision.
+func (s *Store) Close(id string, session Session) (Request, error) {
+	if len(session.Reason) > MaxNoteBytes {
+		session.Reason = session.Reason[:MaxNoteBytes]
 	}
 	return s.mutate(id, func(e *entry, now time.Time) error {
-		if e.request.Status != StatusRunning || capture.Version != e.request.Version {
+		if e.request.Status != StatusRunning || session.Version != e.request.Version {
 			return ErrInvalidState
 		}
-		capture.Command = e.request.Command
-		e.request.Capture = &capture
-		e.request.Status = StatusAwaitingReview
-		e.request.ExpiresAt = now.Add(s.limits.ReviewTTL)
+		e.request.Session = &session
+		e.request.Status = StatusClosed
+		e.request.ExpiresAt = now.Add(s.limits.ClosedTTL)
 		return nil
 	})
 }
 
-// Fail ends an approved or running request that could not complete.
-func (s *Store) Fail(id string, note string) (Request, error) {
-	if len(note) > MaxNoteBytes {
-		note = note[:MaxNoteBytes]
+// Reopen returns an approved or running request whose terminal could not
+// open to the queue, with the reason, so it can be approved again.
+func (s *Store) Reopen(id string, reason string) (Request, error) {
+	if len(reason) > MaxNoteBytes {
+		reason = reason[:MaxNoteBytes]
 	}
-	return s.mutate(id, func(e *entry, _ time.Time) error {
+	return s.mutate(id, func(e *entry, now time.Time) error {
 		if e.request.Status != StatusApproved && e.request.Status != StatusRunning {
 			return ErrInvalidState
 		}
-		e.request.Status = StatusFailed
-		e.request.Note = note
-		e.grant = nil
-		return nil
-	})
-}
-
-// Review decides what the agent receives.
-func (s *Store) Review(id string, decision Decision, by Actor, note string) (Request, error) {
-	if err := validateText(note, MaxNoteBytes); err != nil {
-		return Request{}, err
-	}
-	switch decision {
-	case DecisionSend, DecisionExitCode, DecisionNothing:
-	default:
-		return Request{}, ErrInvalidText
-	}
-	return s.mutate(id, func(e *entry, _ time.Time) error {
-		if e.request.Status != StatusAwaitingReview || e.request.Capture == nil {
-			return ErrInvalidState
-		}
-		e.request.Decision = decision
-		e.request.Note = note
-		e.request.Approver = &by
-		e.request.Status = StatusDelivered
-		if decision == DecisionNothing {
-			e.request.Status = StatusWithheld
-		}
-		return nil
-	})
-}
-
-// Rerun discards a capture under review and returns the request to pending
-// with a new version, so it must be approved again.
-func (s *Store) Rerun(id string, expected int, command string, by Actor) (Request, error) {
-	if err := ValidateCommand(command); err != nil {
-		return Request{}, err
-	}
-	return s.mutate(id, func(e *entry, now time.Time) error {
-		if e.request.Status != StatusAwaitingReview {
-			return ErrInvalidState
-		}
-		if e.request.Version != expected {
-			return ErrVersionMismatch
-		}
-		if len(e.request.Revisions) >= s.limits.MaxRevisions {
-			return ErrTooMany
-		}
-		e.request.Version++
-		e.request.Command = command
-		e.request.Revisions = append(e.request.Revisions, Revision{Version: e.request.Version, Command: command, By: by.Name, At: now})
-		e.request.Capture = nil
 		e.request.Status = StatusPending
-		e.request.ExpiresAt = now.Add(s.limits.TTL)
+		e.request.Note = reason
+		e.grant = nil
 		return nil
 	})
 }
@@ -471,16 +462,16 @@ func (s *Store) sweepLocked(now time.Time) []Request {
 			}
 		case StatusRunning:
 			if !now.Before(e.runEnds) {
-				e.request.Status = StatusFailed
-				e.request.Note = "terminal sudo sans réponse"
+				// The peer never reported the end: treat the terminal as closed.
+				e.request.Status = StatusClosed
+				e.request.Session = &Session{Version: e.request.Version, Reason: "terminal sudo sans réponse"}
+				e.request.ExpiresAt = now.Add(s.limits.ClosedTTL)
 				changes = append(changes, s.commit(e, now))
 			}
-		case StatusAwaitingReview:
+		case StatusClosed:
 			if !now.Before(e.request.ExpiresAt) {
-				// Nobody reviewed the output: nothing leaves.
-				e.request.Status = StatusWithheld
-				e.request.Decision = DecisionNothing
-				e.request.Note = "relecture non faite à temps"
+				e.request.Status = StatusExpired
+				e.request.Note = "aucune décision après la fermeture du terminal"
 				changes = append(changes, s.commit(e, now))
 			}
 		default:

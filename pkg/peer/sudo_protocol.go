@@ -49,7 +49,8 @@ type SudoUpdatePayload struct {
 	View sudo.AgentView `json:"view"`
 }
 
-// SudoOpenPayload asks the sudo peer to run one exact version.
+// SudoOpenPayload asks the sudo peer to open a terminal with one exact
+// version typed at the prompt.
 type SudoOpenPayload struct {
 	StreamID    string      `json:"stream_id"`
 	AttachToken string      `json:"attach_token"`
@@ -66,15 +67,13 @@ type SudoOpenPayload struct {
 // SudoSession is the PTY relay session name of a sudo terminal.
 func SudoSession(requestID string) string { return "sudo:" + requestID }
 
+// SudoResultPayload tells the hub that a terminal ended, or never opened.
+// It carries nothing of what was shown or typed.
 type SudoResultPayload struct {
 	RequestID  string `json:"request_id"`
 	Version    int    `json:"version"`
 	StreamID   string `json:"stream_id"`
 	Started    bool   `json:"started"`
-	ExitCode   int    `json:"exit_code"`
-	Output     string `json:"output,omitempty"`
-	Truncated  bool   `json:"truncated,omitempty"`
-	Redactions int    `json:"redactions,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
 	Error      string `json:"error,omitempty"`
 }

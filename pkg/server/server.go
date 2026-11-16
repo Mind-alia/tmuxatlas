@@ -72,7 +72,10 @@ type Options struct {
 	// SudoPeers pins the fingerprints of the peers allowed to open sudo
 	// terminals (TMUXATLAS_SUDO_PEERS).
 	SudoPeers string
-	LocalOnly bool
+	// SudoRequesters lists the fingerprints of the hosts allowed to file sudo
+	// requests (TMUXATLAS_SUDO_REQUESTERS). Empty refuses every request.
+	SudoRequesters string
+	LocalOnly      bool
 	// GuestLocalHost allows granting the hub's own host to a guest. Leave it
 	// off when the hub runs under an account that guests must not reach, such
 	// as a production account (TMUXATLAS_GUEST_LOCAL_HOST=allow).
@@ -388,6 +391,9 @@ func Run(ctx context.Context, opts *Options) error {
 	}
 	if opts.AccountsAuth != nil {
 		go accountPolicy.watchOwnership(ctx)
+		if opts.PushSender != nil {
+			opts.PushSender.SetAudience(pushAudience{policy: accountPolicy})
+		}
 	}
 	sudoService := newSudoService(opts)
 	if sudoService != nil {
@@ -536,6 +542,8 @@ func Run(ctx context.Context, opts *Options) error {
 				}
 				json.NewEncoder(w).Encode(snapshot.State.SessionViews())
 			})
+
+			r.Get("/hosts/trust", handleHostTrust(opts, accountPolicy))
 
 			r.Get("/hosts", func(w http.ResponseWriter, r *http.Request) {
 				snapshot, err := coordinator.Snapshot(r.Context())
@@ -856,7 +864,13 @@ func Run(ctx context.Context, opts *Options) error {
 					http.Error(w, "invalid subscription", http.StatusBadRequest)
 					return
 				}
-				if err := opts.PushStore.Add(&sub); err != nil {
+				// Bound to the account, so that the sender can filter what it
+				// receives and an account change can purge it.
+				account := pushOwnerAccount
+				if identity, ok := auth.AccountFromContext(r.Context()); ok {
+					account = identity.User.ID
+				}
+				if err := opts.PushStore.Add(&sub, account); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}

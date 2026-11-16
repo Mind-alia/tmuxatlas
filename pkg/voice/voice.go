@@ -299,7 +299,25 @@ func (m *Mic) HandleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	defer closeWhenDone(r.Context(), conn)()
 	m.serve(r.Context(), conn, id)
+}
+
+// closeWhenDone closes conn as soon as ctx ends, for instance when the
+// account behind the request is revoked: the read loop would otherwise keep
+// the microphone open until the browser stops sending. Call the returned
+// function once conn is no longer used.
+func closeWhenDone(ctx context.Context, conn *websocket.Conn) func() {
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			closeWith(conn, websocket.ClosePolicyViolation, "access revoked")
+			_ = conn.Close()
+		case <-stop:
+		}
+	}()
+	return func() { close(stop) }
 }
 
 // ServeConn plays the frames of a microphone that the hub relays to this agent

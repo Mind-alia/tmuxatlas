@@ -3,6 +3,8 @@ package auth
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"golang.org/x/crypto/bcrypt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -76,17 +78,93 @@ func TestAccountsLoginStatusAndPasswordChange(t *testing.T) {
 	}
 }
 
-func TestAccountProxyHeadersRequireLoopback(t *testing.T) {
+func TestForwardedForNeedsTheProxySecret(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef"
+	t.Cleanup(func() { _ = ConfigureTrustedProxy("", "") })
+	request := func(remote, header, value string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = remote
+		r.Header.Set("X-Forwarded-For", "203.0.113.1")
+		if header != "" {
+			r.Header.Set(header, value)
+		}
+		return r
+	}
+	// Without a secret, even loopback (any local account) is not believed.
+	_ = ConfigureTrustedProxy("", "")
+	if ip := ClientIP(request("127.0.0.1:1234", "", "")); ip != "127.0.0.1" {
+		t.Fatalf("forged X-Forwarded-For from loopback trusted: %s", ip)
+	}
+	if ip := ClientIP(request("192.0.2.8:1234", "", "")); ip != "192.0.2.8" {
+		t.Fatalf("X-Forwarded-For trusted from a remote host: %s", ip)
+	}
+	if err := ConfigureTrustedProxy("", "court"); err == nil {
+		t.Fatal("short secret accepted")
+	}
+	if ip := ClientIP(request("127.0.0.1:1234", DefaultProxySecretHeader, "court")); ip != "127.0.0.1" {
+		t.Fatalf("short secret enabled trust: %s", ip)
+	}
+	if err := ConfigureTrustedProxy("X-Caddy-Secret", secret); err != nil {
+		t.Fatal(err)
+	}
+	if ip := ClientIP(request("127.0.0.1:1234", "X-Caddy-Secret", secret)); ip != "203.0.113.1" {
+		t.Fatalf("proxy with the secret not believed: %s", ip)
+	}
+	if ip := ClientIP(request("192.0.2.8:1234", "X-Caddy-Secret", secret)); ip != "192.0.2.8" {
+		t.Fatalf("secret from a remote host believed: %s", ip)
+	}
+	for _, value := range []string{"", "mauvais", secret[:31]} {
+		if ip := ClientIP(request("127.0.0.1:1234", "X-Caddy-Secret", value)); ip != "127.0.0.1" {
+			t.Fatalf("wrong secret %q believed: %s", value, ip)
+		}
+	}
+	if ip := ClientIP(request("127.0.0.1:1234", DefaultProxySecretHeader, secret)); ip != "127.0.0.1" {
+		t.Fatalf("secret in another header believed: %s", ip)
+	}
+}
+
+func TestAccountProxyProtoRequiresLoopback(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "192.0.2.8:1234"
 	r.Header.Set("X-Forwarded-Proto", "https")
-	r.Header.Set("X-Forwarded-For", "203.0.113.1")
-	if accountRequestSecure(r) || accountClientIP(r) != "192.0.2.8" {
-		t.Fatal("trusted headers from remote host")
+	if accountRequestSecure(r) {
+		t.Fatal("trusted X-Forwarded-Proto from remote host")
 	}
 	r.RemoteAddr = "127.0.0.1:1234"
-	if !accountRequestSecure(r) || accountClientIP(r) != "203.0.113.1" {
-		t.Fatal("ignored trusted proxy headers")
+	if !accountRequestSecure(r) {
+		t.Fatal("ignored X-Forwarded-Proto from the local proxy")
+	}
+}
+
+func TestLoginLimitsGuessesPerUsernameAcrossAddresses(t *testing.T) {
+	store := accounts.OpenStore(filepath.Join(t.TempDir(), "users.json"))
+	hash, err := bcrypt.GenerateFromPassword([]byte("le bon mot de passe"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create("admin", string(hash), "admin"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := NewAccountsAuth(store, NewSessionManager(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	login := func(remote, name, password string) int {
+		body, _ := json.Marshal(map[string]string{"username": name, "password": password})
+		r := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+		r.RemoteAddr = remote
+		w := httptest.NewRecorder()
+		a.Login(w, r)
+		return w.Code
+	}
+	// Each guess from a new address: the per-IP limits never trigger.
+	for i := range userFreeFailures {
+		if code := login(fmt.Sprintf("198.51.100.%d:4000", i+1), "Admin", "essai"); code != http.StatusUnauthorized {
+			t.Fatalf("guess %d: %d", i, code)
+		}
+	}
+	if code := login("198.51.100.200:4000", "admin", "le bon mot de passe"); code != http.StatusTooManyRequests {
+		t.Fatalf("username not limited across addresses: %d", code)
 	}
 }
 

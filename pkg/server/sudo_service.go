@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"sync"
 	"time"
 
@@ -23,9 +22,12 @@ type sudoService struct {
 	store  *sudo.Store
 	admins SudoAdmins
 	pinned []string
+	// requesters may file requests; empty refuses everyone.
+	requesters []string
 
-	mu    sync.Mutex
-	users map[string]string // sudo peer host ID → Unix user it reported
+	mu        sync.Mutex
+	users     map[string]string // sudo peer host ID → Unix user it reported
+	terminals map[string]func() // request ID → closes its open terminal
 }
 
 // newSudoService returns nil when the sudo terminal cannot be offered:
@@ -34,13 +36,10 @@ func newSudoService(opts *Options) *sudoService {
 	if !opts.AuthEnabled || opts.PeerMgr == nil {
 		return nil
 	}
-	var pinned []string
-	for _, value := range strings.FieldsFunc(opts.SudoPeers, func(r rune) bool { return r == ',' || r == ' ' }) {
-		pinned = append(pinned, value)
-	}
+	pinned := parseFingerprints(opts.SudoPeers)
 	service := &sudoService{
 		opts: opts, store: sudo.NewStore(sudo.DefaultLimits(), nil), admins: newSudoAdmins(opts),
-		pinned: pinned, users: make(map[string]string),
+		pinned: pinned, requesters: parseFingerprints(opts.SudoRequesters), users: make(map[string]string),
 	}
 	service.store.OnChange(service.onChange)
 	return service
@@ -60,12 +59,44 @@ func (s *sudoService) Run(ctx context.Context) {
 	}
 }
 
-// LocalBroker serves agents that share the hub's own host.
+// LocalBroker serves agents that share the hub's own host. The hub's own
+// fingerprint must be listed in TMUXATLAS_SUDO_REQUESTERS too.
 func (s *sudoService) LocalBroker() sudo.Broker {
-	return sudo.StoreBroker{Store: s.store, HostID: s.opts.PeerMgr.LocalID(), Host: s.opts.PeerMgr.LocalName()}
+	broker := sudo.StoreBroker{Store: s.store, HostID: s.opts.PeerMgr.LocalID(), Host: s.opts.PeerMgr.LocalName()}
+	return requesterBroker{StoreBroker: broker, allowed: s.mayRequest}
+}
+
+// mayRequest reports whether a host may file sudo requests. Only listed
+// fingerprints may: a name or a declared origin is never enough.
+func (s *sudoService) mayRequest(hostID string) bool {
+	if hostID == "" {
+		return false
+	}
+	for _, value := range s.requesters {
+		if value == hostID {
+			return true
+		}
+	}
+	return false
+}
+
+// requesterBroker refuses local requests when the hub is not a requester.
+type requesterBroker struct {
+	sudo.StoreBroker
+	allowed func(string) bool
+}
+
+func (b requesterBroker) Create(ctx context.Context, input sudo.CreateInput) (sudo.AgentView, error) {
+	if !b.allowed(b.HostID) {
+		return sudo.AgentView{}, sudo.ErrForbidden
+	}
+	return b.StoreBroker.Create(ctx, input)
 }
 
 func (s *sudoService) onChange(changed sudo.Request) {
+	if changed.Status.Final() {
+		s.closeTerminal(changed.ID)
+	}
 	s.announce(changed)
 	s.pushUpdate(changed)
 	logrus.WithFields(logrus.Fields{
@@ -91,8 +122,8 @@ func (s *sudoService) announce(changed sudo.Request) {
 		switch request.Status {
 		case sudo.StatusPending, sudo.StatusApproved:
 			status, message = toolevents.StatusWaiting, "Demande sudo en attente"
-		case sudo.StatusAwaitingReview:
-			status, message = toolevents.StatusWaiting, "Résultat sudo à relire"
+		case sudo.StatusClosed:
+			status, message = toolevents.StatusWaiting, "Terminal sudo fermé : Terminé ou Refusé ?"
 		case sudo.StatusRunning:
 			if status == "" {
 				status, message = toolevents.StatusActive, "Terminal sudo ouvert"
@@ -148,6 +179,11 @@ func (s *sudoService) HandlePeerSudo(hostID string, connection *peer.PeerConnect
 		if json.Unmarshal(message.Payload, &payload) != nil || payload.Ref == "" || len(payload.Ref) > 128 {
 			return
 		}
+		if !s.mayRequest(hostID) {
+			logrus.WithField("host", hostID).Warn("sudo request from a host outside TMUXATLAS_SUDO_REQUESTERS")
+			s.reply(hostID, payload.Ref, sudo.AgentView{}, sudo.ErrForbidden)
+			return
+		}
 		origin := payload.Origin
 		origin.HostID, origin.HostName = hostID, s.opts.PeerMgr.GetHostName(hostID)
 		request, err := s.store.Create(sudo.CreateInput{Origin: origin, Command: payload.Command, Reason: payload.Reason})
@@ -167,7 +203,7 @@ func (s *sudoService) HandlePeerSudo(hostID string, connection *peer.PeerConnect
 		request, ok := s.store.Get(payload.ID)
 		view := request.View()
 		if !ok || request.Origin.HostID != hostID {
-			view = sudo.AgentView{ID: payload.ID, Status: sudo.StatusFailed, Note: "demande inconnue du hub (redémarré ?)"}
+			view = sudo.AgentView{ID: payload.ID, Status: sudo.StatusExpired, Note: "demande inconnue du hub (redémarré ?)"}
 		}
 		s.send(hostID, peer.MsgSudoUpdate, peer.SudoUpdatePayload{View: view})
 	case peer.MsgSudoTerminalInfo:
@@ -187,7 +223,9 @@ func (s *sudoService) HandlePeerSudo(hostID string, connection *peer.PeerConnect
 	}
 }
 
-// finish accepts a result only from the peer the request was sent to.
+// finish accepts a result only from the peer the request was sent to. A
+// terminal that never opened returns the request to the queue; one that
+// closed waits for the administrator's decision.
 func (s *sudoService) finish(hostID string, result peer.SudoResultPayload) {
 	request, ok := s.store.Get(result.RequestID)
 	if !ok || request.Peer != hostID || request.Version != result.Version {
@@ -199,16 +237,40 @@ func (s *sudoService) finish(hostID string, result peer.SudoResultPayload) {
 		if result.Error != "" {
 			note += " : " + result.Error
 		}
-		_, _ = s.store.Fail(request.ID, note)
+		_, _ = s.store.Reopen(request.ID, note)
 		return
 	}
-	_, err := s.store.Finish(request.ID, sudo.Capture{
-		Version: result.Version, ExitCode: result.ExitCode, Output: result.Output,
-		OutputTruncated: result.Truncated, Redactions: result.Redactions,
-		Duration: time.Duration(result.DurationMS) * time.Millisecond, Error: result.Error,
+	_, err := s.store.Close(request.ID, sudo.Session{
+		Version: result.Version, Duration: time.Duration(result.DurationMS) * time.Millisecond, Reason: result.Error,
 	})
-	if err != nil {
-		logrus.WithError(err).WithField("request", request.ID).Warn("could not store sudo result")
+	if err != nil && !errors.Is(err, sudo.ErrInvalidState) {
+		logrus.WithError(err).WithField("request", request.ID).Warn("could not record the end of a sudo terminal")
+	}
+}
+
+// track remembers the relay of an open terminal, so that a decision taken
+// while it is open closes it.
+func (s *sudoService) track(requestID string, stop func()) func() {
+	s.mu.Lock()
+	if s.terminals == nil {
+		s.terminals = make(map[string]func())
+	}
+	s.terminals[requestID] = stop
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		delete(s.terminals, requestID)
+		s.mu.Unlock()
+	}
+}
+
+// closeTerminal ends the terminal of a request that was just decided.
+func (s *sudoService) closeTerminal(requestID string) {
+	s.mu.Lock()
+	stop := s.terminals[requestID]
+	s.mu.Unlock()
+	if stop != nil {
+		stop()
 	}
 }
 

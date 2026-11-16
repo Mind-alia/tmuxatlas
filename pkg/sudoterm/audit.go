@@ -14,23 +14,22 @@ import (
 )
 
 // AuditEntry is one line of the sudo audit log. It never holds keystrokes
-// or output, only their size.
+// nor output: only what was proposed, by whom, who opened the terminal and
+// how it ended.
 type AuditEntry struct {
 	Time          time.Time `json:"time"`
-	Event         string    `json:"event"` // open, refused, finished
+	Event         string    `json:"event"` // open, refused, closed
 	RequestID     string    `json:"request_id"`
 	Version       int       `json:"version"`
-	Command       string    `json:"command"`
+	Command       string    `json:"command"` // as proposed; the human may have typed anything
 	CommandSHA256 string    `json:"command_sha256"`
+	Requester     string    `json:"requester,omitempty"` // fingerprint of the requesting host
 	Approver      string    `json:"approver,omitempty"`
 	OriginHost    string    `json:"origin_host,omitempty"`
 	OriginSession string    `json:"origin_session,omitempty"`
 	UnixUser      string    `json:"unix_user,omitempty"`
-	ExitCode      *int      `json:"exit_code,omitempty"`
+	ShellExit     *int      `json:"shell_exit,omitempty"`
 	DurationMS    int64     `json:"duration_ms,omitempty"`
-	OutputBytes   int       `json:"output_bytes,omitempty"`
-	Truncated     bool      `json:"truncated,omitempty"`
-	Redactions    int       `json:"redactions,omitempty"`
 	Reason        string    `json:"reason,omitempty"`
 }
 

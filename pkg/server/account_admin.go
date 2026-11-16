@@ -287,6 +287,9 @@ func handleAdminUserUpdate(w http.ResponseWriter, r *http.Request, opts *Options
 			return
 		}
 	}
+	if user.Disabled || !user.IsAdmin() {
+		purgePush(opts, user.ID)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(viewAccount(user))
 }
@@ -335,6 +338,7 @@ func handleAdminUserDelete(w http.ResponseWriter, r *http.Request, opts *Options
 		writeAccountError(w, err)
 		return
 	}
+	purgePush(opts, id)
 	w.WriteHeader(http.StatusNoContent)
 }
 

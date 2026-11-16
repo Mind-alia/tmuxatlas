@@ -97,7 +97,7 @@ func (relay *PTYRelay) CompletePending(streamID, hostID string, generation uint6
 	relay.mu.Lock()
 	owner := relay.pending[streamID]
 	if owner == nil || owner.HostID != hostID || owner.Generation != generation ||
-		owner.AttachToken != token || owner.Target.Session != session {
+		!tokenEqual(owner.AttachToken, token) || owner.Target.Session != session {
 		relay.mu.Unlock()
 		return false
 	}

@@ -29,8 +29,9 @@ Chaque processus fixe lui-même ce qu’il accepte, dans son environnement
 | `TMUXATLAS_FILES_ROOT` | `$HOME` | Racine du jail |
 | `TMUXATLAS_FILES_DENY` | — | Motifs à refuser en plus, séparés par des virgules |
 
-Recommandation : `ro` (ou `off`) pour le compte de production. Le changement
-prend effet au redémarrage du processus.
+Sur le hub (`tmuxatlas server`, qui tourne sous le compte de production),
+`TMUXATLAS_FILES=rw` est **refusé** : le hub ne démarre pas. Utilisez `ro` ou
+`off`. Le changement prend effet au redémarrage du processus.
 
 ## Protections
 
@@ -39,7 +40,12 @@ prend effet au redémarrage du processus.
 - Seuls les fichiers ordinaires et les dossiers sont servis.
 - Jamais listés ni servis : `.ssh`, `.gnupg`, `.config/tmuxatlas`, `.env*`,
   `*.pem`, `*.key`, `.docker`, `.netrc`, `.git-credentials`, `.pgpass`, `.aws`,
-  `.kube`, `.password-store`, `.local/share/keyrings`.
+  `.kube`, `.password-store`, `.local/share/keyrings`, `.config/rclone`,
+  `.claude`, `.bash_history`, `.config/gh`, `.npmrc`,
+  `.local/share/tmuxatlas`, `.local/state`. Un motif sans `/` vaut pour tout
+  composant du chemin ; un motif avec `/` part de la racine, et un dossier qui
+  contient un tel chemin (`.config`, `.local`, `.local/share`) ne peut pas être
+  renommé, sinon `.config/rclone` réapparaîtrait sous `c/rclone`.
 - Écriture dans un fichier temporaire privé, puis `rename` atomique. Le
   fichier ouvert porte une version (date et taille) : enregistrer après une
   modification extérieure répond 409.

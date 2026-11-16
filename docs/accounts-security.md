@@ -19,6 +19,43 @@ L’isolation réelle vient du système :
 La création du compte Linux demande root : elle reste une étape humaine.
 L’interface affiche les commandes à copier, mais n’exécute rien.
 
+## Connexion : limites et proxy
+
+Les échecs de connexion sont comptés par adresse, par couple adresse et nom,
+et **par nom d’utilisateur, toutes adresses confondues** : après 10 échecs sur
+un même nom, chaque essai attend de plus en plus longtemps, jusqu’à 5 minutes
+à partir de 20. Un attaquant qui change d’adresse ne devine donc pas plus vite.
+Le revers : il peut ralentir la connexion du compte visé ; le compteur s’efface
+après 30 minutes sans échec.
+
+`X-Forwarded-For` n’est cru que si la requête arrive par le loopback et porte le secret partagé avec
+Caddy. N’importe quel compte local peut joindre `127.0.0.1:7654` et forger cet
+en-tête : sans secret configuré, il est toujours ignoré et l’adresse réelle de
+la connexion (donc `127.0.0.1` derrière Caddy) sert aux limites.
+
+Dans le `.env` du hub (`~/.config/tmuxatlas/.env`, `chmod 600`, jamais dans git) :
+
+```bash
+TMUXATLAS_PROXY_SECRET=<au moins 32 caractères, par exemple : openssl rand -hex 32>
+# Facultatif, défaut X-Tmuxatlas-Proxy-Secret
+TMUXATLAS_PROXY_SECRET_HEADER=X-Tmuxatlas-Proxy-Secret
+```
+
+Dans le Caddyfile, la même valeur, lue depuis l’environnement de Caddy (son
+fichier d’environnement, pas le Caddyfile s’il est suivi par git) :
+
+```caddyfile
+atlas.example.com {
+	reverse_proxy 127.0.0.1:7654 {
+		header_up X-Tmuxatlas-Proxy-Secret {env.TMUXATLAS_PROXY_SECRET}
+	}
+}
+```
+
+`header_up` remplace toute valeur envoyée par le navigateur. Après le
+redémarrage, vérifier dans les journaux du hub que le message
+« TMUXATLAS_PROXY_SECRET unset » n’apparaît plus.
+
 ## Ce qu’un administrateur peut faire
 
 Un administrateur TmuxAtlas voit tous les hôtes et ouvre des terminaux sur
