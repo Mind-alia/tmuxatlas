@@ -374,3 +374,9 @@ The tmux session, window, and pane are auto-detected when run inside tmux.`,
 
 	common.RegisterCommand(cmd)
 }
+
+// DetectTmuxContext returns the tmux session, window index and pane ID of
+// the calling process, as notify hooks see them.
+func DetectTmuxContext() (string, int, string) {
+	return detectTmuxContext()
+}
