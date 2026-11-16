@@ -89,5 +89,5 @@ func ExecuteAgent(ctx context.Context, c *cli.Command) error {
 		"hub": hubURL, "name": nodeIdentity.Name, "fingerprint": nodeIdentity.Fingerprint(),
 	}).Info("starting headless TmuxAtlas agent")
 
-	return agentserver.RunAgentSocket(ctx, c.String("socket"), tracker, peerMgr)
+	return agentserver.RunAgentSocket(ctx, c.String("socket"), tracker, peerMgr, nil)
 }
