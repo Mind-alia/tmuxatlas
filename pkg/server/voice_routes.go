@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"regexp"
 
@@ -49,7 +50,9 @@ func micHandler(opts *Options, local *voice.Mic, relay *peer.MicRelay) http.Hand
 				http.Error(w, "voice is off on this host", http.StatusNotFound)
 				return
 			}
-			local.HandleStream(w, r)
+			ctx, cancel := revocableContext(r)
+			defer cancel()
+			local.HandleStream(w, r.WithContext(ctx))
 			return
 		}
 		micID := r.URL.Query().Get("id")
@@ -87,6 +90,22 @@ func micHandler(opts *Options, local *voice.Mic, relay *peer.MicRelay) http.Hand
 				websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "the agent could not open its microphone"))
 		}
 	}
+}
+
+// revocableContext ends when the request ends or when the signed-in session
+// is revoked (logout, account disabled, demoted or deleted).
+func revocableContext(r *http.Request) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(r.Context())
+	if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.Done != nil {
+		go func() {
+			select {
+			case <-identity.Done:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+	return ctx, cancel
 }
 
 // remoteMicID passes the tab's microphone to an agent that has voice, so the
