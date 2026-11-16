@@ -926,7 +926,6 @@ function AppInner({
                   sessionAvailable={Boolean(activeSession)}
                   fullscreen={terminalFullscreen}
                   zenMode={zenMode}
-                  hostLocal={activeHost?.local === true}
                   voiceAllowed
                   claudeActive={activePane?.current_command === 'claude'}
                   talkSlot={statusBarSlot}

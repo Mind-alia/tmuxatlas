@@ -21,14 +21,14 @@ describe('useMicStream', () => {
   })
 
   it('turns on by itself when voice is enabled', async () => {
-    const { result } = renderHook(() => useMicStream(true))
+    const { result } = renderHook(() => useMicStream(true, 'host-a'))
     await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(result.current.error).toContain('refusé'))
     expect(result.current.state).toBe('off')
   })
 
   it('does not capture on a host where it is not allowed', async () => {
-    renderHook(() => useMicStream(false))
+    renderHook(() => useMicStream(false, 'host-a'))
     await act(async () => {
       await Promise.resolve()
     })
@@ -38,18 +38,34 @@ describe('useMicStream', () => {
 
   it('stays off once turned off, until turned back on', async () => {
     getUserMedia.mockReturnValue(new Promise(() => {}))
-    const first = renderHook(() => useMicStream(true))
+    const first = renderHook(() => useMicStream(true, 'host-a'))
     await waitFor(() => expect(first.result.current.state).toBe('starting'))
     act(() => first.result.current.toggle())
     expect(first.result.current.state).toBe('off')
     first.unmount()
 
     getUserMedia.mockClear()
-    const second = renderHook(() => useMicStream(true))
+    const second = renderHook(() => useMicStream(true, 'host-a'))
     await waitFor(() => expect(second.result.current.available).toBe(true))
     expect(getUserMedia).not.toHaveBeenCalled()
     act(() => second.result.current.toggle())
     await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(1))
     expect(localStorage.getItem('tmuxatlas.mic.off')).toBeNull()
+  })
+
+  it('asks the session host whether voice is available', async () => {
+    renderHook(() => useMicStream(true, 'agents host'))
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/voice?host=agents%20host'))
+  })
+
+  it('stops the stream when the session moves to another host', async () => {
+    getUserMedia.mockReturnValue(new Promise(() => {}))
+    const hook = renderHook(({ host }) => useMicStream(true, host), { initialProps: { host: 'host-a' } })
+    await waitFor(() => expect(hook.result.current.state).toBe('starting'))
+    apiFetch.mockResolvedValue({ ok: true, json: async () => ({ enabled: false, ready: false }) })
+    hook.rerender({ host: 'host-b' })
+    await waitFor(() => expect(hook.result.current.state).toBe('off'))
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/voice?host=host-b'))
+    expect(hook.result.current.available).toBe(false)
   })
 })
