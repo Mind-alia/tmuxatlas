@@ -20,8 +20,11 @@ DOCKER=${TF_OPS_DOCKER:-docker}
 MAX_CONTAINERS=200
 
 # One JSON object per container. Each value goes through the template's json
-# function, so names and images are escaped by Docker itself.
-readonly FORMAT='{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Config.Image}},"state":{{json .State.Status}},"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}""{{end}},"restart_count":{{json .RestartCount}},"started_at":{{json .State.StartedAt}},"finished_at":{{json .State.FinishedAt}},"exit_code":{{json .State.ExitCode}},"oom_killed":{{json .State.OOMKilled}},"compose_project":{{json (index .Config.Labels "com.docker.compose.project")}},"compose_service":{{json (index .Config.Labels "com.docker.compose.service")}}}'
+# function, so names and images are escaped by Docker itself. Docker runs the
+# template on the inspect JSON and fails on a missing key: Health is absent for
+# a container without a healthcheck (e.g. Traefik), so optional keys are read
+# with index, which yields nothing instead of dropping the container.
+readonly FORMAT='{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Config.Image}},"state":{{json .State.Status}},"health":{{if index .State "Health"}}{{json .State.Health.Status}}{{else}}""{{end}},"restart_count":{{json .RestartCount}},"started_at":{{json .State.StartedAt}},"finished_at":{{json .State.FinishedAt}},"exit_code":{{json .State.ExitCode}},"oom_killed":{{json .State.OOMKilled}},"compose_project":{{with index .Config "Labels"}}{{json (index . "com.docker.compose.project")}}{{else}}""{{end}},"compose_service":{{with index .Config "Labels"}}{{json (index . "com.docker.compose.service")}}{{else}}""{{end}}}'
 
 json_string() { # escapes $1 as a JSON string (one line, at most 300 chars)
   local s=${1:0:300}

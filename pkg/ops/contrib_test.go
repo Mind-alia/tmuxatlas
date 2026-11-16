@@ -61,13 +61,15 @@ esac
 	return path
 }
 
-// Docker-like objects with only the fields the collector may read. Executing
-// the collector's template against them fails if it asks for anything else
-// (Env, Mounts, Args, Health.Log...).
+// Docker-like objects with only the fields the collector may read. The test
+// runs the collector's template on their JSON form, as `docker inspect
+// --format` does: it fails if the template asks for anything else (Env,
+// Mounts, Args, Health.Log...) or for a key Docker leaves out, such as Health
+// for a container without a healthcheck.
 type fakeHealth struct{ Status string }
 type fakeState struct {
 	Status     string
-	Health     *fakeHealth
+	Health     *fakeHealth `json:",omitempty"`
 	StartedAt  string
 	FinishedAt string
 	ExitCode   int
@@ -75,7 +77,7 @@ type fakeState struct {
 }
 type fakeConfig struct {
 	Image  string
-	Labels map[string]string
+	Labels map[string]string `json:",omitempty"`
 }
 type fakeContainer struct {
 	Id           string
@@ -134,8 +136,16 @@ func TestDockerSnapshotScript(t *testing.T) {
 		{Id: "bbb222", Name: `/odd"name`, Config: fakeConfig{Image: "busybox"},
 			State: fakeState{Status: "exited", StartedAt: "2026-11-16T09:00:00Z", FinishedAt: "2026-11-16T09:30:00Z", ExitCode: 137, OOMKilled: true}},
 	} {
+		raw, err := json.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, c); err != nil {
+		if err := tmpl.Execute(&buf, doc); err != nil {
 			t.Fatalf("le format lit un champ non prévu : %v", err)
 		}
 		lines = append(lines, buf.String())
