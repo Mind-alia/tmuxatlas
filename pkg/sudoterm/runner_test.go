@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LosFurina/tmuxatlas/pkg/sudo"
 	"github.com/LosFurina/tmuxatlas/pkg/sudoterm/sudotermtest"
 )
 
@@ -109,6 +110,27 @@ func TestRunCapturesOnlyPipes(t *testing.T) {
 	}
 	if len(modes) < 2 || !modes[0] || modes[len(modes)-1] {
 		t.Fatalf("password mode changes = %v, want on then off", modes)
+	}
+}
+
+func TestRunShowsCommandBeforePrompt(t *testing.T) {
+	runner := installFakeSudo(t)
+	screen := &fakeScreen{}
+	command := `echo "café"  && true`
+	run, err := runner.Start(command, 80, 24, screen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen.waitFor(t, passwordPrompted)
+	run.Stop("test")
+	run.Wait()
+	screen.mu.Lock()
+	shown := screen.output.String()
+	screen.mu.Unlock()
+	banner := "(20 caractères, sha256 " + sudo.Fingerprint(command) + ") :\r\n" + command + "\r\n"
+	at, prompt := strings.Index(shown, banner), strings.Index(shown, "mot de passe de")
+	if at < 0 || prompt < 0 || at > prompt {
+		t.Fatalf("command not shown before the prompt: %q", shown)
 	}
 }
 

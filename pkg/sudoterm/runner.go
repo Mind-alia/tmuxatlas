@@ -19,6 +19,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/creack/pty/v2"
 	"golang.org/x/sys/unix"
@@ -187,6 +188,13 @@ type Run struct {
 	kill   chan string
 }
 
+// Banner is what the terminal prints before sudo asks for the password: the
+// exact command, its length and its short digest, the same as in the panel.
+func Banner(command string) []byte {
+	return []byte(fmt.Sprintf("\x1b[1mCommande exacte\x1b[0m (%d caractères, sha256 %s) :\r\n%s\r\n\r\n",
+		utf8.RuneCountInString(command), sudo.Fingerprint(command), command))
+}
+
 // Start opens the PTY and runs sudo -k -- shell -c command.
 func (r *Runner) Start(command string, cols, rows uint16, screen Screen) (*Run, error) {
 	if err := sudo.ValidateCommand(command); err != nil {
@@ -225,6 +233,8 @@ func (r *Runner) Start(command string, cols, rows uint16, screen Screen) (*Run, 
 		release()
 		return nil, err
 	}
+	// The banner goes out before the process starts, so it precedes the prompt.
+	_ = screen.Output(Banner(command))
 	cmd := exec.Command(path, "-k", "-p", Prompt, "--", r.config.Shell, "-c", command)
 	cmd.Env = cleanEnv()
 	cmd.Dir = "/"
