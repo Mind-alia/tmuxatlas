@@ -80,11 +80,41 @@ export interface OpsAlert extends MonitorAlert {
   key: string
 }
 
+export interface OpsAlertState {
+  key: string
+  severity: string
+  title: string
+  detail?: string
+  phase: 'pending' | 'firing' | 'resolving'
+  since: string
+  fired_at?: string
+  last_sent?: string
+  notified: boolean
+  due?: string
+}
+
+export interface OpsNotification {
+  key: string
+  kind: 'firing' | 'reminder' | 'resolved' | 'group' | 'test'
+  severity: string
+  title: string
+  body: string
+  at: string
+  keys?: string[]
+}
+
+export interface OpsNotifications {
+  channels: string[] | null
+  alerts: OpsAlertState[] | null
+  recent: OpsNotification[] | null
+}
+
 export interface OpsResponse {
   configured: boolean
   dir?: string
   checked_at?: number
   containers: OpsContainers
   backups?: OpsBackups
+  notifications?: OpsNotifications
   alerts: OpsAlert[] | null
 }
