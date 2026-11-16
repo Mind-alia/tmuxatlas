@@ -305,10 +305,12 @@ func (s *Store) DeleteWith(id, actor string, beforeDelete func() error) error {
 	})
 }
 
+// activeAdmins counts the administrators who can sign in now: an account still
+// waiting for its invitation does not count.
 func activeAdmins(users []User) int {
 	count := 0
 	for _, user := range users {
-		if user.Role == "admin" && !user.Disabled {
+		if user.Role == "admin" && !user.Disabled && user.PasswordHash != "" {
 			count++
 		}
 	}

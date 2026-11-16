@@ -63,6 +63,18 @@ func TestSeveralAdminsAndLastAdminGuard(t *testing.T) {
 	if _, err := store.SetRole(first.ID, first.ID, RoleGuest); !errors.Is(err, ErrProtectedAdmin) {
 		t.Fatalf("self demotion accepted: %v", err)
 	}
+	pending, _ := store.CreatePending("pending", RoleAdmin, "")
+	if _, err := store.SetRole(second.ID, pending.ID, RoleGuest); err == nil {
+		// second is not the last admin: first still is one.
+	} else {
+		t.Fatalf("demotion with another admin: %v", err)
+	}
+	if _, err := store.SetRole(first.ID, pending.ID, RoleGuest); !errors.Is(err, ErrProtectedAdmin) {
+		t.Fatalf("an admin without a password counted as the last admin: %v", err)
+	}
+	if _, err := store.SetRole(second.ID, first.ID, RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
 	if user, err := store.SetRole(first.ID, second.ID, RoleGuest); err != nil || user.IsAdmin() {
 		t.Fatalf("demotion with another admin: %v %v", user, err)
 	}
