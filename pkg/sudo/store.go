@@ -128,7 +128,7 @@ func (s *Store) Create(input CreateInput) (Request, error) {
 	if err := ValidateCommand(input.Command); err != nil {
 		return Request{}, err
 	}
-	if err := validateText(input.Reason, MaxReasonBytes); err != nil {
+	if err := ValidateReason(input.Reason); err != nil {
 		return Request{}, err
 	}
 	s.mu.Lock()

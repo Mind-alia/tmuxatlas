@@ -7,9 +7,12 @@
 package sudo
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -49,7 +52,10 @@ const (
 
 const (
 	MaxCommandBytes = 4096
+	MaxCommandRunes = 1000 // what an administrator can still read in full
 	MaxReasonBytes  = 512
+	MaxReasonRunes  = 1000
+	MaxBlankRun     = 2 // longer runs of blanks could push a payload out of sight
 	MaxNoteBytes    = 512
 	MaxOutputBytes  = 64 << 10
 )
@@ -180,18 +186,62 @@ func (r Request) clone() Request {
 	return r
 }
 
-// ValidateCommand rejects empty, oversized, binary or multi-line commands.
-// A newline would let an edit hide a second command below the visible one.
+// ValidateCommand rejects empty, oversized, binary or multi-line commands,
+// and anything that could make the command look different from what runs:
+// control characters (C0 and C1, tabs included), format characters (bidi
+// overrides, zero-width spaces, BOM), line and paragraph separators, and runs
+// of blanks long enough to push a second command out of view.
 func ValidateCommand(command string) error {
-	if strings.TrimSpace(command) == "" || len(command) > MaxCommandBytes || !utf8.ValidString(command) {
+	if strings.TrimSpace(command) == "" || len(command) > MaxCommandBytes {
 		return ErrInvalidCommand
 	}
-	for _, r := range command {
-		if r == '\n' || r == '\r' || (r < 0x20 && r != '\t') || r == 0x7f {
-			return ErrInvalidCommand
-		}
+	if !displaySafe(command, MaxCommandRunes) {
+		return ErrInvalidCommand
 	}
 	return nil
+}
+
+// Fingerprint is the short sha256 shown next to a command, in the panel and
+// in the sudo terminal, so the administrator can check both show the same.
+func Fingerprint(command string) string {
+	sum := sha256.Sum256([]byte(command))
+	return hex.EncodeToString(sum[:6])
+}
+
+// ValidateReason applies the command rules to the agent's reason, which is
+// shown next to it; an empty reason is allowed.
+func ValidateReason(reason string) error {
+	if reason == "" {
+		return nil
+	}
+	if len(reason) > MaxReasonBytes || !displaySafe(reason, MaxReasonRunes) {
+		return ErrInvalidText
+	}
+	return nil
+}
+
+// displaySafe reports whether value is valid UTF-8 of at most limit
+// characters, contains no Cc, Cf, Zl or Zp character and no run of more than
+// MaxBlankRun blanks.
+func displaySafe(value string, limit int) bool {
+	if !utf8.ValidString(value) || utf8.RuneCountInString(value) > limit {
+		return false
+	}
+	run := 0
+	for _, r := range value {
+		if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp) {
+			return false
+		}
+		if unicode.Is(unicode.Zs, r) {
+			run++
+			if run > MaxBlankRun {
+				return false
+			}
+			continue
+		}
+		run = 0
+	}
+	return true
 }
 
 func validateText(value string, limit int) error {
