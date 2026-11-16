@@ -36,6 +36,46 @@ export interface OpsContainers {
   items: OpsContainer[] | null
 }
 
+export interface OpsBackupRun {
+  job: string
+  run_id: string
+  result: 'running' | 'success' | 'failure' | 'partial'
+  started_at: string
+  finished_at: string
+  exit_code: number
+  step?: string
+  failed_step?: string
+  message?: string
+  local: { ok: boolean; file: string; size: number; sha256: string; retention_days: number; count: number }
+  remote: {
+    provider: string
+    attempted: boolean
+    ok: boolean
+    verified: boolean
+    rclone_exit_code: number
+    retention_days: number
+    count: number
+  }
+}
+
+export type OpsBackupState = 'ok' | 'running' | 'failed' | 'r2-failed' | 'late' | 'stuck' | 'unknown'
+
+export interface OpsBackups {
+  state: OpsBackupState
+  tone: OpsTone
+  reason?: string
+  error?: string
+  current?: OpsBackupRun
+  last_success?: OpsBackupRun
+  last_success_at?: number
+  next_expected_by?: number
+  local_retention_days: number
+  r2_retention_days: number
+  r2_ok: boolean
+  r2_verified: boolean
+  running_for_seconds?: number
+}
+
 export interface OpsAlert extends MonitorAlert {
   key: string
 }
@@ -45,5 +85,6 @@ export interface OpsResponse {
   dir?: string
   checked_at?: number
   containers: OpsContainers
+  backups?: OpsBackups
   alerts: OpsAlert[] | null
 }
