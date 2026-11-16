@@ -853,6 +853,22 @@ func Run(ctx context.Context, opts *Options) error {
 				json.NewEncoder(w).Encode(&prefs)
 			})
 
+			// File browser: each host's files are served by its own account's
+			// process, within the ceiling that process sets for itself.
+			fileHandlers := newFilesAPI(opts, accountPolicy)
+			r.Get("/files/hosts", fileHandlers.hosts)
+			r.Get("/files/info", fileHandlers.info)
+			r.Get("/files/list", fileHandlers.list)
+			r.Get("/files/content", fileHandlers.content)
+			r.Get("/files/raw", fileHandlers.raw)
+			fileBodies := mutations.With(httpguard.BodyReadDeadline(60 * time.Second))
+			fileBodies.Put("/files/content", fileHandlers.save)
+			fileBodies.Post("/files/upload", fileHandlers.upload)
+			fileChanges := mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit))
+			for _, operation := range []string{"mkdir", "rename", "delete"} {
+				fileChanges.Post("/files/"+operation, fileHandlers.change(operation))
+			}
+
 			// Pairing code generation (for the hub to generate codes)
 			mutations.With(admissionMiddleware(ingressPolicy, ingress.CategoryPairing)).Post("/pair", func(w http.ResponseWriter, r *http.Request) {
 				if opts.PairingMgr == nil {
