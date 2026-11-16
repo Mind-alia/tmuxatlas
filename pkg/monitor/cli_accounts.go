@@ -232,6 +232,14 @@ func (c *cliAccountsCollector) refreshAgyQuotas(ctx context.Context, now time.Ti
 	return len(res), errs, skipped
 }
 
+func (c *cliAccountsCollector) refreshClaudeQuotas(ctx context.Context, now time.Time, hints map[string]agyProbeTarget) (int, []string, int) {
+	root := resolveAccountsDir(c.dirOverride)
+	if root == "" {
+		return 0, nil, 0
+	}
+	return probeAllClaudeQuotas(ctx, root, now, hints)
+}
+
 func resolveAccountsDir(override string) string {
 	if strings.TrimSpace(override) != "" {
 		return override

@@ -427,7 +427,7 @@ func (m *Monitor) Run(ctx context.Context) {
 		{15 * time.Second, m.refreshSystemd},
 		{30 * time.Second, m.refreshListeners},
 		{30 * time.Second, m.refreshCLIAccounts},
-		{2 * time.Minute, m.refreshAgyQuotas},
+		{2 * time.Minute, m.refreshCLIQuotas},
 		{60 * time.Second, m.refreshEndpoints},
 		{5 * time.Minute, m.refreshLogs},
 		{10 * time.Minute, m.refreshHost},
@@ -527,30 +527,53 @@ func (m *Monitor) refreshCLIAccounts(context.Context) {
 	m.mu.Unlock()
 }
 
-func (m *Monitor) refreshAgyQuotas(ctx context.Context) {
+func (m *Monitor) refreshCLIQuotas(ctx context.Context) {
 	if m.cliCollector == nil {
 		return
 	}
 	m.mu.RLock()
-	hints := make(map[string]agyProbeTarget)
+	emptyAccounts := len(m.cliAccounts) == 0
+	m.mu.RUnlock()
+	if emptyAccounts {
+		m.refreshCLIAccounts(ctx)
+	}
+
+	m.mu.RLock()
+	agyHints := make(map[string]agyProbeTarget)
+	claudeHints := make(map[string]agyProbeTarget)
 	for _, acc := range m.cliAccounts {
-		if acc.CLI == "agy" {
-			hints[acc.ID] = agyProbeTarget{
-				id:           acc.ID,
-				live:         len(acc.LiveSessions) > 0,
-				lastActivity: acc.LastActivity,
-			}
+		target := agyProbeTarget{
+			id:           acc.ID,
+			live:         len(acc.LiveSessions) > 0,
+			lastActivity: acc.LastActivity,
+			quotaAt:      acc.QuotaAt,
+			windows:      append([]QuotaWindow(nil), acc.Windows...),
+		}
+		switch acc.CLI {
+		case "agy":
+			agyHints[acc.ID] = target
+		case "claude":
+			claudeHints[acc.ID] = target
 		}
 	}
 	m.mu.RUnlock()
 
-	count, errs, skipped := m.cliCollector.refreshAgyQuotas(ctx, time.Now(), hints)
-	if len(errs) > 0 {
-		m.logger.WithFields(logrus.Fields{"accounts": count, "skipped": skipped, "errors": errs}).Warn("agy quota probe warnings")
-	} else if count > 0 {
-		m.logger.WithFields(logrus.Fields{"accounts": count, "skipped": skipped}).Info("refreshed agy quotas")
+	now := time.Now()
+	agyCount, agyErrs, agySkipped := m.cliCollector.refreshAgyQuotas(ctx, now, agyHints)
+	if len(agyErrs) > 0 {
+		m.logger.WithFields(logrus.Fields{"accounts": agyCount, "skipped": agySkipped, "errors": agyErrs}).Warn("agy quota probe warnings")
+	} else if agyCount > 0 {
+		m.logger.WithFields(logrus.Fields{"accounts": agyCount, "skipped": agySkipped}).Info("refreshed agy quotas")
 	}
-	if count > 0 {
+
+	claudeCount, claudeErrs, claudeSkipped := m.cliCollector.refreshClaudeQuotas(ctx, now, claudeHints)
+	if len(claudeErrs) > 0 {
+		m.logger.WithFields(logrus.Fields{"accounts": claudeCount, "skipped": claudeSkipped, "errors": claudeErrs}).Warn("claude quota probe warnings")
+	} else if claudeCount > 0 {
+		m.logger.WithFields(logrus.Fields{"accounts": claudeCount, "skipped": claudeSkipped}).Info("refreshed claude quotas")
+	}
+
+	if agyCount > 0 || claudeCount > 0 {
 		m.refreshCLIAccounts(ctx)
 	}
 }

@@ -32,7 +32,7 @@ var (
 	agyPlanRe  = regexp.MustCompile(`\((Google AI [^)]+)\)`)
 )
 
-func findAgyBinary() string {
+func findNonShimBinary(name string) string {
 	home, _ := os.UserHomeDir()
 	shimDir := ""
 	if home != "" {
@@ -42,13 +42,13 @@ func findAgyBinary() string {
 		if dir == "" || (shimDir != "" && filepath.Clean(dir) == filepath.Clean(shimDir)) {
 			continue
 		}
-		cand := filepath.Join(dir, "agy")
+		cand := filepath.Join(dir, name)
 		if info, err := os.Stat(cand); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
 			return cand
 		}
 	}
 	if home != "" {
-		cand := filepath.Join(home, ".local", "bin", "agy")
+		cand := filepath.Join(home, ".local", "bin", name)
 		if info, err := os.Stat(cand); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
 			return cand
 		}
@@ -97,39 +97,60 @@ func trustedWorkspaceForAgy(configDir string) string {
 	return "/"
 }
 
-const agyIdleMaxAge = 10 * time.Minute
+const (
+	agyIdleMaxAge    = 10 * time.Minute
+	quotaMinFreshAge = 90 * time.Second
+)
 
 type agyProbeTarget struct {
 	id           string
 	profileDir   string
 	live         bool
 	lastActivity int64
+	quotaAt      int64
+	windows      []QuotaWindow
 }
 
-func shouldProbeAgy(prev agyQuotaResult, hasPrev bool, live bool, lastActivity int64, now time.Time) bool {
-	if !hasPrev || len(prev.windows) == 0 {
+// shouldProbeQuota determines whether a CLI account needs a /usage quota refresh.
+func shouldProbeQuota(quotaAt int64, windows []QuotaWindow, idleMaxAge time.Duration, live bool, lastActivity int64, now time.Time) bool {
+	if quotaAt <= 0 || len(windows) == 0 {
 		return true
 	}
 	nowUnix := now.Unix()
-	if nowUnix-prev.fetchedAt >= int64(agyIdleMaxAge/time.Second) {
+	expiredAfterFetch := false
+	for _, w := range windows {
+		if w.ResetsAt > quotaAt && w.ResetsAt <= nowUnix && (w.UsedPercent > 0 || live || lastActivity >= w.ResetsAt) {
+			expiredAfterFetch = true
+			break
+		}
+	}
+	if !expiredAfterFetch && nowUnix-quotaAt < int64(quotaMinFreshAge/time.Second) {
+		return false
+	}
+	if expiredAfterFetch {
+		return true
+	}
+	if nowUnix-quotaAt >= int64(idleMaxAge/time.Second) {
 		return true
 	}
 	if live {
 		return true
 	}
-	if lastActivity > 0 && lastActivity >= prev.fetchedAt-60 {
+	if lastActivity > 0 && lastActivity >= quotaAt-60 {
 		return true
-	}
-	for _, w := range prev.windows {
-		if w.UsedPercent > 0 && w.ResetsAt > prev.fetchedAt && w.ResetsAt <= nowUnix {
-			return true
-		}
 	}
 	return false
 }
 
+func shouldProbeAgy(prev agyQuotaResult, hasPrev bool, live bool, lastActivity int64, now time.Time) bool {
+	if !hasPrev {
+		return true
+	}
+	return shouldProbeQuota(prev.fetchedAt, prev.windows, agyIdleMaxAge, live, lastActivity, now)
+}
+
 func probeAllAgyQuotas(ctx context.Context, root string, now time.Time, prev map[string]agyQuotaResult, hints map[string]agyProbeTarget) (map[string]agyQuotaResult, []string, int) {
-	agyBin := findAgyBinary()
+	agyBin := findNonShimBinary("agy")
 	helper := findAgyHelper()
 	if agyBin == "" {
 		return nil, []string{"agy binary not found"}, 0
