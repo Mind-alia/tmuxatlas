@@ -16,7 +16,8 @@ interface TopBarProps {
   username?: string | null
   onToggleCollapse: () => void
   onOverview: () => void
-  onMonitoring: () => void
+  /** Absent for guests: monitoring describes the hub's own account. */
+  onMonitoring?: () => void
   onWall: () => void
   onAdmin?: () => void
   onOpenPalette: () => void
@@ -90,7 +91,7 @@ export function TopBar({
   const navigation: Array<readonly [string, string, () => void]> = [
     ['overview', 'Vue d’ensemble', onOverview],
     ['wall', 'Mur', onWall],
-    ['monitoring', 'Monitoring', onMonitoring] as const,
+    ...(onMonitoring ? ([['monitoring', 'Monitoring', onMonitoring]] as const) : []),
     ...(role === 'admin' && onAdmin ? ([['admin', 'Administration', onAdmin]] as const) : []),
   ]
   const alertColor = actionable.some(event => event.status === 'error')

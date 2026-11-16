@@ -3,7 +3,12 @@ import { authenticatePasskey, registerPasskey } from '../lib/webauthn'
 import { apiFetch, setCSRFToken } from '../lib/api'
 
 export type AuthMode = 'none' | 'passkey' | 'accounts'
-export type AccountRole = 'admin' | 'user'
+export type AccountRole = 'admin' | 'guest'
+
+/** Anything but "admin" gets the restricted guest interface, like on the server. */
+export function accountRole(value: unknown): AccountRole {
+  return value === 'admin' ? 'admin' : 'guest'
+}
 
 /** Present browser and server passkey errors without exposing untranslated messages. */
 export function passkeyError(cause: unknown, fallback: string): string {
@@ -76,7 +81,7 @@ export function useAuth(): AuthState {
         if (status.authenticated === true) {
           setCSRFToken(status.csrf_token || null)
           setUsername(status.username || null)
-          setRole(status.role === 'admin' || status.role === 'user' ? status.role : 'user')
+          setRole(accountRole(status.role))
           setAuthenticated(true)
           return true
         }
@@ -181,7 +186,7 @@ export function useAuth(): AuthState {
       const data = await res.json()
       setCSRFToken(data.csrf_token || null)
       setUsername(data.username || rawUsername.trim())
-      setRole(data.role === 'admin' || data.role === 'user' ? data.role : 'user')
+      setRole(accountRole(data.role))
       setAuthenticated(true)
       return true
     } catch {

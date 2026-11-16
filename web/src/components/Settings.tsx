@@ -242,8 +242,8 @@ function SettingsContent({
   const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null)
   const [changingPassword, setChangingPassword] = useState(false)
 
-  const isAccountsMode = authMode === 'accounts' || role === 'admin' || role === 'user'
-  const isNonAdminUser = role === 'user'
+  const isAccountsMode = authMode === 'accounts' || role === 'admin' || role === 'guest'
+  const isNonAdminUser = role === 'guest'
 
   const fetchAgentStatus = useCallback(async () => {
     if (isNonAdminUser) return

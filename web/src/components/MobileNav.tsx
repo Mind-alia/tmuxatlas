@@ -16,14 +16,16 @@ export function MobileNav({
   role?: AccountRole | null
   onOverview: () => void
   onSessions: () => void
-  onMonitoring: () => void
+  onMonitoring?: () => void
   onAdmin?: () => void
   onSettings: () => void
 }) {
   const items = [
     { label: 'À traiter', icon: Inbox, action: onOverview, active: currentView === 'overview' },
     { label: 'Sessions', icon: List, action: onSessions, active: false },
-    { label: 'Monitoring', icon: Activity, action: onMonitoring, active: currentView === 'monitoring' },
+    ...(onMonitoring
+      ? [{ label: 'Monitoring', icon: Activity, action: onMonitoring, active: currentView === 'monitoring' }]
+      : []),
     ...(role === 'admin' && onAdmin
       ? [{ label: 'Administration', icon: Shield, action: onAdmin, active: currentView === 'admin' }]
       : []),

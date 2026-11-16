@@ -8,6 +8,7 @@ import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
 import { StatusBar } from './components/StatusBar'
 import { Login } from './components/Login'
+import { InvitePage } from './components/InvitePage'
 import { StateConnectionNotice } from './components/StateConnectionNotice'
 import { AuthLoadingState, EmptyWorkspaceState, WorkspaceLoadingState } from './components/PageStates'
 import type { TerminalCommandActions } from './components/Terminal'
@@ -200,14 +201,14 @@ function AppInner({
     })
   }, [])
   const dismissAllEvents = useCallback(async () => {
-    if (role === 'user') {
+    if (role === 'guest') {
       const actionable = allToolEvents.filter(event => event.status === 'waiting' || event.status === 'error')
       await Promise.all(actionable.map(event => dismissEvent(event)))
       return
     }
     await fetch('/api/tool-events', { method: 'DELETE' })
   }, [allToolEvents, dismissEvent, role])
-  const { pushState, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications(role !== 'user')
+  const { pushState, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications(role !== 'guest')
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
   const [currentView, setCurrentView] = useState<View>(() => getViewFromPath().view)
   const [selectedSession, setSelectedSession] = useState<string | null>(() => getViewFromPath().sessionKey)
@@ -413,7 +414,7 @@ function AppInner({
       navigateTo(null)
       return
     }
-    if (role === 'user' && currentView === 'setup') {
+    if (role === 'guest' && (currentView === 'setup' || currentView === 'monitoring')) {
       navigateTo(null)
     }
   }, [currentView, navigateTo, role])
@@ -799,7 +800,7 @@ function AppInner({
               else setSidebarCollapsed(c => !c)
             }}
             onOverview={() => navigateTo(null)}
-            onMonitoring={() => navigateTo(null, 'monitoring')}
+            onMonitoring={role === 'guest' ? undefined : () => navigateTo(null, 'monitoring')}
             onWall={() => navigateTo(null, 'wall')}
             onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}
             onOpenPalette={() => setQuickSwitcherOpen(true)}
@@ -859,7 +860,7 @@ function AppInner({
                 liveSessions={sessions}
                 onUsersChanged={setAdminUsers}
               />
-            ) : currentView === 'setup' && role !== 'user' ? (
+            ) : currentView === 'setup' && role !== 'guest' ? (
               <Setup onComplete={() => navigateTo(null)} />
             ) : currentView === 'settings' ? (
               <Settings
@@ -881,7 +882,7 @@ function AppInner({
                   onOpenSession={(key: string) => void jumpToSession(key)}
                 />
               )
-            ) : selectedSession && (role !== 'user' || activeSession || selectedSession === pendingSessionRef.current) ? (
+            ) : selectedSession && (role !== 'guest' || activeSession || selectedSession === pendingSessionRef.current) ? (
               <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
                 <Terminal
                   windows={activeSession?.windows}
@@ -927,7 +928,7 @@ function AppInner({
                   fullscreen={terminalFullscreen}
                   zenMode={zenMode}
                   hostLocal={activeHost?.local === true}
-                  voiceAllowed
+                  voiceAllowed={role !== 'guest'}
                   claudeActive={activePane?.current_command === 'claude'}
                   talkSlot={statusBarSlot}
                   onToggleFullscreen={toggleFullscreen}
@@ -937,7 +938,7 @@ function AppInner({
                   terminalDrafts={terminalDrafts}
                 />
               </div>
-            ) : applicationState.connection === 'ready' && sessions.length === 0 && role !== 'user' ? (
+            ) : applicationState.connection === 'ready' && sessions.length === 0 && role !== 'guest' ? (
               <EmptyWorkspaceState onNewSession={openNewSessionModal} onOpenSetup={() => navigateTo(null, 'setup')} />
             ) : (
               <Overview
@@ -967,7 +968,7 @@ function AppInner({
           role={role}
           onOverview={() => navigateTo(null)}
           onSessions={() => setMobileSidebarOpen(true)}
-          onMonitoring={() => navigateTo(null, 'monitoring')}
+          onMonitoring={role === 'guest' ? undefined : () => navigateTo(null, 'monitoring')}
           onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}
           onSettings={navigateToSettings}
         />
@@ -1014,7 +1015,7 @@ export default function App() {
     logout,
     refreshAuthStatus,
   } = useAuth()
-  const prefsProvider = usePreferencesProvider({ localOnly: role === 'user' })
+  const prefsProvider = usePreferencesProvider({ localOnly: role === 'guest' })
   const [showOnboarding, setShowOnboarding] = useState(false)
 
   // Re-fetch preferences after login (initial fetch may have gotten 401)
@@ -1048,6 +1049,10 @@ export default function App() {
 
   if (loading) {
     return <AuthLoadingState />
+  }
+
+  if (authMode === 'accounts' && window.location.pathname === '/invite') {
+    return <InvitePage />
   }
 
   if (authRequired && needsSetup) {
