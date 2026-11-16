@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/LosFurina/tmuxatlas/pkg/accounts"
+	"github.com/LosFurina/tmuxatlas/pkg/auth"
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
 )
@@ -25,7 +27,7 @@ func TestVoiceStatusFollowsTheSessionHost(t *testing.T) {
 	opts, localID := voiceTestOptions(t)
 	for name, host := range map[string]string{"no host": "", "local host": localID, "offline agent": "agents-host"} {
 		t.Run(name, func(t *testing.T) {
-			if status := voiceStatus(opts, nil, host); status.Enabled || status.Ready {
+			if status := voiceStatus(httptest.NewRequest(http.MethodGet, "/api/voice", nil), opts, nil, host); status.Enabled || status.Ready {
 				t.Fatalf("status = %#v", status)
 			}
 		})
@@ -60,5 +62,35 @@ func TestMicHandlerRoutesByHost(t *testing.T) {
 				t.Fatalf("status = %d, want %d", recorder.Code, test.status)
 			}
 		})
+	}
+}
+
+// Another host's microphone feeds recorders that other people's programs run
+// under: an account that is not an administrator cannot stream there.
+func TestRemoteMicIsForAdministrators(t *testing.T) {
+	opts, localID := voiceTestOptions(t)
+	handler := micHandler(opts, nil, peer.NewMicRelay())
+	as := func(role, query string) *http.Request {
+		request := httptest.NewRequest(http.MethodGet, "/ws/mic"+query, nil)
+		return request.WithContext(auth.WithAccount(request.Context(), auth.AccountIdentity{User: accounts.User{Role: role}}))
+	}
+	for name, test := range map[string]struct {
+		request *http.Request
+		status  int
+	}{
+		"user, remote":  {as("user", "?id=tab-0123456789&host=agents-host"), http.StatusForbidden},
+		"user, local":   {as("user", "?id=tab-0123456789&host="+localID), http.StatusNotFound},
+		"admin, remote": {as("admin", "?id=tab-0123456789&host=agents-host"), http.StatusBadGateway},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			handler(recorder, test.request)
+			if recorder.Code != test.status {
+				t.Fatalf("status = %d, want %d", recorder.Code, test.status)
+			}
+		})
+	}
+	if mayUseRemoteMic(as("user", "")) || !mayUseRemoteMic(as("admin", "")) {
+		t.Fatal("remote microphone permission does not follow the role")
 	}
 }

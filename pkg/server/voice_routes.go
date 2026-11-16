@@ -26,15 +26,23 @@ func remoteVoiceHost(opts *Options, hostID string) (*peer.PeerConnection, bool) 
 
 // voiceStatus reports whether the browser microphone can feed the given host:
 // this host's own microphone, or an agent that advertises voice.
-func voiceStatus(opts *Options, local *voice.Mic, hostID string) voice.Status {
+func voiceStatus(r *http.Request, opts *Options, local *voice.Mic, hostID string) voice.Status {
 	if connection, remote := remoteVoiceHost(opts, hostID); remote {
-		supported := connection != nil && connection.Supports(peer.CapabilityVoice)
+		supported := connection != nil && connection.Supports(peer.CapabilityVoice) && mayUseRemoteMic(r)
 		return voice.Status{Enabled: supported, Ready: supported}
 	}
 	if local == nil {
 		return voice.Status{}
 	}
 	return local.Status()
+}
+
+// mayUseRemoteMic reports whether the requester may stream to another host's
+// microphone, which feeds recorders that other people's programs run under:
+// only administrators (or the single-user hub without accounts) may.
+func mayUseRemoteMic(r *http.Request) bool {
+	identity, ok := auth.AccountFromContext(r.Context())
+	return !ok || identity.User.Role == "admin"
 }
 
 // micHandler serves /ws/mic. Without a host, or for this host, audio goes to
@@ -50,6 +58,10 @@ func micHandler(opts *Options, local *voice.Mic, relay *peer.MicRelay) http.Hand
 				return
 			}
 			local.HandleStream(w, r)
+			return
+		}
+		if !mayUseRemoteMic(r) {
+			http.Error(w, "le micro d'un autre hôte est réservé aux administrateurs", http.StatusForbidden)
 			return
 		}
 		micID := r.URL.Query().Get("id")
