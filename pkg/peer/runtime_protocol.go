@@ -118,7 +118,7 @@ func NegotiateHello(hello HelloPayload, generation uint64, hubBuild string) (Hel
 	}
 	return HelloAckPayload{
 		Version:         maxVersion,
-		Capabilities:    intersectCapabilities(hello.Capabilities, RuntimeCapabilities),
+		Capabilities:    intersectCapabilities(hello.Capabilities, HubCapabilities),
 		BuildVersion:    hubBuild,
 		Generation:      generation,
 		AgentInstanceID: hello.AgentInstanceID,

@@ -230,6 +230,13 @@ func (owner *PTYOwner) Bridge() {
 						return
 					}
 				}
+				if frame.Type == "echo" {
+					// The terminal reads input without echo: a password prompt.
+					result, _ := json.Marshal(map[string]any{"type": "echo", "on": frame.Reason == "on"})
+					if err := browserWrite(websocket.TextMessage, result); err != nil {
+						return
+					}
+				}
 				if frame.Type == "close" || frame.Type == "error" {
 					return
 				}

@@ -139,6 +139,11 @@ func (frame PTYControlFrame) Validate() error {
 		if frame.Cols != 0 || frame.Rows != 0 || frame.Data != "" || frame.Final || len(frame.Reason) > maxPTYReason {
 			return errors.New("invalid image result")
 		}
+	case "echo":
+		// Password-entry state of the terminal: Reason is "on" or "off".
+		if frame.Cols != 0 || frame.Rows != 0 || frame.Data != "" || frame.Final || (frame.Reason != "on" && frame.Reason != "off") {
+			return errors.New("invalid echo control frame")
+		}
 	case "close", "error":
 		if frame.Cols != 0 || frame.Rows != 0 || len(frame.Reason) > maxPTYReason || frame.Data != "" || frame.Final {
 			return errors.New("invalid PTY close/error control frame")
