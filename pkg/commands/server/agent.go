@@ -15,6 +15,7 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
 	agentserver "github.com/LosFurina/tmuxatlas/pkg/server"
 	"github.com/LosFurina/tmuxatlas/pkg/state"
+	"github.com/LosFurina/tmuxatlas/pkg/sudoterm"
 	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
 )
@@ -84,10 +85,26 @@ func ExecuteAgent(ctx context.Context, c *cli.Command) error {
 	peerClient := peer.NewClient(
 		hubURL, nodeIdentity, peerStore, stateMgr, peerMgr, actTracker, tracker, client.TmuxPath(),
 	)
+	if c.Bool("sudo-terminal") {
+		runner, err := sudoterm.NewRunner(sudoterm.DefaultConfig())
+		if err != nil {
+			return err
+		}
+		auditPath, err := sudoterm.AuditPath()
+		if err != nil {
+			return err
+		}
+		audit, err := sudoterm.NewAudit(auditPath)
+		if err != nil {
+			return fmt.Errorf("sudo audit log: %w", err)
+		}
+		peerClient.EnableSudoTerminal(runner, audit)
+		logrus.WithField("audit", auditPath).Warn("sudo terminal enabled: the hub's administrators may run approved sudo commands as this account")
+	}
 	go peerClient.Run(ctx)
 	logrus.WithFields(logrus.Fields{
 		"hub": hubURL, "name": nodeIdentity.Name, "fingerprint": nodeIdentity.Fingerprint(),
 	}).Info("starting headless TmuxAtlas agent")
 
-	return agentserver.RunAgentSocket(ctx, c.String("socket"), tracker, peerMgr, nil)
+	return agentserver.RunAgentSocket(ctx, c.String("socket"), tracker, peerMgr, peerClient.SudoBroker())
 }

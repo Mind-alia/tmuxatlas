@@ -10,58 +10,22 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/LosFurina/tmuxatlas/pkg/sudoterm/sudotermtest"
 )
 
-// fakeSudo never grants privileges: it reads a line on /dev/tty without
-// echo, like sudo does, then runs the command as the test user.
-const fakeSudo = `#!/bin/sh
-prompt="[sudo] password: "
-nonint=0
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -k) shift ;;
-    -n) nonint=1; shift ;;
-    -p) prompt="$2"; shift 2 ;;
-    --) shift; break ;;
-    *) break ;;
-  esac
-done
-[ $# -eq 0 ] && exit 0
-if [ "$nonint" = 1 ]; then
-  [ "${FAKE_SUDO_NOPASSWD:-0}" = 1 ] && exec "$@"
-  echo "sudo: a password is required" >&2
-  exit 1
-fi
-printf '%s' "$prompt" > /dev/tty
-stty -echo < /dev/tty
-IFS= read -r typed < /dev/tty
-stty echo < /dev/tty
-printf '\n' > /dev/tty
-[ -n "$typed" ] || { echo "sudo: no input" >&2; exit 1; }
-exec "$@"
-`
+const typedLine = sudotermtest.TypedLine
 
-// typedLine stands for what a human types at the prompt. It is a fixed
-// test string, not a credential.
-const typedLine = "frappe-humaine-1234"
-
-// installFakeSudo puts the fake first in PATH and refuses to go on unless
-// "sudo" resolves to it: these tests must never reach the real binary.
+// installFakeSudo builds a runner on the fake sudo, never the real one.
 func installFakeSudo(t *testing.T) *Runner {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sudo")
-	if err := os.WriteFile(path, []byte(fakeSudo), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	path := sudotermtest.Install(t)
 	runner, err := NewRunner(Config{MaxDuration: 10 * time.Second, IdleTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := runner.SudoPath()
-	if err != nil || resolved != path {
-		t.Fatalf("sudo resolves to %q, not the fake %q: refusing to run", resolved, path)
+	if resolved, err := runner.SudoPath(); err != nil || resolved != path {
+		t.Fatalf("runner resolves sudo to %q: refusing to run", resolved)
 	}
 	return runner
 }
