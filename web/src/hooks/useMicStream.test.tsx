@@ -67,5 +67,7 @@ describe('useMicStream', () => {
     await waitFor(() => expect(hook.result.current.state).toBe('off'))
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/voice?host=host-b'))
     expect(hook.result.current.available).toBe(false)
+    // The previous host's answer must not start a stream to the new host.
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
   })
 })
