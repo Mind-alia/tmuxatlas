@@ -89,8 +89,14 @@ l’attribution côté serveur. Sur un hôte attribué, le propriétaire d’une
 reste une étiquette ; un invité ne peut prendre une session que pour lui-même.
 Son annuaire `/api/accounts/directory` ne contient que lui. Les autres routes
 protégées lui sont refusées par défaut : administration, surveillance
-(`/api/monitor`), statistiques (`/api/stats`), voix (`/api/voice`, `/ws/mic`),
-peers, push et écriture des préférences.
+(`/api/monitor`), statistiques (`/api/stats`), conteneurs, sauvegardes et
+alertes (`/api/ops`, `/api/ops/notifications/test`), peers, push et écriture
+des préférences.
+
+Le micro (`/api/voice?host=`, `/ws/mic?host=`) suit l’accès au terminal : un
+invité peut parler vers un hôte qui lui est attribué (son micro est relayé à
+l’Agent de cet hôte), jamais vers l’hôte du hub ni sans `host` ; un admin peut
+parler vers tous les hôtes.
 
 L’hôte du hub (son propre tmux) n’est jamais attribué à un invité, car le hub
 tourne sous le compte de production. `TMUXATLAS_GUEST_LOCAL_HOST=allow` lève

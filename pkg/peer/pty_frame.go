@@ -84,6 +84,8 @@ type PTYControlFrame struct {
 	Reason   string `json:"reason,omitempty"`
 	Data     string `json:"data,omitempty"`
 	Final    bool   `json:"final,omitempty"`
+	// On starts (true) or stops (false) a voice-hold.
+	On bool `json:"on,omitempty"`
 }
 
 func EncodePTYControlFrame(frame PTYControlFrame) ([]byte, error) {
@@ -116,7 +118,14 @@ func (frame PTYControlFrame) Validate() error {
 	if frame.Sequence == 0 {
 		return errors.New("PTY control sequence must be positive")
 	}
+	if frame.On && frame.Type != "voice-hold" {
+		return errors.New("only voice-hold can be on")
+	}
 	switch frame.Type {
+	case "voice-hold":
+		if frame.Cols != 0 || frame.Rows != 0 || frame.Reason != "" || frame.Data != "" || frame.Final {
+			return errors.New("invalid voice-hold control frame")
+		}
 	case "image":
 		if frame.Cols != 0 || frame.Rows != 0 || frame.Reason != "" || len(frame.Data) > 32768 {
 			return errors.New("invalid image control frame")

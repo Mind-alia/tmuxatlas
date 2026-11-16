@@ -25,6 +25,9 @@ const (
 	CapabilitySessionExtras    = "session-extras"
 	CapabilitySessionOwnership = "session-ownership"
 	CapabilitySessionOwnerName = "session-owner-name"
+	// CapabilityVoice is advertised only by agents running with TMUXATLAS_VOICE=on:
+	// they accept browser microphones (mic-open) and voice-hold control frames.
+	CapabilityVoice = "voice"
 
 	maxRuntimeIDLength = 128
 	maxOperationLength = 64
@@ -41,6 +44,20 @@ var RuntimeCapabilities = []string{
 	CapabilitySessionExtras,
 	CapabilitySessionOwnership,
 	CapabilitySessionOwnerName,
+	CapabilityVoice,
+}
+
+// helloCapabilities lists what an agent offers the hub. Voice is offered only
+// when the agent has a virtual microphone.
+func helloCapabilities(voice bool) []string {
+	capabilities := make([]string, 0, len(RuntimeCapabilities))
+	for _, capability := range RuntimeCapabilities {
+		if capability == CapabilityVoice && !voice {
+			continue
+		}
+		capabilities = append(capabilities, capability)
+	}
+	return capabilities
 }
 
 type SessionTarget struct {
