@@ -1,0 +1,17 @@
+# Example unit for the account that owns Docker (transcriptflow).
+# Install in ~/.config/systemd/user/ of that account, after reviewing the
+# script and copying it to a path only that account can write.
+[Unit]
+Description=TmuxAtlas ops: snapshot of Docker containers
+
+[Service]
+Type=oneshot
+Environment=TF_OPS_DIR=/srv/tf-ops
+ExecStart=%h/.local/libexec/tf-ops/docker-snapshot.sh
+# The script needs the Docker socket and the status directory, nothing else.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/tf-ops
+TimeoutStartSec=60
+Nice=10
