@@ -257,14 +257,45 @@ func (owner *PTYOwner) Bridge() {
 				}
 			case websocket.TextMessage:
 				var browserResize struct {
-					Type  string `json:"type"`
-					Cols  uint16 `json:"cols"`
-					Rows  uint16 `json:"rows"`
-					Data  string `json:"data"`
-					Final bool   `json:"final"`
+					Type   string `json:"type"`
+					Cols   uint16 `json:"cols"`
+					Rows   uint16 `json:"rows"`
+					Data   string `json:"data"`
+					Final  bool   `json:"final"`
+					On     bool   `json:"on"`
+					Action string `json:"action"`
+					Submit bool   `json:"submit"`
 				}
 				if err := jsonUnmarshalStrict(data, &browserResize); err != nil {
 					return
+				}
+				// Local-only Terminal requests must not end a remote stream.
+				switch browserResize.Type {
+				case "use":
+					if !owner.connection.Supports(CapabilityPTYClaim) {
+						continue
+					}
+					controlSequence++
+					frame, err := EncodePTYControlFrame(PTYControlFrame{
+						Version: PTYFrameVersion, Type: "use", Sequence: controlSequence,
+					})
+					if err != nil || peerWS.WriteMessage(websocket.TextMessage, frame) != nil {
+						return
+					}
+					continue
+				case "voice-hold":
+					continue
+				case "dictation":
+					if browserResize.Action == "start" || browserResize.Action == "stop" {
+						result, _ := json.Marshal(map[string]string{
+							"type": "dictation", "action": browserResize.Action,
+							"error": "La dictée n’est pas disponible sur une session distante.",
+						})
+						if browserWrite(websocket.TextMessage, result) != nil {
+							return
+						}
+					}
+					continue
 				}
 				if browserResize.Type == "image" && !owner.connection.Supports(CapabilityClipboardImage) {
 					if !unsupportedImage {

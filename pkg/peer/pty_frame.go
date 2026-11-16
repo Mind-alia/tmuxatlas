@@ -131,6 +131,10 @@ func (frame PTYControlFrame) Validate() error {
 		if frame.Reason != "" {
 			return errors.New("PTY resize cannot contain reason")
 		}
+	case "use":
+		if frame.Cols != 0 || frame.Rows != 0 || frame.Reason != "" || frame.Data != "" || frame.Final {
+			return errors.New("invalid use control frame")
+		}
 	case "image-result":
 		if frame.Cols != 0 || frame.Rows != 0 || frame.Data != "" || frame.Final || len(frame.Reason) > maxPTYReason {
 			return errors.New("invalid image result")

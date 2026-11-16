@@ -49,7 +49,11 @@ func TestPTYControlFrameValidation(t *testing.T) {
 	if err != nil || decoded.Cols != 120 || decoded.Rows != 40 {
 		t.Fatalf("decoded=%#v err=%v", decoded, err)
 	}
+	if _, err := EncodePTYControlFrame(PTYControlFrame{Version: PTYFrameVersion, Type: "use", Sequence: 1}); err != nil {
+		t.Fatalf("use control rejected: %v", err)
+	}
 	for _, malformed := range [][]byte{
+		[]byte(`{"version":1,"type":"use","sequence":1,"cols":80}`),
 		[]byte(`{"version":1,"type":"resize","sequence":1,"cols":0,"rows":20}`),
 		[]byte(`{"version":1,"type":"resize","sequence":1,"cols":80,"rows":20,"extra":true}`),
 		[]byte(`{"version":1,"type":"close","sequence":0}`),

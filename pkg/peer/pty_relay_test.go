@@ -183,3 +183,74 @@ func TestPTYOwnerRejectsAttachmentAfterPendingDeadline(t *testing.T) {
 		t.Fatal("late attachment was accepted")
 	}
 }
+
+// A remote Terminal sends the same local-only requests as a local one ("use"
+// when touched or focused, "voice-hold", "dictation"). None may end the stream.
+func TestPTYBridgeKeepsStreamOnTerminalOnlyRequests(t *testing.T) {
+	for _, withClaim := range []bool{true, false} {
+		browserClient, browserServer := websocketPair(t)
+		agentClient, agentServer := websocketPair(t)
+		relay := NewPTYRelay()
+		capabilities := RuntimeCapabilities
+		if !withClaim {
+			capabilities = nil
+			for _, capability := range RuntimeCapabilities {
+				if capability != CapabilityPTYClaim {
+					capabilities = append(capabilities, capability)
+				}
+			}
+		}
+		connection := newPeerConnection(t.Context(), "host", 4, capabilities, "instance", 1,
+			func(*Message) error { return nil }, nil)
+		owner, err := relay.RegisterPending(connection, SessionTarget{HostID: "host", Session: "target"}, browserServer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !relay.CompletePending(owner.StreamID, "host", 4, owner.AttachToken, "target", agentServer) {
+			t.Fatal("valid PTY attachment rejected")
+		}
+		go owner.Bridge()
+
+		for _, request := range []string{
+			`{"type":"use"}`,
+			`{"type":"voice-hold","on":true}`,
+			`{"type":"voice-hold","on":false}`,
+			`{"type":"dictation","action":"start","submit":false}`,
+		} {
+			if err := browserClient.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_ = browserClient.SetReadDeadline(time.Now().Add(time.Second))
+		_, reply, err := browserClient.ReadMessage()
+		if err != nil || !strings.Contains(string(reply), `"type":"dictation"`) || !strings.Contains(string(reply), `"error"`) {
+			t.Fatalf("dictation reply=%s err=%v", reply, err)
+		}
+
+		if err := browserClient.WriteMessage(websocket.TextMessage, []byte(`{"type":"resize","cols":100,"rows":30}`)); err != nil {
+			t.Fatal(err)
+		}
+		_ = agentClient.SetReadDeadline(time.Now().Add(time.Second))
+		wantSequence := uint64(1)
+		if withClaim {
+			_, useData, err := agentClient.ReadMessage()
+			if err != nil {
+				t.Fatalf("use not forwarded: %v", err)
+			}
+			use, err := DecodePTYControlFrame(useData)
+			if err != nil || use.Type != "use" || use.Sequence != 1 {
+				t.Fatalf("use=%#v err=%v", use, err)
+			}
+			wantSequence = 2
+		}
+		_, resizeData, err := agentClient.ReadMessage()
+		if err != nil {
+			t.Fatalf("stream ended after terminal-only requests (claim=%v): %v", withClaim, err)
+		}
+		resize, err := DecodePTYControlFrame(resizeData)
+		if err != nil || resize.Type != "resize" || resize.Sequence != wantSequence {
+			t.Fatalf("resize=%#v err=%v", resize, err)
+		}
+		owner.Teardown("test-end")
+	}
+}

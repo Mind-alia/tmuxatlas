@@ -30,6 +30,12 @@ type ptyDevice interface {
 	Close()
 }
 
+// ptyClaimer is a PTY whose tmux client can become the one the session's
+// windows take their size from.
+type ptyClaimer interface {
+	Claim() error
+}
+
 type ActivePTY struct {
 	StreamID string
 	Target   SessionTarget
@@ -181,6 +187,14 @@ func (pm *PTYManager) Open(request PTYOpenPayload) {
 				case "resize":
 					if err := ptySession.Resize(frame.Cols, frame.Rows); err != nil {
 						return
+					}
+				case "use":
+					if claimer, ok := ptySession.(ptyClaimer); ok {
+						go func() {
+							if err := claimer.Claim(); err != nil {
+								log.WithError(err).Debug("claim size failed")
+							}
+						}()
 					}
 				case "close", "error":
 					return

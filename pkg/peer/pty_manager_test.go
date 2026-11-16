@@ -166,6 +166,74 @@ func TestAgentPTYRelayAppliesResizeAndInputToBoundDevice(t *testing.T) {
 	}
 }
 
+type fakeClaimPTYDevice struct {
+	*fakePTYDevice
+	claimed chan struct{}
+}
+
+func (device *fakeClaimPTYDevice) Claim() error {
+	select {
+	case device.claimed <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func TestAgentPTYRelayClaimsSizeOnUse(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	attached := make(chan *websocket.Conn, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		conn, err := upgrader.Upgrade(w, request, nil)
+		if err == nil {
+			attached <- conn
+		}
+	}))
+	defer server.Close()
+
+	node, _ := identity.Generate("agent")
+	manager := NewManager(node, nil, nil)
+	manager.localID = "agent-host"
+	client := &Client{hubURL: strings.Replace(server.URL, "http://", "ws://", 1), peerMgr: manager, runtimeGeneration: 7}
+	device := &fakeClaimPTYDevice{fakePTYDevice: newFakePTYDevice(), claimed: make(chan struct{}, 1)}
+	ptyManager := NewPTYManager("fake-tmux", nil, client)
+	ptyManager.openPTY = func(string, string, uint16, uint16) (ptyDevice, error) { return device, nil }
+	done := make(chan struct{})
+	go func() {
+		ptyManager.Open(PTYOpenPayload{
+			StreamID: "stream", AttachToken: "attach-token", Generation: 7,
+			Target: SessionTarget{HostID: "agent-host", Session: "work"}, Cols: 80, Rows: 24,
+		})
+		close(done)
+	}()
+	var hubConn *websocket.Conn
+	select {
+	case hubConn = <-attached:
+	case <-time.After(time.Second):
+		t.Fatal("Agent did not attach data channel")
+	}
+	use, _ := EncodePTYControlFrame(PTYControlFrame{Version: PTYFrameVersion, Type: "use", Sequence: 1})
+	if err := hubConn.WriteMessage(websocket.TextMessage, use); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-device.claimed:
+	case <-time.After(time.Second):
+		t.Fatal("use did not claim the tmux size")
+	}
+	select {
+	case <-device.closed:
+		t.Fatal("use ended the remote PTY")
+	default:
+	}
+	_ = hubConn.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Agent PTY relay leaked after disconnect")
+	}
+}
+
 func TestAgentPTYRejectsStaleGenerationBeforeCreatingDevice(t *testing.T) {
 	node, _ := identity.Generate("agent")
 	manager := NewManager(node, nil, nil)

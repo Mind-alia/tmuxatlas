@@ -20,6 +20,9 @@ const (
 	CapabilityRequestResults = "request-results"
 	CapabilityPTYControl     = "pty-control"
 	CapabilityClipboardImage = "clipboard-image"
+	// CapabilityPTYClaim lets the Hub forward a Terminal's "use" request so
+	// the Agent's tmux windows take that Terminal's size.
+	CapabilityPTYClaim = "pty-claim"
 	// CapabilitySessionExtras covers preview, reply, directories and the
 	// cwd/agent options of "new". Agents without it get a clean "unsupported".
 	CapabilitySessionExtras    = "session-extras"
@@ -38,6 +41,7 @@ var RuntimeCapabilities = []string{
 	CapabilityRequestResults,
 	CapabilityPTYControl,
 	CapabilityClipboardImage,
+	CapabilityPTYClaim,
 	CapabilitySessionExtras,
 	CapabilitySessionOwnership,
 	CapabilitySessionOwnerName,
