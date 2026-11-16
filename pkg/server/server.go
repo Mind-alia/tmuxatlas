@@ -356,6 +356,12 @@ func Run(ctx context.Context, opts *Options) error {
 	publicRouter.Use(hostValidation)
 	publicRouter.Use(httpguard.GlobalBodyLimitMiddleware(httpguard.GlobalBodyLimit))
 	accountPolicy := newAccountPolicy(opts)
+	if opts.AccountsAuth != nil && opts.PeerHandler != nil {
+		opts.PeerHandler.OnAccountPaired = func(account, hostID, _ string) error {
+			_, err := opts.AccountsAuth.Store.GrantHost(account, hostID, accountPolicy.grantableHost)
+			return err
+		}
+	}
 	if actionRouter != nil {
 		accountPolicy.router = actionRouter
 	}
@@ -373,6 +379,10 @@ func Run(ctx context.Context, opts *Options) error {
 				Post("/auth/login", opts.AccountsAuth.Login)
 			r.With(opts.AccountsAuth.Middleware, originMiddleware, auth.CSRFMiddleware(opts.SessionMgr)).
 				Post("/auth/logout", opts.AccountsAuth.Logout)
+			invitationJSON := r.With(admissionMiddleware(ingressPolicy, ingress.CategoryWebAuthn), originMiddleware,
+				httpguard.BodyReadDeadline(15*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit))
+			invitationJSON.Post("/auth/invitation/inspect", opts.AccountsAuth.InspectInvitation)
+			invitationJSON.Post("/auth/invitation/accept", opts.AccountsAuth.AcceptInvitation)
 		} else {
 			r.Get("/auth/status", auth.StatusHandler(opts.AuthEnabled, opts.PasskeyManager))
 		}
@@ -427,6 +437,19 @@ func Run(ctx context.Context, opts *Options) error {
 				})
 				mutations.With(accountAdminOnly).Delete("/admin/users/{id}", func(w http.ResponseWriter, r *http.Request) {
 					handleAdminUserDelete(w, r, opts, actionRouter)
+				})
+				adminJSON := mutations.With(accountAdminOnly, httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit))
+				adminJSON.Post("/admin/users/{id}/invitation", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminInvitation(w, r, opts)
+				})
+				mutations.With(accountAdminOnly).Delete("/admin/users/{id}/invitation", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminInvitation(w, r, opts)
+				})
+				mutations.With(accountAdminOnly, admissionMiddleware(ingressPolicy, ingress.CategoryPairing)).Post("/admin/users/{id}/pairing", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminPairing(w, r, opts)
+				})
+				r.With(accountAdminOnly).Get("/admin/hosts", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminHosts(w, opts)
 				})
 				r.With(accountAdminOnly).Get("/admin/sessions", func(w http.ResponseWriter, r *http.Request) {
 					snapshot, err := coordinator.Snapshot(r.Context())

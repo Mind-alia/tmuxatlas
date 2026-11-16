@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -27,10 +28,13 @@ var wsUpgrader = websocket.Upgrader{
 
 // Handler handles incoming peer WebSocket connections (hub side)
 type Handler struct {
-	manager          *Manager
-	peerStore        *identity.PeerStore
-	tracker          *toolevents.Tracker
-	pairing          *identity.PairingManager
+	manager   *Manager
+	peerStore *identity.PeerStore
+	tracker   *toolevents.Tracker
+	pairing   *identity.PairingManager
+	// OnAccountPaired grants a host paired with an account's code to that
+	// account. It runs before the code is consumed.
+	OnAccountPaired  func(account, hostID, name string) error
 	ptyRelay         *PTYRelay
 	publicURL        string
 	handshakeTimeout time.Duration
@@ -315,10 +319,25 @@ func (h *Handler) HandlePairing(w http.ResponseWriter, r *http.Request) {
 
 	log := logrus.WithField("remote", r.RemoteAddr)
 
-	if err := h.pairing.Complete(req.Code, func() error {
-		return h.peerStore.Add(identity.Peer{
-			Name: name, PublicKey: req.PublicKey, PairedAt: time.Now(),
-		})
+	if err := h.pairing.CompleteFor(req.Code, func(account string) error {
+		paired := identity.Peer{Name: name, PublicKey: req.PublicKey, PairedAt: time.Now()}
+		if err := h.peerStore.Add(paired); err != nil {
+			return err
+		}
+		if account == "" {
+			return nil
+		}
+		// The code was made for one account: grant it the new host, or undo
+		// the pairing so that no host is left without its intended owner.
+		if h.OnAccountPaired == nil {
+			_ = h.peerStore.Remove(name)
+			return fmt.Errorf("account pairing unavailable")
+		}
+		if err := h.OnAccountPaired(account, paired.Fingerprint(), name); err != nil {
+			_ = h.peerStore.Remove(name)
+			return err
+		}
+		return nil
 	}); err != nil {
 		log.WithField("result", "rejected").Warn("pairing completion rejected")
 		http.Error(w, "pairing failed", http.StatusUnauthorized)
