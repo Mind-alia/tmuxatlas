@@ -9,6 +9,13 @@ export interface LinuxSetupInput {
   pairingCode?: string
 }
 
+/**
+ * Where the reviewed binary lives. Only root writes there, through the
+ * deployment procedure (docs/deploiement.md); the commands below never copy a
+ * binary from the current directory, which another account may control.
+ */
+export const TRUSTED_BINARY = '/opt/tmuxatlas/tmuxatlas'
+
 const UNIX_USER_RE = /^[a-z_][a-z0-9_-]{0,31}$/
 
 export function isValidUnixUser(value: string): boolean {
@@ -27,15 +34,16 @@ export function linuxSetupCommands({ unixUser, hubURL, pairingCode }: LinuxSetup
     `id ${unixUser}   # vérifier : ni docker, ni sudo, ni wheel, ni adm`,
     `loginctl enable-linger ${unixUser}`,
     '',
-    '# 2. En root : installer un binaire relu, que ni ce compte ni agents ne peuvent modifier',
-    `install -d -o root -g root -m 755 /opt/tmuxatlas`,
-    `install -o root -g root -m 755 ./tmuxatlas /opt/tmuxatlas/tmuxatlas`,
+    '# 2. En root : vérifier le binaire relu, installé par la procédure de déploiement (docs/deploiement.md).',
+    '#    Ne copier aucun binaire depuis le dossier courant : il peut appartenir à un autre compte.',
+    `stat -c '%U:%G %a %n' /opt/tmuxatlas ${TRUSTED_BINARY}   # attendu : root:root 755, pour les deux`,
+    `${TRUSTED_BINARY} --version`,
     '',
     '# 3. Sous ce compte (session complète pour systemd --user)',
     `machinectl shell ${unixUser}@`,
-    `/opt/tmuxatlas/tmuxatlas pair --hub ${hubURL} --code ${code} --name ${unixUser}@$(hostname)`,
+    `${TRUSTED_BINARY} pair --hub ${hubURL} --code ${code} --name ${unixUser}@$(hostname)`,
     '# Plafond local des fichiers, que le hub ne peut pas dépasser : off, ro ou rw',
     `printf 'TMUXATLAS_FILES=rw\\n' >> ~/.config/tmuxatlas/.env`,
-    `/opt/tmuxatlas/tmuxatlas install --mode agent`,
+    `${TRUSTED_BINARY} install --mode agent`,
   ].join('\n')
 }

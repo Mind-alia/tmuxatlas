@@ -70,6 +70,13 @@ Docker, hence root. Moving it is recommended but out of scope here.
 Nothing here is installed by TmuxAtlas. Read `contrib/ops/docker-snapshot.sh`
 before copying it.
 
+Every file below is copied from **transcriptflow's own clone**
+(`~transcriptflow/src/tmuxatlas`), checked out at the commit you reviewed and
+whose SHA you verified, as described in [deploiement.md](deploiement.md).
+Never copy them from a checkout another account can write (`/home/agents`, a
+shared worktree, a downloaded archive): the collector runs as transcriptflow,
+which has Docker, hence root.
+
 ```bash
 # 1. As root: a group for readers, the status directory. Only needed when the
 #    hub runs in another account; replace "tfmonitor" by that account.
@@ -77,9 +84,11 @@ sudo groupadd --system tfops
 sudo usermod -aG tfops tfmonitor
 sudo install -d -o transcriptflow -g tfops -m 2750 /srv/tf-ops
 
-# 2. As transcriptflow: copy a reviewed version of the collector into a path
-#    that only transcriptflow can write (never run it from another account's
-#    checkout).
+# 2. As transcriptflow: copy the reviewed collector from your own clone, at the
+#    verified commit, into a path that only transcriptflow can write.
+cd ~/src/tmuxatlas
+test "$(git rev-parse HEAD)" = "$EXPECTED_SHA" || { echo "wrong commit"; exit 1; }
+test -z "$(git status --porcelain)" || { echo "clone is not clean"; exit 1; }
 install -D -m 0755 contrib/ops/docker-snapshot.sh ~/.local/libexec/tf-ops/docker-snapshot.sh
 install -D -m 0644 contrib/ops/systemd/tf-ops-docker-snapshot.service ~/.config/systemd/user/tf-ops-docker-snapshot.service
 install -D -m 0644 contrib/ops/systemd/tf-ops-docker-snapshot.timer ~/.config/systemd/user/tf-ops-docker-snapshot.timer
@@ -189,7 +198,8 @@ fi
 # step running at that moment instead.
 ```
 
-Install the library next to the collector:
+Install the library next to the collector, from the same clone and verified
+commit as above (`cd ~/src/tmuxatlas`, check `git rev-parse HEAD`):
 `install -D -m 0644 contrib/ops/backup-status.sh ~/.local/libexec/tf-ops/backup-status.sh`.
 Check that `sha256sum` and `rclone check` are available.
 
