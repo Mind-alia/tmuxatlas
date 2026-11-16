@@ -354,6 +354,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		Role:            map[bool]string{true: "hub", false: "standalone"}[pureHub],
 		Deployment:      os.Getenv("TMUXATLAS_DEPLOYMENT"),
 		SudoPeers:       c.String("sudo-peers"),
+		SudoRequesters:  c.String("sudo-requesters"),
 	}
 
 	// Start the HTTP server (blocks until ctx is cancelled)
@@ -422,6 +423,10 @@ func serverFlags() []cli.Flag {
 			Name: "sudo-peers", Usage: "Comma-separated fingerprints of the peers allowed to open sudo terminals",
 			Sources: cli.EnvVars("TMUXATLAS_SUDO_PEERS"),
 		},
+		&cli.StringFlag{
+			Name: "sudo-requesters", Usage: "Comma-separated fingerprints of the hosts allowed to file sudo requests (empty refuses all)",
+			Sources: cli.EnvVars("TMUXATLAS_SUDO_REQUESTERS"),
+		},
 	}
 }
 
@@ -451,6 +456,10 @@ func hubFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name: "sudo-peers", Usage: "Comma-separated fingerprints of the peers allowed to open sudo terminals",
 			Sources: cli.EnvVars("TMUXATLAS_SUDO_PEERS"),
+		},
+		&cli.StringFlag{
+			Name: "sudo-requesters", Usage: "Comma-separated fingerprints of the hosts allowed to file sudo requests (empty refuses all)",
+			Sources: cli.EnvVars("TMUXATLAS_SUDO_REQUESTERS"),
 		},
 	}
 }

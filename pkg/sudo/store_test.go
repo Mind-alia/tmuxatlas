@@ -329,6 +329,25 @@ func TestLimitsPerHost(t *testing.T) {
 	}
 }
 
+func TestLimitsCreationsPerHost(t *testing.T) {
+	s, c := newTestStore()
+	limits := DefaultLimits()
+	for range limits.MaxCreatesPerWindow {
+		r := create(t, s, "true")
+		if _, err := s.Cancel(r.ID, "host-agents"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Create(CreateInput{Origin: Origin{HostID: "host-agents"}, Command: "true"}); !errors.Is(err, ErrTooMany) {
+		t.Fatalf("file-and-cancel loop not limited: %v", err)
+	}
+	if _, err := s.Create(CreateInput{Origin: Origin{HostID: "host-other"}, Command: "true"}); err != nil {
+		t.Fatalf("another host was limited: %v", err)
+	}
+	c.Advance(limits.CreateWindow)
+	create(t, s, "true")
+}
+
 func TestWaitReturnsOnFinalState(t *testing.T) {
 	s, _ := newTestStore()
 	r := create(t, s, "true")

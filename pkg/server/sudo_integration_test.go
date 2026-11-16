@@ -79,7 +79,7 @@ func TestSudoTerminalEndToEnd(t *testing.T) {
 	relay := peer.NewPTYRelay()
 	tracker := toolevents.NewTracker()
 	handler := peer.NewHandler(manager, store, tracker, identity.NewPairingManager(), relay, "")
-	opts := &Options{AuthEnabled: true, PeerMgr: manager, Tracker: tracker, PTYRelay: relay, PeerHandler: handler, SudoPeers: sudoID.Fingerprint()}
+	opts := &Options{AuthEnabled: true, PeerMgr: manager, Tracker: tracker, PTYRelay: relay, PeerHandler: handler, SudoPeers: sudoID.Fingerprint(), SudoRequesters: agentID.Fingerprint()}
 	service := newSudoService(opts)
 	admin := sudo.Actor{ID: "u-admin", Name: "admin"}
 	service.admins = fixedAdmin{admin}

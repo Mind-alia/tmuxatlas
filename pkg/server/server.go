@@ -75,7 +75,10 @@ type Options struct {
 	Watcher          *toolevents.Watcher
 	// SudoPeers pins the fingerprints of the peers allowed to open sudo
 	// terminals (TMUXATLAS_SUDO_PEERS).
-	SudoPeers      string
+	SudoPeers string
+	// SudoRequesters lists the fingerprints of the hosts allowed to file sudo
+	// requests (TMUXATLAS_SUDO_REQUESTERS). Empty refuses every request.
+	SudoRequesters string
 	LocalOnly      bool
 	routerObserver func(chi.Routes)
 }
