@@ -6,7 +6,6 @@ import {
   FolderGit2,
   GitBranch,
   Infinity as InfinityIcon,
-  MessageSquare,
   Pause,
   Pencil,
   Play,
@@ -19,7 +18,6 @@ import {
   TriangleAlert,
 } from 'lucide-react'
 import type { Session } from '../../hooks/useSessions'
-import { sessionKey } from '../../hooks/useSessions'
 import { getBrandStorage, setBrandStorage } from '../../lib/brandStorage'
 import { Button, Dialog, EmptyState } from '../ui'
 import { ProjectSelector } from './ProjectSelector'
@@ -89,7 +87,7 @@ function defaultPersonFor(profiles: LoopProfile[] | undefined, saved?: string): 
   return people[0] || ''
 }
 
-export function LoopsPage({ sessions, onOpenSession, onRefreshSessions, currentUsername }: LoopsPageProps) {
+export function LoopsPage({ onOpenSession, onRefreshSessions, currentUsername }: LoopsPageProps) {
   const [meta, setMeta] = useState<LoopsMeta | null>(null)
   const [loops, setLoops] = useState<LoopItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -97,14 +95,11 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions, currentU
   const [actionBusy, setActionBusy] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
 
-  // Shared active project across Loops & Quick Chats
+  // Project context for missions
   const [selectedProject, setSelectedProject] = useState(() => getBrandStorage('loops-chat-project') || '')
   const [filterByProject, setFilterByProject] = useState(false)
 
-  // Quick chat controls
-  const [chatPrompt, setChatPrompt] = useState('')
-  const [chatModel, setChatModel] = useState('')
-  const [chatAdvanced, setChatAdvanced] = useState(false)
+  // Default account for contextual chats
   const [chatPersons, setChatPersons] = useState<Record<LoopCLI, string>>(() => ({
     claude: getBrandStorage('loops-person-claude') || '',
     codex: getBrandStorage('loops-person-codex') || '',
@@ -261,31 +256,9 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions, currentU
     return () => controller.abort()
   }, [selectedLoop?.id, selectedLoop?.status, selectedIter])
 
-  // Detect active tmux sessions per CLI on the local host for quick jump
-  const activeSessionsByCLI = useMemo(() => {
-    const map: Record<LoopCLI, Session[]> = { claude: [], codex: [], agy: [] }
-    const localHost = meta?.host_id
-    for (const session of sessions) {
-      if (localHost && session.host !== localHost) continue
-      const commands = session.windows.flatMap(w => w.panes.map(p => p.current_command.toLowerCase()))
-      const nameLower = session.name.toLowerCase()
-      for (const cli of cliOrder) {
-        if (commands.includes(cli) || nameLower.endsWith(`-${cli}`) || nameLower.includes(`-${cli}-`)) {
-          map[cli].push(session)
-        }
-      }
-    }
-    return map
-  }, [meta?.host_id, sessions])
-
   const handleSelectProject = (path: string) => {
     setSelectedProject(path)
     if (path.trim()) setBrandStorage('loops-chat-project', path.trim())
-  }
-
-  const handlePersonChange = (cli: LoopCLI, person: string) => {
-    setChatPersons(prev => ({ ...prev, [cli]: person }))
-    setBrandStorage(`loops-person-${cli}`, person)
   }
 
   const handleOpenChat = async (cli: LoopCLI, cwdOverride?: string, personOverride?: string) => {
@@ -302,8 +275,7 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions, currentU
         cli,
         cwd,
         ...(person && { person }),
-        ...(chatModel.trim() && !cwdOverride && { model: chatModel.trim() }),
-        ...(cwdOverride && selectedLoop ? { prompt: `Discussion de la boucle ${selectedLoop.name}\nObjectif : ${selectedLoop.prompt}\nCritères : ${selectedLoop.criteria || ''}\nMémoire : ${selectedLoop.memory || selectedLoop.last_summary || ''}\nCette discussion ne modifie pas les consignes du moteur.` } : chatPrompt.trim() ? { prompt: chatPrompt.trim() } : {}),
+        ...(cwdOverride && selectedLoop ? { prompt: `Discussion de la boucle ${selectedLoop.name}\nObjectif : ${selectedLoop.prompt}\nCritères : ${selectedLoop.criteria || ''}\nMémoire : ${selectedLoop.memory || selectedLoop.last_summary || ''}\nCette discussion ne modifie pas les consignes du moteur.` } : {}),
       })
       if (!cwdOverride) {
         setBrandStorage('loops-chat-project', cwd)
@@ -607,6 +579,16 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions, currentU
         </section>
 
         {/* Section 2: Continuous Improvement Loops */}
+        {displayedLoops.length === 0 ? (
+          <section className="rounded-xl border border-border bg-card px-6 py-12">
+            <EmptyState
+              icon={<FolderGit2 size={24} />}
+              title="Quel objectif veux-tu faire avancer ?"
+              description={selectedProject ? `Crée une mission pour ce projet : ${selectedProject}` : 'Choisis un projet et confie un objectif à tes agents.'}
+              action={<Button variant="primary" onClick={() => openCreateModal(selectedProject)} leadingIcon={<Plus size={14} />}>Créer une mission</Button>}
+            />
+          </section>
+        ) : (
         <section className="grid grid-cols-1 gap-4 lg:grid-cols-[330px_1fr]">
           {/* Loops List */}
           <div className="flex flex-col gap-2 rounded-xl border border-border bg-card p-3">
@@ -624,23 +606,7 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions, currentU
               </button>
             </div>
 
-            {displayedLoops.length === 0 ? (
-              <EmptyState
-                icon={<RefreshCw size={22} />}
-                title={filterByProject ? 'Aucune boucle sur ce projet' : 'Aucune boucle'}
-                description="Créez une boucle continue et activez les abonnements de votre choix."
-                action={
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={() => openCreateModal(selectedProject)}
-                    leadingIcon={<Plus size={14} />}
-                  >
-                    Nouvelle boucle
-                  </Button>
-                }
-              />
-            ) : (
+            {
               <div className="flex flex-col gap-2">
                 {displayedLoops.map(loop => {
                   const status = statusMeta[loop.status] || statusMeta.idle
@@ -704,7 +670,7 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions, currentU
                   )
                 })}
               </div>
-            )}
+            }
           </div>
 
           {/* Selected Loop Cockpit */}
@@ -1024,148 +990,9 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions, currentU
             )}
           </div>
         </section>
+        )}
 
-        {/* Section 3: Quick Chats (Claude / Codex / AGY) */}
-        <section className="rounded-xl border border-border bg-card p-4">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <MessageSquare size={16} className="text-primary" />
-              <h2 className="font-medium text-foreground">Ouvrir un chat tmux</h2>
-              {selectedProject && (
-                <span className="truncate font-mono text-2xs text-muted-foreground">dans {selectedProject}</span>
-              )}
-            </div>
-            <button
-              type="button"
-              onClick={() => setChatAdvanced(v => !v)}
-              className="text-xs text-muted-foreground hover:text-foreground"
-            >
-              {chatAdvanced ? 'Masquer les options' : 'Prompt initial / modèle'}
-            </button>
-          </div>
 
-          {chatAdvanced && (
-            <div className="mb-4 grid gap-2 rounded-lg border border-border bg-background/60 p-3 sm:grid-cols-3">
-              <div className="sm:col-span-2">
-                <label className="mb-1 block text-xs text-muted-foreground" htmlFor="loops-chat-prompt">
-                  Prompt initial (optionnel)
-                </label>
-                <input
-                  id="loops-chat-prompt"
-                  type="text"
-                  value={chatPrompt}
-                  onChange={e => setChatPrompt(e.target.value)}
-                  placeholder="Ex : Analyse les derniers commits et propose les prochaines améliorations"
-                  className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-foreground"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs text-muted-foreground" htmlFor="loops-chat-model">
-                  Modèle (optionnel)
-                </label>
-                <input
-                  id="loops-chat-model"
-                  type="text"
-                  value={chatModel}
-                  onChange={e => setChatModel(e.target.value)}
-                  placeholder="Défaut du CLI"
-                  className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 font-mono text-xs text-foreground"
-                />
-              </div>
-            </div>
-          )}
-
-          {/* 3 CLI cards: Claude, Codex, AGY */}
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-            {cliOrder.map(cli => {
-              const info = cliMeta[cli]
-              const avail = availabilityByCLI[cli]
-              const people = uniquePeople(meta?.accounts[cli])
-              const openSessions = activeSessionsByCLI[cli]
-              const busy = actionBusy === `chat-${cli}`
-              return (
-                <div
-                  key={cli}
-                  className="flex flex-col justify-between gap-3 rounded-lg border border-border bg-background/70 p-3"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className={`rounded border px-1.5 py-0.5 text-2xs font-semibold ${info.badge}`}>
-                          {cli.toUpperCase()}
-                        </span>
-                        <span className="font-medium text-foreground">{info.title}</span>
-                      </div>
-                      <p className="mt-0.5 text-2xs text-muted-foreground">{info.subtitle}</p>
-                    </div>
-                    <span className={`text-2xs ${avail?.available ? 'text-success' : 'text-muted-foreground'}`}>
-                      {avail?.available ? 'Prêt' : 'Absent'}
-                    </span>
-                  </div>
-
-                  <div>
-                    <label className="mb-1 block text-2xs text-muted-foreground" htmlFor={`chat-person-${cli}`}>
-                      Compte {cli}
-                    </label>
-                    {people.length > 0 ? (
-                      <select
-                        id={`chat-person-${cli}`}
-                        value={chatPersons[cli]}
-                        onChange={e => handlePersonChange(cli, e.target.value)}
-                        className="w-full rounded-md border border-border bg-card px-2 py-1.5 text-xs text-foreground"
-                      >
-                        {people.map(person => (
-                          <option key={person} value={person}>
-                            {person}
-                          </option>
-                        ))}
-                        <option value="">Demander au terminal</option>
-                      </select>
-                    ) : (
-                      <div className="rounded-md border border-dashed border-border px-2 py-1.5 text-2xs text-muted-foreground">
-                        Aucun compte nommé ({cli})
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex flex-col gap-2">
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      loading={busy}
-                      disabled={!selectedProject.trim() || (avail ? !avail.available : false)}
-                      onClick={() => void handleOpenChat(cli)}
-                      leadingIcon={<TerminalIcon size={14} />}
-                      className="w-full justify-center"
-                    >
-                      Ouvrir {info.title}
-                    </Button>
-
-                    {openSessions.length > 0 && (
-                      <div className="flex flex-wrap items-center gap-1">
-                        <span className="text-2xs text-muted-foreground">Ouverts :</span>
-                        {openSessions.slice(0, 3).map(sess => {
-                          const key = sessionKey(sess)
-                          return (
-                            <button
-                              key={key}
-                              type="button"
-                              onClick={() => onOpenSession(key)}
-                              className="max-w-[140px] truncate rounded border border-border bg-card px-1.5 py-0.5 text-2xs text-foreground hover:border-primary/50 hover:text-primary"
-                              title={`Aller à ${sess.name}`}
-                            >
-                              {sess.name}
-                            </button>
-                          )
-                        })}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </section>
       </div>
 
       {/* Create / Edit Loop Dialog */}

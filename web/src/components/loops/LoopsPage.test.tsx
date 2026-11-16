@@ -125,46 +125,19 @@ afterEach(() => {
 })
 
 describe('LoopsPage', () => {
-  it('isolates accounts per CLI and opens claude, codex, and agy chats', async () => {
-    const user = userEvent.setup()
-    const onOpenSession = vi.fn()
-    render(<LoopsPage sessions={[]} onOpenSession={onOpenSession} />)
-
-    const claudeSelect = (await screen.findByLabelText('Compte claude')) as HTMLSelectElement
-    const codexSelect = screen.getByLabelText('Compte codex') as HTMLSelectElement
-    const agySelect = screen.getByLabelText('Compte agy') as HTMLSelectElement
-
-    // Aris2 appears only in claude, never in codex or agy.
-    expect([...claudeSelect.options].map(o => o.value)).toContain('Aris2')
-    expect([...codexSelect.options].map(o => o.value)).not.toContain('Aris2')
-    expect([...agySelect.options].map(o => o.value)).not.toContain('Aris2')
-
-    await user.selectOptions(claudeSelect, 'Aris2')
-    await user.click(screen.getByRole('button', { name: /Ouvrir Claude Code/i }))
-    await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('local-host/tmuxatlas-claude'))
-
-    await user.click(screen.getByRole('button', { name: /Ouvrir Codex CLI/i }))
-    await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('local-host/tmuxatlas-codex'))
-
-    await user.click(screen.getByRole('button', { name: /Ouvrir AGY/i }))
-    await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('local-host/tmuxatlas-agy'))
-
-    const chatPayloads = calls
-      .filter(c => c.url === '/api/loops/chat')
-      .map(c => JSON.parse(String(c.init?.body)))
-    expect(chatPayloads).toEqual([
-      { cli: 'claude', cwd: '/root/Project/tmuxatlas', person: 'Aris2' },
-      { cli: 'codex', cwd: '/root/Project/tmuxatlas', person: 'Aris' },
-      { cli: 'agy', cwd: '/root/Project/tmuxatlas', person: 'Aris' },
-    ])
+  it('shows one mission entry point without general chats', async () => {
+    render(<LoopsPage sessions={[]} onOpenSession={vi.fn()} />)
+    expect(await screen.findByText('Quel objectif veux-tu faire avancer ?')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Créer une mission' })).toHaveLength(1)
+    expect(screen.queryByText('Ouvrir un chat tmux')).not.toBeInTheDocument()
   })
 
   it('creates and starts an improvement loop from the modal', async () => {
     const user = userEvent.setup()
     render(<LoopsPage sessions={[]} onOpenSession={vi.fn()} />)
 
-    await screen.findByLabelText('Compte claude')
-    await user.click(screen.getAllByRole('button', { name: /Nouvelle boucle/i })[0])
+    await screen.findByText('Quel objectif veux-tu faire avancer ?')
+    await user.click(screen.getByRole('button', { name: 'Créer une mission' }))
 
     for (let step = 0; step < 3; step++) await user.click(screen.getByRole('button', { name: 'Suivant' }))
     const createBtn = await screen.findByRole('button', { name: /Créer & Démarrer/i })
@@ -241,6 +214,15 @@ describe('LoopsPage', () => {
 
     expect(await screen.findByText(/Comptes temporairement indisponibles/i)).toBeInTheDocument()
 
+    await user.click(screen.getByRole('button', { name: /^Claude Code$/ }))
+    await waitFor(() => {
+      const chat = calls.find(c => c.url === '/api/loops/chat')
+      const payload = JSON.parse(String(chat?.init?.body))
+      expect(payload.cwd).toBe('/root/Project/Aris/StatQuest')
+      expect(payload.person).toBe('Aris2')
+      expect(payload.prompt).toContain('Amélioration continue')
+    })
+
     await user.click(screen.getByText('Comptes autorisés et disponibilité'))
     // Pause Aris2 individually
     const pauseButtons = screen.getAllByRole('button', { name: /^Pause$/i })
@@ -274,6 +256,6 @@ describe('LoopsPage', () => {
     const search = screen.getByPlaceholderText(/Filtrer un projet/i)
     await user.type(search, 'StatQuest')
     await user.click(screen.getByRole('button', { name: /Aris\/StatQuest\s+main/i }))
-    expect(screen.getByText(/dans \/root\/Project\/Aris\/StatQuest/i)).toBeInTheDocument()
+    expect(localStorage.getItem('tmuxatlas:loops-chat-project')).toBe('/root/Project/Aris/StatQuest')
   })
 })
