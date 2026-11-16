@@ -391,6 +391,9 @@ func Run(ctx context.Context, opts *Options) error {
 	}
 	if opts.AccountsAuth != nil {
 		go accountPolicy.watchOwnership(ctx)
+		if opts.PushSender != nil {
+			opts.PushSender.SetAudience(pushAudience{policy: accountPolicy})
+		}
 	}
 	sudoService := newSudoService(opts)
 	if sudoService != nil {
@@ -861,7 +864,13 @@ func Run(ctx context.Context, opts *Options) error {
 					http.Error(w, "invalid subscription", http.StatusBadRequest)
 					return
 				}
-				if err := opts.PushStore.Add(&sub); err != nil {
+				// Bound to the account, so that the sender can filter what it
+				// receives and an account change can purge it.
+				account := pushOwnerAccount
+				if identity, ok := auth.AccountFromContext(r.Context()); ok {
+					account = identity.User.ID
+				}
+				if err := opts.PushStore.Add(&sub, account); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}

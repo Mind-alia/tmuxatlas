@@ -32,8 +32,16 @@ type PreferenceSource interface {
 	Get() *preferences.Preferences
 }
 
+// Audience decides which accounts may receive what. It is read at send
+// time, so a demoted, disabled or deleted account stops receiving at once.
+type Audience interface {
+	IsAdmin(accountID string) bool
+	CanSeeHost(accountID, host string) bool
+}
+
 // Sender listens for tool events and sends push notifications
 type Sender struct {
+	audience Audience
 	keys    *VAPIDKeys
 	store   *Store
 	tracker *toolevents.Tracker
@@ -59,6 +67,28 @@ func NewSender(
 	}
 }
 
+// SetAudience filters recipients by account. Without an audience (single
+// owner mode) every subscription bound to an account receives everything.
+func (s *Sender) SetAudience(audience Audience) { s.audience = audience }
+
+// recipients returns the subscriptions whose account passes allowed.
+// Subscriptions recorded before accounts were bound are always skipped.
+func (s *Sender) recipients(allowed func(Audience, string) bool) []*Subscription {
+	var result []*Subscription
+	for _, sub := range s.store.All() {
+		if sub.AccountID == "" {
+			continue
+		}
+		if s.audience != nil && !allowed(s.audience, sub.AccountID) {
+			continue
+		}
+		result = append(result, sub)
+	}
+	return result
+}
+
+func adminsOnly(audience Audience, accountID string) bool { return audience.IsAdmin(accountID) }
+
 // Run subscribes to tool events and sends push notifications for waiting/error events
 func (s *Sender) Run(ctx context.Context) {
 	ch := s.tracker.Subscribe()
@@ -83,7 +113,16 @@ func (s *Sender) Run(ctx context.Context) {
 }
 
 func (s *Sender) sendAll(evt *toolevents.Event) {
-	subs := s.store.All()
+	if evt == nil {
+		return
+	}
+	// Sudo events concern administrators only; other tool events go to the
+	// accounts that can see the host.
+	allowed := func(audience Audience, accountID string) bool { return audience.CanSeeHost(accountID, evt.Host) }
+	if evt.Tool == toolevents.ToolSudo {
+		allowed = adminsOnly
+	}
+	subs := s.recipients(allowed)
 	if len(subs) == 0 {
 		return
 	}
@@ -101,11 +140,11 @@ func (s *Sender) sendAll(evt *toolevents.Event) {
 	s.sendData(subs, data, 30, "")
 }
 
-// Broadcast sends payload to every subscription. Ops notifications use a
+// Broadcast sends payload to every administrator's subscription. Ops notifications use a
 // longer TTL and high urgency so a phone in doze still gets them. It fails
 // when there is no subscription or when no delivery succeeded.
 func (s *Sender) Broadcast(_ context.Context, payload any, ttl time.Duration, urgency string) error {
-	subs := s.store.All()
+	subs := s.recipients(adminsOnly)
 	if len(subs) == 0 {
 		return errors.New("aucun appareil abonné aux notifications (Réglages > Notifications)")
 	}
@@ -120,10 +159,10 @@ func (s *Sender) Broadcast(_ context.Context, payload any, ttl time.Duration, ur
 }
 
 // sendData delivers data to subs and returns how many accepted it.
-func (s *Sender) sendData(subs []*wp.Subscription, data []byte, ttl int, urgency wp.Urgency) int {
+func (s *Sender) sendData(subs []*Subscription, data []byte, ttl int, urgency wp.Urgency) int {
 	delivered := 0
 	for _, sub := range subs {
-		resp, err := s.send(data, sub, &wp.Options{
+		resp, err := s.send(data, &sub.Subscription, &wp.Options{
 			Subscriber:      "mailto:tmuxatlas@localhost",
 			VAPIDPublicKey:  s.keys.PublicKey,
 			VAPIDPrivateKey: s.keys.PrivateKey,
