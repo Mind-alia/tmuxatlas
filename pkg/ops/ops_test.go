@@ -170,7 +170,7 @@ func TestStaleAndMissingSnapshots(t *testing.T) {
 	m.now = func() time.Time { return now }
 	m.Refresh()
 	resp := m.Snapshot()
-	if resp.Containers.Available || len(resp.Alerts) != 1 || resp.Alerts[0].Key != "ops:containers:missing" {
+	if resp.Containers.Available || len(resp.Alerts) != 2 || resp.Alerts[0].Key != "ops:containers:missing" || resp.Alerts[1].Key != "ops:backup:missing" {
 		t.Fatalf("absence : %+v", resp)
 	}
 	writeJSON(t, dir, ContainersFile, ContainersSnapshot{Schema: 1, CollectedAt: now.Add(-5 * time.Minute), DockerOK: false, Error: "Cannot connect"})
