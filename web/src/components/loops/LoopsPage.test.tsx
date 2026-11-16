@@ -166,6 +166,7 @@ describe('LoopsPage', () => {
     await screen.findByLabelText('Compte claude')
     await user.click(screen.getAllByRole('button', { name: /Nouvelle boucle/i })[0])
 
+    for (let step = 0; step < 3; step++) await user.click(screen.getByRole('button', { name: 'Suivant' }))
     const createBtn = await screen.findByRole('button', { name: /Créer & Démarrer/i })
     await user.click(createBtn)
 
@@ -175,8 +176,10 @@ describe('LoopsPage', () => {
       const payload = JSON.parse(String(createCall?.init?.body))
       expect(payload.project_dir).toBe('/root/Project/tmuxatlas')
       expect(payload.cli).toBe('claude')
-      expect(payload.continuous).toBe(true)
-      expect(payload.max_iterations).toBe(0)
+      expect(payload.continuous).toBe(false)
+      expect(payload.max_iterations).toBe(10)
+      expect(payload.mode).toBe('mission')
+      expect(payload.use_worktree).toBe(true)
       expect(payload.workers).toHaveLength(4)
       expect(payload.workers.every((w: { enabled: boolean }) => w.enabled)).toBe(true)
       expect(payload.start_now).toBe(true)
@@ -236,8 +239,9 @@ describe('LoopsPage', () => {
 
     render(<LoopsPage sessions={[]} onOpenSession={vi.fn()} />)
 
-    expect(await screen.findByText(/Limite 5h atteinte sur tous les abonnements actifs/i)).toBeInTheDocument()
+    expect(await screen.findByText(/Comptes temporairement indisponibles/i)).toBeInTheDocument()
 
+    await user.click(screen.getByText('Comptes autorisés et disponibilité'))
     // Pause Aris2 individually
     const pauseButtons = screen.getAllByRole('button', { name: /^Pause$/i })
     // Click the per-worker Pause button for Aris2 (after global Pause and Aris)

@@ -33,7 +33,7 @@ var accountUserRoutes = map[string]bool{
 	"POST /api/files/rename": true, "POST /api/files/delete": true,
 	// Improvement loops & quick chats (claude, codex, agy)
 	"GET /api/loops": true, "GET /api/loops/meta": true, "GET /api/loops/logs": true,
-	"POST /api/loops/create": true, "POST /api/loops/update": true, "POST /api/loops/delete": true,
+	"POST /api/loops/plan": true, "POST /api/loops/review": true, "POST /api/loops/instruction": true, "POST /api/loops/create": true, "POST /api/loops/update": true, "POST /api/loops/delete": true,
 	"POST /api/loops/start": true, "POST /api/loops/pause": true, "POST /api/loops/stop": true,
 	"POST /api/loops/worker": true, "POST /api/loops/chat": true,
 }

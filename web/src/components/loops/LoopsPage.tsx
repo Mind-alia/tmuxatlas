@@ -23,6 +23,7 @@ import { sessionKey } from '../../hooks/useSessions'
 import { getBrandStorage, setBrandStorage } from '../../lib/brandStorage'
 import { Button, Dialog, EmptyState } from '../ui'
 import { ProjectSelector } from './ProjectSelector'
+import { LoopPlan } from './LoopPlan'
 import { SubscriptionPool } from './SubscriptionPool'
 import {
   cliMeta,
@@ -39,6 +40,8 @@ import {
   createLoop,
   deleteLoop,
   fetchLoopLogs,
+  reviewLoop,
+  queueInstruction,
   fetchLoops,
   fetchLoopsMeta,
   openCliChat,
@@ -58,6 +61,7 @@ import {
 } from './loopsApi'
 
 interface LoopsPageProps {
+  currentUsername?: string | null
   sessions: Session[]
   onOpenSession: (key: string) => void
   onRefreshSessions?: () => Promise<void> | void
@@ -85,7 +89,7 @@ function defaultPersonFor(profiles: LoopProfile[] | undefined, saved?: string): 
   return people[0] || ''
 }
 
-export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsPageProps) {
+export function LoopsPage({ sessions, onOpenSession, onRefreshSessions, currentUsername }: LoopsPageProps) {
   const [meta, setMeta] = useState<LoopsMeta | null>(null)
   const [loops, setLoops] = useState<LoopItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -115,6 +119,15 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
   // Create / Edit loop modal
   const [modalOpen, setModalOpen] = useState(false)
   const [editingLoop, setEditingLoop] = useState<LoopItem | null>(null)
+  const [verifyCommand, setVerifyCommand] = useState('')
+  const [timeLimit, setTimeLimit] = useState(120)
+  const [lastVisit] = useState(() => getBrandStorage(`loops-last-visit:${currentUsername || 'local'}`) || '')
+  useEffect(() => { setBrandStorage(`loops-last-visit:${currentUsername || 'local'}`,  new Date().toISOString()) }, [])
+  const [guideStep, setGuideStep] = useState(0)
+  const [criteria, setCriteria] = useState('')
+  const [scope, setScope] = useState('')
+  const [instruction, setInstruction] = useState('')
+  const [detailTab, setDetailTab] = useState('Résumé')
   const [formName, setFormName] = useState('')
   const [formProject, setFormProject] = useState('')
   const [formWorkers, setFormWorkers] = useState<LoopWorker[]>([])
@@ -200,14 +213,17 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
   }, [meta])
 
   const displayedLoops = useMemo(() => {
-    if (!filterByProject || !selectedProject) return loops
-    return loops.filter(l => l.project_dir === selectedProject)
+    const rank = (l: LoopItem) => l.outcome === 'blocked' || l.status === 'error' ? 0 : l.outcome === 'review' ? 1 : l.status === 'running' ? 2 : 3
+    const visible = filterByProject && selectedProject ? loops.filter(l => l.project_dir === selectedProject) : [...loops]
+    return visible.sort((a, b) => rank(a) - rank(b))
   }, [filterByProject, loops, selectedProject])
 
   const selectedLoop = useMemo(
-    () => loops.find(l => l.id === selectedId) ?? displayedLoops[0] ?? null,
+    () => displayedLoops.find(l => l.id === selectedId) ?? displayedLoops[0] ?? null,
     [displayedLoops, loops, selectedId],
   )
+
+  useEffect(() => { setSelectedIter(0); setLogData(null) }, [selectedLoop?.id])
 
   // Sync selected iteration to latest when switching loops or when new iterations appear
   useEffect(() => {
@@ -287,7 +303,7 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
         cwd,
         ...(person && { person }),
         ...(chatModel.trim() && !cwdOverride && { model: chatModel.trim() }),
-        ...(chatPrompt.trim() && !cwdOverride && { prompt: chatPrompt.trim() }),
+        ...(cwdOverride && selectedLoop ? { prompt: `Discussion de la boucle ${selectedLoop.name}\nObjectif : ${selectedLoop.prompt}\nCritères : ${selectedLoop.criteria || ''}\nMémoire : ${selectedLoop.memory || selectedLoop.last_summary || ''}\nCette discussion ne modifie pas les consignes du moteur.` } : chatPrompt.trim() ? { prompt: chatPrompt.trim() } : {}),
       })
       if (!cwdOverride) {
         setBrandStorage('loops-chat-project', cwd)
@@ -314,18 +330,23 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
         status: cliOk ? ('ready' as const) : ('disabled' as const),
       }
     })
+    setVerifyCommand('')
+    setTimeLimit(120)
+    setCriteria('')
+    setScope('')
+    setGuideStep(0)
     setEditingLoop(null)
     setFormName('')
     setFormProject(proj)
     setFormWorkers(initialWorkers)
     setFormModel('')
     setFormPrompt(meta?.presets[0]?.prompt || '')
-    setFormContinuous(true)
+    setFormContinuous(false)
     setFormMaxIter(10)
     setFormDelay(5)
     setFormAutoApprove(true)
-    setFormUseWorktree(false)
-    setFormStopWhenDone(false)
+    setFormUseWorktree(true)
+    setFormStopWhenDone(true)
     setFormError(null)
     setModalOpen(true)
   }
@@ -345,6 +366,11 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
               run_count: 0,
             },
           ]
+    setVerifyCommand(loop.verify_command || '')
+    setTimeLimit(loop.time_limit_minutes || 0)
+    setCriteria(loop.criteria || '')
+    setScope(loop.scope || '')
+    setGuideStep(0)
     setEditingLoop(loop)
     setFormName(loop.name)
     setFormProject(loop.project_dir)
@@ -389,6 +415,7 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
           model: formModel.trim(),
           workers: toWorkerInputs(formWorkers),
           prompt: formPrompt.trim(),
+          mode: formContinuous ? 'maintenance' : 'mission', scope, criteria, verify_command: verifyCommand, time_limit_minutes: timeLimit,
           max_iterations: formContinuous ? 0 : formMaxIter,
           continuous: formContinuous,
           delay_seconds: formDelay,
@@ -407,6 +434,7 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
           model: formModel.trim(),
           workers: toWorkerInputs(formWorkers),
           prompt: formPrompt.trim(),
+          mode: formContinuous ? 'maintenance' : 'mission', scope, criteria, verify_command: verifyCommand, time_limit_minutes: timeLimit,
           max_iterations: formContinuous ? 0 : formMaxIter,
           continuous: formContinuous,
           delay_seconds: formDelay,
@@ -502,9 +530,9 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
         {/* Header */}
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-lg font-semibold text-foreground">Boucles continues & Chats</h1>
+            <h1 className="text-lg font-semibold text-foreground">Boucles</h1>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Choisissez un projet et les abonnements autorisés. Un CLI travaille en continu, avec pause/reprise individuelle et bascule automatique sur limite 5h.
+              Des agents qui avancent sur tes objectifs.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -536,6 +564,11 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
           </div>
         )}
 
+        <section className="rounded-xl border border-border bg-card p-4">
+          <h2 className="font-medium">{lastVisit ? 'Depuis ta dernière visite' : 'Activité récente'}</h2>
+          {loops.filter(l => !lastVisit || l.updated_at > lastVisit).slice(0, 8).map(l => <button key={l.id} className="mt-2 block text-left text-xs" onClick={() => { handleSelectProject(l.project_dir); setSelectedId(l.id) }}>{l.name} · {l.last_summary || statusMeta[l.status]?.label}{l.outcome === 'review' ? ' · À examiner' : ''}</button>)}
+          {lastVisit && !loops.some(l => l.updated_at > lastVisit) && <p className="mt-2 text-xs text-muted-foreground">Aucune nouvelle activité.</p>}
+        </section>
         {/* Section 1: Shared Intuitive Project Selector */}
         <section className="rounded-xl border border-border bg-card p-4">
           <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
@@ -805,10 +838,10 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
                       <Clock size={16} className="mt-0.5 shrink-0 text-warning" />
                       <div>
                         <div className="font-medium text-foreground">
-                          Limite 5h atteinte sur tous les abonnements actifs · reprise automatique{' '}
+                          Comptes temporairement indisponibles · prochaine tentative{' '}
                           {selectedLoop.next_reset_at
                             ? `à ${formatClockTime(selectedLoop.next_reset_at)} (dans ${formatCountdown(selectedLoop.next_reset_at, nowMs)})`
-                            : 'au prochain reset'}
+                            : 'après le délai de réessai'}
                         </div>
                         <div className="mt-0.5 text-2xs text-muted-foreground">
                           Activez ou réactivez un autre abonnement ci-dessous pour reprendre le travail immédiatement.
@@ -838,7 +871,7 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
                 )}
 
                 {/* Live Interactive Subscription Pool */}
-                <SubscriptionPool
+                <details><summary className="cursor-pointer text-xs">Comptes autorisés et disponibilité</summary><SubscriptionPool
                   mode="live"
                   availableSubscriptions={availableSubscriptions}
                   availabilityByCLI={availabilityByCLI}
@@ -847,14 +880,14 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
                   busyAction={actionBusy}
                   nowMs={nowMs}
                   onWorkerAction={payload => void runWorkerAction(selectedLoop.id, payload)}
-                />
+                /></details>
 
                 {/* Objective & quick chat buttons inside this loop's work_dir */}
                 <div className="rounded-lg border border-border bg-background/60 p-3">
                   <div className="text-2xs font-medium uppercase tracking-wide text-muted-foreground">Objectif</div>
                   <p className="mt-1 whitespace-pre-wrap text-xs text-foreground">{selectedLoop.prompt}</p>
                   <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/70 pt-2.5">
-                    <span className="text-2xs text-muted-foreground">Ouvrir un chat dans ce dossier :</span>
+                    <span className="text-2xs text-muted-foreground">Discuter de cette boucle :</span>
                     {cliOrder.map(cli => (
                       <Button
                         key={cli}
@@ -889,8 +922,32 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
                   </div>
                 )}
 
+                <div className="flex gap-2" role="tablist" aria-label="Détails de la boucle">
+                  {['Résumé', 'Modifications', 'Historique', 'Logs'].map(tab => <button key={tab} role="tab" aria-selected={detailTab === tab} className={`rounded border px-3 py-2 ${detailTab === tab ? 'border-primary text-primary' : 'border-border'}`} onClick={() => setDetailTab(tab)}>{tab}</button>)}
+                </div>
+                {detailTab === 'Résumé' && <div className="space-y-3">
+                  <p className="font-medium">{selectedLoop.outcome === 'achieved' ? 'Objectif validé par l’utilisateur' : selectedLoop.outcome === 'blocked' ? 'Bloquée — vérification ou décision nécessaire' : selectedLoop.outcome === 'limit' ? `Limite de ${selectedLoop.limit_reason === 'time' ? 'temps' : 'passes'} atteinte — bilan à examiner` : selectedLoop.outcome === 'review' ? 'Fin déclarée par l’agent — résultat à examiner' : selectedLoop.outcome === 'waiting_work' ? 'En attente de nouveau travail' : 'Progression de la boucle'}</p>
+                  {!selectedLoopIsActive && selectedLoop.iterations.length > 0 && selectedLoop.outcome !== 'achieved' && <Button size="sm" variant="secondary" onClick={() => { void reviewLoop(selectedLoop.id).then(updated => setLoops(prev => prev.map(l => l.id === updated.id ? updated : l))).catch(err => setError(String(err))) }}>Valider le résultat après revue</Button>}
+                  <p className="text-xs text-muted-foreground">{selectedLoop.phase === 'verifying' ? 'En vérification : exécution du contrôle configuré' : selectedLoop.phase === 'waiting_account' ? 'En attente d’un compte partagé disponible' : selectedLoop.status === 'running' ? 'Maintenant : passe en cours' : ''}</p>
+                  <LoopPlan loop={selectedLoop} onSaved={updated => setLoops(prev => prev.map(l => l.id === updated.id ? updated : l))} onError={setError} />
+                  {selectedLoop.criteria && <p>Critères : {selectedLoop.criteria}</p>}
+                  {selectedLoop.iterations.slice(-1).map(iter => <div key={iter.number}>                    {iter.verification && <div className="rounded border border-border p-2"><strong>Contrôle exécuté par Atlas : {iter.verification.passed ? 'réussi' : 'échoué'}</strong><p className="font-mono">{iter.verification.command}</p><pre className="max-h-40 overflow-auto whitespace-pre-wrap text-xs">{iter.verification.output}</pre></div>}</div>)}
+                  {selectedLoop.iterations.slice(-1).map(iter => iter.result ? <div key={iter.number} className="space-y-2">
+
+                    <p><strong>Accompli :</strong> {iter.result.change}</p>
+                    <p><strong>Vérifications déclarées par l’agent :</strong> {iter.result.checks || 'Non renseignées'}</p>
+                    <p><strong>Limites :</strong> {iter.result.limitations || 'Non renseignées'}</p>
+                    <p><strong>Suite :</strong> {iter.result.next || 'Non renseignée'}</p>
+                    {iter.result.decision && <p className="text-warning">Décision demandée : {iter.result.decision}</p>}
+                  </div> : <p key={iter.number}>Bilan structuré indisponible. Consultez les logs pour examiner cette passe.</p>)}
+                  <label className="block">Consigne pour la prochaine passe<textarea className="mt-2 w-full rounded border border-border bg-background p-2" maxLength={8000} value={instruction} onChange={e => setInstruction(e.target.value)} /></label>
+                  <Button variant="secondary" size="sm" disabled={!instruction.trim()} onClick={() => { void queueInstruction(selectedLoop.id, instruction).then(updated => { setLoops(prev => prev.map(l => l.id === updated.id ? updated : l)); setInstruction('') }).catch(err => setError(String(err))) }}>Transmettre pour la prochaine passe</Button>
+                  {selectedLoop.pending_instruction && <p>Consigne en attente : {selectedLoop.pending_instruction}</p>}
+                  <details><summary>Mémoire de la boucle</summary><pre className="whitespace-pre-wrap text-xs">{selectedLoop.memory || 'Aucune mémoire enregistrée.'}</pre></details>
+                </div>}
+                {detailTab === 'Historique' && <ol className="space-y-2">{selectedLoop.iterations.map(iter => <li key={iter.number} className="rounded border border-border p-3"><strong>Passe {iter.number}</strong> · {iter.step_id || 'Diagnostic'}<p>{iter.result?.change || iter.error || iter.status}</p><p>Décision : {iter.decision || 'Historique antérieur'}</p>{iter.verification && <p>Contrôle Atlas : {iter.verification.passed ? 'réussi' : 'échoué'}</p>}</li>)}</ol>}
                 {/* Iteration tabs */}
-                <div>
+                <div hidden={detailTab === 'Résumé' || detailTab === 'Historique'}>
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="text-xs font-medium text-muted-foreground">Itérations :</span>
@@ -917,7 +974,7 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
                               {iter.status === 'running'
                                 ? 'en cours'
                                 : iter.status === 'rate_limited'
-                                  ? 'limite 5h'
+                                  ? 'indisponible'
                                   : iter.status === 'completed'
                                     ? `${formatDuration(iter.duration_ms)}${iter.changed_files ? ` · ${iter.changed_files}f` : ''}`
                                     : iter.status}
@@ -934,7 +991,7 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
                   </div>
 
                   {/* Live / Iteration Log Output */}
-                  <pre className="max-h-96 min-h-[160px] overflow-auto rounded-lg border border-border bg-[#0c0f14] p-3 font-mono text-xs leading-relaxed text-[#e2e8f0] whitespace-pre-wrap">
+                  <pre hidden={detailTab === 'Modifications'} className="max-h-96 min-h-[160px] overflow-auto rounded-lg border border-border bg-[#0c0f14] p-3 font-mono text-xs leading-relaxed text-[#e2e8f0] whitespace-pre-wrap">
                     {logData?.content ||
                       (selectedLoop.status === 'running'
                         ? selectedLoop.live_output || 'Démarrage de l’itération en cours…'
@@ -942,7 +999,7 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
                   </pre>
 
                   {(logData?.git_status || logData?.git_diff) && (
-                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <div hidden={detailTab === 'Logs'} className="mt-3 grid gap-3 sm:grid-cols-2">
                       {logData.git_status && (
                         <div className="rounded-lg border border-border bg-background/60 p-2.5">
                           <div className="mb-1 text-2xs font-medium text-muted-foreground">Git status</div>
@@ -957,6 +1014,7 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
                           <pre className="max-h-40 overflow-auto font-mono text-2xs text-foreground whitespace-pre-wrap">
                             {logData.git_diff}
                           </pre>
+                          <p className="mt-2 text-xs text-muted-foreground">Examinez ces changements et les vérifications avant de valider le résultat. Branche : {selectedLoop.branch || 'dossier courant'} · {selectedLoop.work_dir}. L’intégration s’effectue depuis cette branche ou ce dossier.</p>
                         </div>
                       )}
                     </div>
@@ -1114,19 +1172,21 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
       <Dialog
         open={modalOpen}
         onOpenChange={setModalOpen}
-        title={editingLoop ? 'Modifier la boucle' : 'Nouvelle boucle continue'}
+        title={editingLoop ? 'Modifier la boucle' : 'Nouvelle boucle'}
         description="Choisissez le projet, les abonnements autorisés et l’objectif à poursuivre."
-        initialFocusRef={promptInputRef}
+
         className="max-w-3xl"
         footer={
           <>
             <Button variant="secondary" onClick={() => setModalOpen(false)} disabled={savingLoop}>
               Annuler
             </Button>
-            <Button variant="secondary" onClick={() => void handleSaveLoop(false)} loading={savingLoop}>
+            {guideStep > 0 && <Button variant="secondary" onClick={() => setGuideStep(guideStep - 1)}>Précédent</Button>}
+            {guideStep < 3 && <Button variant="primary" onClick={() => { if (guideStep === 0 && !formProject.trim()) { setFormError('Sélectionnez un projet.'); return }; if (guideStep === 1 && !formPrompt.trim()) { setFormError('Décrivez l’objectif.'); return }; setFormError(null); setGuideStep(guideStep + 1) }}>Suivant</Button>}
+            <Button className={guideStep !== 3 ? 'hidden' : ''} variant="secondary" onClick={() => void handleSaveLoop(false)} loading={savingLoop}>
               Enregistrer
             </Button>
-            <Button variant="primary" onClick={() => void handleSaveLoop(true)} loading={savingLoop}>
+            <Button className={guideStep !== 3 ? 'hidden' : ''} variant="primary" onClick={() => void handleSaveLoop(true)} loading={savingLoop}>
               {editingLoop ? 'Enregistrer & Démarrer' : 'Créer & Démarrer'}
             </Button>
           </>
@@ -1139,7 +1199,7 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
             </div>
           )}
 
-          {!editingLoop && (
+          <fieldset hidden={guideStep !== 0} className="space-y-3"><legend className="mb-2 font-medium">1. Projet</legend>          {!editingLoop && (
             <div>
               <div className="mb-1.5 font-medium text-foreground">Projet</div>
               <ProjectSelector
@@ -1152,14 +1212,9 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
             </div>
           )}
 
-          <SubscriptionPool
-            mode="draft"
-            availableSubscriptions={availableSubscriptions}
-            availabilityByCLI={availabilityByCLI}
-            workers={formWorkers}
-            onChangeWorkers={setFormWorkers}
-          />
 
+{editingLoop && <p>{formProject}</p>}</fieldset>
+<fieldset hidden={guideStep !== 1} className="space-y-3"><legend className="mb-2 font-medium">2. Objectif et critères</legend>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 block font-medium text-foreground" htmlFor="loop-name">
@@ -1189,6 +1244,8 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
             </div>
           </div>
 
+          <label className="block">Périmètre<input className="mt-1 w-full rounded border border-border bg-background p-2" value={scope} onChange={e => setScope(e.target.value)} /></label>
+          <label className="block">Critères de réussite<textarea className="mt-1 w-full rounded border border-border bg-background p-2" value={criteria} onChange={e => setCriteria(e.target.value)} placeholder="Comment vérifier que l’objectif est atteint ?" /></label>
           {/* Presets */}
           {(meta?.presets.length ?? 0) > 0 && (
             <div>
@@ -1227,6 +1284,9 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
             />
           </div>
 
+</fieldset><fieldset hidden={guideStep !== 2} className="space-y-3"><legend className="mb-2 font-medium">3. Autonomie et limites</legend>          <label className="block">Commande de vérification (optionnelle)<input className="mt-1 w-full rounded border border-border bg-background p-2 font-mono" value={verifyCommand} onChange={e => setVerifyCommand(e.target.value)} placeholder="Ex. npm test" /></label>
+          <p className="text-muted-foreground">Exécutée dans le dossier de la boucle après chaque passe, avec un délai maximal de cinq minutes.</p>
+          <label className="block">Limite de temps en minutes (0 = aucune)<input type="number" min={0} max={10080} className="ml-2 rounded border border-border bg-background p-2" value={timeLimit} onChange={e => setTimeLimit(Math.max(0, Math.min(10080, Number(e.target.value) || 0)))} /></label>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <div className="mb-1 font-medium text-foreground">Durée de la boucle</div>
@@ -1241,7 +1301,7 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
                   }`}
                 >
                   <InfinityIcon size={13} />
-                  Continu
+                  Entretien continu
                 </button>
                 <button
                   type="button"
@@ -1252,7 +1312,7 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
                       : 'border-border bg-background text-muted-foreground'
                   }`}
                 >
-                  Nombre fixe
+                  Mission
                 </button>
                 {!formContinuous && (
                   <input
@@ -1311,7 +1371,13 @@ export function LoopsPage({ sessions, onOpenSession, onRefreshSessions }: LoopsP
               </label>
             )}
           </div>
-        </div>
+</fieldset><fieldset hidden={guideStep !== 3} className="space-y-3"><legend className="mb-2 font-medium">4. Agents autorisés</legend>          <SubscriptionPool
+            mode="draft"
+            availableSubscriptions={availableSubscriptions}
+            availabilityByCLI={availabilityByCLI}
+            workers={formWorkers}
+            onChangeWorkers={setFormWorkers}
+          /></fieldset>        </div>
       </Dialog>
     </main>
   )

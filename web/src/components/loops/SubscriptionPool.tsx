@@ -102,7 +102,7 @@ export function SubscriptionPool(props: SubscriptionPoolProps) {
               Abonnements autorisés ({enabledWorkers.length}/{mergedWorkers.length})
             </div>
             <div className="text-2xs text-muted-foreground">
-              Un abonnement travaille à la fois. En cas de limite 5h, la boucle passe automatiquement au suivant.
+              Un abonnement travaille à la fois. En cas d’indisponibilité, la boucle passe automatiquement au suivant.
             </div>
           </div>
           <div className="flex items-center gap-1.5">
@@ -195,7 +195,7 @@ export function SubscriptionPool(props: SubscriptionPoolProps) {
           )}
           {limitedCount > 0 && (
             <span className="rounded-full border border-warning/40 bg-warning/15 px-2 py-0.5 text-2xs text-warning">
-              {limitedCount} limité{limitedCount > 1 ? 's' : ''} 5h
+              {limitedCount} limité{limitedCount > 1 ? 's' : ''}
             </span>
           )}
         </div>
@@ -318,7 +318,7 @@ export function SubscriptionPool(props: SubscriptionPoolProps) {
                           ) : isRateLimited ? (
                             <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-warning/45 bg-warning/15 px-1.5 py-0.5 text-2xs font-medium text-warning">
                               <Clock size={10} />
-                              {resetClock ? `${resetClock}` : 'Limite 5h'}
+                              {resetClock ? `${resetClock}` : 'Indisponible'}
                               {countdown ? ` (${countdown})` : ''}
                             </span>
                           ) : isError ? (

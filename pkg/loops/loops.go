@@ -109,23 +109,32 @@ type CLIAvailability struct {
 
 // IterationRecord records the outcome of a single loop pass.
 type IterationRecord struct {
-	Number       int        `json:"number"`
-	Status       string     `json:"status"`
-	WorkerID     string     `json:"worker_id,omitempty"`
-	CLI          string     `json:"cli,omitempty"`
-	Person       string     `json:"person,omitempty"`
-	WorkerLabel  string     `json:"worker_label,omitempty"`
-	StartedAt    time.Time  `json:"started_at"`
-	FinishedAt   *time.Time `json:"finished_at,omitempty"`
-	DurationMs   int64      `json:"duration_ms"`
-	ExitCode     int        `json:"exit_code"`
-	ChangedFiles int        `json:"changed_files"`
-	DiffStat     string     `json:"diff_stat,omitempty"`
-	LogTail      string     `json:"log_tail,omitempty"`
-	DoneSignal   bool       `json:"done_signal,omitempty"`
-	RateLimited  bool       `json:"rate_limited,omitempty"`
-	ResetAt      *time.Time `json:"reset_at,omitempty"`
-	Error        string     `json:"error,omitempty"`
+	Decision     string        `json:"decision,omitempty"`
+	StepID       string        `json:"step_id,omitempty"`
+	BeforeTree   string        `json:"before_tree,omitempty"`
+	AfterTree    string        `json:"after_tree,omitempty"`
+	Verification *Verification `json:"verification,omitempty"`
+	Result       *PassResult   `json:"result,omitempty"`
+	Snapshot     bool          `json:"snapshot,omitempty"`
+	GitPatch     string        `json:"git_patch,omitempty"`
+	Instruction  string        `json:"instruction,omitempty"`
+	Number       int           `json:"number"`
+	Status       string        `json:"status"`
+	WorkerID     string        `json:"worker_id,omitempty"`
+	CLI          string        `json:"cli,omitempty"`
+	Person       string        `json:"person,omitempty"`
+	WorkerLabel  string        `json:"worker_label,omitempty"`
+	StartedAt    time.Time     `json:"started_at"`
+	FinishedAt   *time.Time    `json:"finished_at,omitempty"`
+	DurationMs   int64         `json:"duration_ms"`
+	ExitCode     int           `json:"exit_code"`
+	ChangedFiles int           `json:"changed_files"`
+	DiffStat     string        `json:"diff_stat,omitempty"`
+	LogTail      string        `json:"log_tail,omitempty"`
+	DoneSignal   bool          `json:"done_signal,omitempty"`
+	RateLimited  bool          `json:"rate_limited,omitempty"`
+	ResetAt      *time.Time    `json:"reset_at,omitempty"`
+	Error        string        `json:"error,omitempty"`
 }
 
 // LoopWorker represents one CLI subscription assigned to a loop.
@@ -169,6 +178,15 @@ type WorkerActionRequest struct {
 
 // Loop represents a configured and/or running improvement loop on a project.
 type Loop struct {
+	Directives         []Directive    `json:"directives,omitempty"`
+	Reviews            []ReviewRecord `json:"reviews,omitempty"`
+	LimitReason        string         `json:"limit_reason,omitempty"`
+	Phase              string         `json:"phase,omitempty"`
+	Memory             string         `json:"memory,omitempty"`
+	Outcome            string         `json:"outcome,omitempty"`
+	PendingInstruction string         `json:"pending_instruction,omitempty"`
+	MissionSpec
+
 	ID               string            `json:"id"`
 	Name             string            `json:"name"`
 	ProjectDir       string            `json:"project_dir"`
@@ -204,6 +222,8 @@ type Loop struct {
 
 // CreateRequest configures a new improvement loop.
 type CreateRequest struct {
+	MissionSpec
+
 	Name          string        `json:"name"`
 	ProjectDir    string        `json:"project_dir"`
 	CLI           string        `json:"cli"`
@@ -224,6 +244,8 @@ type CreateRequest struct {
 
 // UpdateRequest edits an idle/stopped/completed loop.
 type UpdateRequest struct {
+	MissionSpec
+
 	ID            string        `json:"id"`
 	Name          string        `json:"name"`
 	CLI           string        `json:"cli"`
@@ -274,12 +296,12 @@ type MetaResponse struct {
 
 // LogResponse returns the full output of a loop iteration and current git diff info.
 type LogResponse struct {
-	LoopID     string `json:"loop_id"`
-	Iteration  int    `json:"iteration"`
-	Content    string `json:"content"`
-	GitStatus  string `json:"git_status,omitempty"`
-	GitDiff    string `json:"git_diff,omitempty"`
-	Truncated  bool   `json:"truncated,omitempty"`
+	LoopID    string `json:"loop_id"`
+	Iteration int    `json:"iteration"`
+	Content   string `json:"content"`
+	GitStatus string `json:"git_status,omitempty"`
+	GitDiff   string `json:"git_diff,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 type activeRun struct {
@@ -403,6 +425,7 @@ func (m *Manager) load() error {
 		}
 		if loop.Status == StatusRunning || loop.Status == StatusWaitingReset {
 			loop.Status = StatusStopped
+			loop.Phase = ""
 			loop.PauseRequested = false
 			loop.ActiveWorkerID = ""
 			loop.NextResetAt = nil
@@ -505,11 +528,15 @@ func cloneTimePtr(src *time.Time) *time.Time {
 
 func cloneLoop(src *Loop, run *activeRun) Loop {
 	copyLoop := *src
+	copyLoop.Plan = append([]PlanStep(nil), src.Plan...)
 	copyLoop.NextResetAt = cloneTimePtr(src.NextResetAt)
 	copyLoop.StartedAt = cloneTimePtr(src.StartedAt)
 	copyLoop.FinishedAt = cloneTimePtr(src.FinishedAt)
 	if src.Iterations != nil {
 		copyLoop.Iterations = append([]IterationRecord(nil), src.Iterations...)
+		for i := range copyLoop.Iterations {
+			copyLoop.Iterations[i].GitPatch = ""
+		}
 	} else {
 		copyLoop.Iterations = []IterationRecord{}
 	}
@@ -635,6 +662,9 @@ func primaryWorkerFor(workers []LoopWorker) (string, string) {
 
 // Create validates and saves a new loop, and optionally starts it immediately.
 func (m *Manager) Create(req CreateRequest) (*Loop, error) {
+	if err := req.MissionSpec.validate(); err != nil {
+		return nil, err
+	}
 	dir, err := validateDir(req.ProjectDir)
 	if err != nil {
 		return nil, err
@@ -714,6 +744,7 @@ func (m *Manager) Create(req CreateRequest) (*Loop, error) {
 	now := time.Now()
 	id := newShortID()
 	loop := &Loop{
+		MissionSpec:   req.MissionSpec,
 		ID:            id,
 		Name:          name,
 		ProjectDir:    dir,
@@ -754,6 +785,9 @@ func (m *Manager) Create(req CreateRequest) (*Loop, error) {
 
 // Update modifies an inactive loop's settings.
 func (m *Manager) Update(req UpdateRequest, ownerID string, isAdmin bool) (*Loop, error) {
+	if err := req.MissionSpec.validate(); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	loop, ok := m.loops[req.ID]
@@ -824,6 +858,7 @@ func (m *Manager) Update(req UpdateRequest, ownerID string, isAdmin bool) (*Loop
 		loop.Name = name
 	}
 	if prompt := strings.TrimSpace(req.Prompt); prompt != "" {
+		loop.MissionSpec = req.MissionSpec
 		loop.Prompt = prompt
 	}
 	if req.Continuous != nil {
@@ -928,6 +963,16 @@ func (m *Manager) ReadLog(id string, iter int, ownerID string, isAdmin bool) (Lo
 	if isRunningIter && m.active[id] != nil {
 		live = m.active[id].liveTail
 	}
+	patch := "Historique Git indisponible pour cette passe."
+	for _, rec := range loop.Iterations {
+		if rec.Number == iter && rec.Snapshot {
+			patch = rec.GitPatch
+			if patch == "" {
+				patch = "Aucun changement dans cette passe."
+			}
+			break
+		}
+	}
 	m.mu.Unlock()
 
 	resp := LogResponse{LoopID: id, Iteration: iter}
@@ -944,8 +989,10 @@ func (m *Manager) ReadLog(id string, iter int, ownerID string, isAdmin bool) (Lo
 			resp.Content = live
 		}
 	}
-	if gitIsRepo(workDir) {
+	if isRunningIter && gitIsRepo(workDir) {
 		resp.GitStatus, resp.GitDiff = gitStatusAndDiff(workDir)
+	} else {
+		resp.GitDiff = patch
 	}
 	return resp, nil
 }

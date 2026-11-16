@@ -3,6 +3,7 @@ package loops
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -159,7 +161,7 @@ func (m *Manager) Start(id, ownerID string, isAdmin bool) (*Loop, error) {
 	loop.NextResetAt = nil
 	loop.LastError = ""
 	loop.FinishedAt = nil
-	if loop.StartedAt == nil {
+	if loop.StartedAt == nil || !wasPaused {
 		loop.StartedAt = &now
 	}
 	loop.UpdatedAt = now
@@ -523,15 +525,49 @@ func (m *Manager) runLoop(ctx context.Context, id string, run *activeRun) {
 		}
 		if loop.MaxIterations > 0 && loop.CurrentIteration >= loop.MaxIterations {
 			resetRunningWorkersLocked(loop, time.Now())
+			if loop.Outcome == "" {
+				loop.Outcome = "limit"
+				loop.LimitReason = "passes"
+			}
 			m.finishLocked(loop, StatusCompleted, "")
 			m.mu.Unlock()
 			return
 		}
 
 		now := time.Now()
+		if loop.TimeLimitMinutes > 0 && loop.StartedAt != nil && !now.Before(loop.StartedAt.Add(time.Duration(loop.TimeLimitMinutes)*time.Minute)) {
+			resetRunningWorkersLocked(loop, now)
+			loop.Outcome = "limit"
+			loop.LimitReason = "time"
+			m.finishLocked(loop, StatusCompleted, "")
+			m.mu.Unlock()
+			return
+		}
+		if len(loop.Plan) > 0 && nextStep(loop.Plan) == nil {
+			loop.Outcome = "review"
+			for _, step := range loop.Plan {
+				if state := stepState(step); state == "todo" || state == "blocked" || state == "working" {
+					loop.Outcome = "blocked"
+				}
+			}
+			m.finishLocked(loop, StatusCompleted, "")
+			m.mu.Unlock()
+			return
+		}
 		refreshExpiredRateLimitsLocked(loop, now)
-		workerIdx := pickNextWorkerLocked(loop, lastWorkerID)
+		workerIdx, accountBusy := m.pickGlobalWorkerLocked(loop, lastWorkerID, now)
 		if workerIdx < 0 {
+			if accountBusy {
+				loop.Phase = "waiting_account"
+				loop.ActiveWorkerID = ""
+				m.mu.Unlock()
+				select {
+				case <-ctx.Done():
+				case <-run.wakeCh:
+				case <-time.After(time.Second):
+				}
+				continue
+			}
 			earliestReset, hasRateLimited, hasPaused, lastErr := summarizeBlockedWorkersLocked(loop)
 			if hasRateLimited {
 				loop.Status = StatusWaitingReset
@@ -539,12 +575,18 @@ func (m *Manager) runLoop(ctx context.Context, id string, run *activeRun) {
 				loop.NextResetAt = &earliestReset
 				loop.UpdatedAt = now
 				_ = m.saveLocked()
-				m.mu.Unlock()
 
 				waitDur := earliestReset.Sub(now) + 2*time.Second
+				if loop.TimeLimitMinutes > 0 && loop.StartedAt != nil {
+					remaining := time.Until(loop.StartedAt.Add(time.Duration(loop.TimeLimitMinutes) * time.Minute))
+					if remaining < waitDur {
+						waitDur = remaining
+					}
+				}
 				if waitDur < time.Second {
 					waitDur = time.Second
 				}
+				m.mu.Unlock()
 				timer := time.NewTimer(waitDur)
 				select {
 				case <-ctx.Done():
@@ -580,6 +622,7 @@ func (m *Manager) runLoop(ctx context.Context, id string, run *activeRun) {
 		loop.Status = StatusRunning
 		loop.AutoPaused = false
 		loop.NextResetAt = nil
+		loop.Phase = "working"
 		loop.ActiveWorkerID = wID
 		loop.CLI = w.CLI
 		loop.Person = w.Person
@@ -602,6 +645,12 @@ func (m *Manager) runLoop(ctx context.Context, id string, run *activeRun) {
 		loop.UpdatedAt = startedAt
 		run.liveTail = ""
 
+		loop.Outcome = ""
+		if loop.PendingInstruction != "" {
+			loop.Memory = boundedMemory(loop.Memory + "\nConsigne utilisateur : " + loop.PendingInstruction)
+			loop.Iterations[iterIdx].Instruction = loop.PendingInstruction
+			loop.PendingInstruction = ""
+		}
 		snap := cloneLoop(loop, run)
 		snap.CLI = w.CLI
 		snap.Person = w.Person
@@ -611,7 +660,14 @@ func (m *Manager) runLoop(ctx context.Context, id string, run *activeRun) {
 		_ = m.saveLocked()
 		m.mu.Unlock()
 
-		outcome := m.executeIteration(ctx, snap, passNum, logNum, run)
+		passCtx := ctx
+		cancelPass := func() {}
+		if snap.TimeLimitMinutes > 0 && snap.StartedAt != nil {
+			passCtx, cancelPass = context.WithDeadline(ctx, snap.StartedAt.Add(time.Duration(snap.TimeLimitMinutes)*time.Minute))
+		}
+		outcome := m.executeIteration(passCtx, snap, passNum, logNum, run)
+		timedOut := passCtx.Err() == context.DeadlineExceeded
+		cancelPass()
 
 		m.mu.Lock()
 		loop, ok = m.loops[id]
@@ -634,8 +690,27 @@ func (m *Manager) runLoop(ctx context.Context, id string, run *activeRun) {
 			rec.ResetAt = &resetCopy
 		}
 		rec.Error = outcome.errMsg
+		rec.Verification = outcome.verification
+		rec.BeforeTree = outcome.beforeTree
+		rec.AfterTree = outcome.afterTree
+		rec.Result = outcome.result
+		rec.GitPatch = outcome.patch
+		rec.Snapshot = outcome.snapshot
+		if outcome.result != nil {
+			data, _ := json.Marshal(outcome.result)
+			loop.Memory = boundedMemory(loop.Memory + "\n" + string(data))
+		}
 
 		w = findWorkerByID(loop, wID)
+		if timedOut {
+			rec.Status = "stopped"
+			resetRunningWorkersLocked(loop, time.Now())
+			loop.Outcome = "limit"
+			loop.LimitReason = "time"
+			m.finishLocked(loop, StatusCompleted, "")
+			m.mu.Unlock()
+			return
+		}
 		if ctx.Err() != nil {
 			rec.Status = StatusStopped
 			if w != nil {
@@ -643,6 +718,14 @@ func (m *Manager) runLoop(ctx context.Context, id string, run *activeRun) {
 				w.Status = normalizeWorkerStatus(*w, now)
 			}
 			m.finishLocked(loop, StatusStopped, "")
+			m.mu.Unlock()
+			return
+		}
+		if reason := stagnationReason(loop.Iterations); reason != "" {
+			rec.Status = "blocked"
+			loop.Outcome = "blocked"
+			resetRunningWorkersLocked(loop, now)
+			m.finishLocked(loop, StatusPaused, reason)
 			m.mu.Unlock()
 			return
 		}
@@ -690,6 +773,8 @@ func (m *Manager) runLoop(ctx context.Context, id string, run *activeRun) {
 			return
 		}
 
+		rec.Decision = decidePass(rec)
+		applyStepResult(loop, rec)
 		rec.Status = StatusCompleted
 		loop.CurrentIteration++
 		loop.LastSummary = outcome.summary
@@ -707,6 +792,17 @@ func (m *Manager) runLoop(ctx context.Context, id string, run *activeRun) {
 		}
 
 		if snap.StopWhenDone && outcome.doneSignal {
+			loop.Outcome = "review"
+			if outcome.verification != nil && !outcome.verification.Passed {
+				loop.Outcome = "blocked"
+			}
+			if snap.Mode == "maintenance" && (outcome.verification == nil || outcome.verification.Passed) {
+				loop.Outcome = "waiting_work"
+			}
+			if loop.Outcome == "" {
+				loop.Outcome = "limit"
+				loop.LimitReason = "passes"
+			}
 			m.finishLocked(loop, StatusCompleted, "")
 			m.mu.Unlock()
 			return
@@ -717,6 +813,10 @@ func (m *Manager) runLoop(ctx context.Context, id string, run *activeRun) {
 			return
 		}
 		if loop.MaxIterations > 0 && loop.CurrentIteration >= loop.MaxIterations {
+			if loop.Outcome == "" {
+				loop.Outcome = "limit"
+				loop.LimitReason = "passes"
+			}
 			m.finishLocked(loop, StatusCompleted, "")
 			m.mu.Unlock()
 			return
@@ -839,6 +939,7 @@ func hasWorkableWorkersLocked(loop *Loop, now time.Time) bool {
 
 func (m *Manager) finishLocked(loop *Loop, status, errMsg string) {
 	now := time.Now()
+	loop.Phase = ""
 	loop.Status = status
 	loop.PauseRequested = false
 	loop.ActiveWorkerID = ""
@@ -852,6 +953,12 @@ func (m *Manager) finishLocked(loop *Loop, status, errMsg string) {
 }
 
 type iterationOutcome struct {
+	beforeTree   string
+	afterTree    string
+	verification *Verification
+	result       *PassResult
+	patch        string
+	snapshot     bool
 	exitCode     int
 	changedFiles int
 	diffStat     string
@@ -868,6 +975,7 @@ func (m *Manager) executeIteration(ctx context.Context, loop Loop, passNum, logN
 	if workDir == "" {
 		workDir = loop.ProjectDir
 	}
+	before, snapshot := snapshotTree(workDir)
 	iterPrompt := buildIterationPrompt(loop, passNum)
 	binPath, err := exec.LookPath(loop.CLI)
 	if err != nil {
@@ -875,6 +983,9 @@ func (m *Manager) executeIteration(ctx context.Context, loop Loop, passNum, logN
 	}
 	args := buildIterationArgs(loop, workDir, iterPrompt)
 	cmd := exec.CommandContext(ctx, binPath, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 3 * time.Second
 	cmd.Dir = workDir
 	cmd.Env = iterationEnv(loop.CLI, loop.Person, loop.AutoApprove)
 
@@ -940,9 +1051,56 @@ func (m *Manager) executeIteration(ctx context.Context, loop Loop, passNum, logN
 	if rateLimited {
 		errMsg = rlReason
 	}
+	var verification *Verification
+	if loop.VerifyCommand != "" {
+		m.mu.Lock()
+		if current := m.loops[loop.ID]; current != nil {
+			current.Phase = "verifying"
+		}
+		m.mu.Unlock()
+	}
+	if loop.VerifyCommand != "" && errMsg == "" && ctx.Err() == nil {
+		verifyCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		check := exec.CommandContext(verifyCtx, "sh", "-c", loop.VerifyCommand)
+		check.Dir = workDir
+		check.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		check.Cancel = func() error { return syscall.Kill(-check.Process.Pid, syscall.SIGKILL) }
+		check.WaitDelay = 3 * time.Second
+		outputBuffer := &tailWriter{}
+		check.Stdout = outputBuffer
+		check.Stderr = outputBuffer
+		verificationStarted := time.Now()
+		checkErr := check.Run()
+		output := outputBuffer.data
+		cancel()
+		if len(output) > 32000 {
+			output = output[len(output)-32000:]
+		}
+		verification = &Verification{DurationMs: time.Since(verificationStarted).Milliseconds(), Command: loop.VerifyCommand, Output: string(output), Passed: checkErr == nil}
+	}
 	summary := summarizeOutput(tail, diffStat, changedFiles)
+	result := parsePassResult(tail)
+	if result != nil {
+		summary = result.Change
+	}
+	patch := ""
+	afterTree := ""
+	if snapshot {
+		after, ok := snapshotTree(workDir)
+		afterTree = after
+		snapshot = ok
+		if ok {
+			out, err := exec.Command("git", "-C", workDir, "diff", before, after, "--").Output()
+			snapshot = err == nil
+			patch = string(out)
+			if len(patch) > 128*1024 {
+				patch = patch[:128*1024] + "\n[Diff tronqué]"
+			}
+		}
+	}
 
 	return iterationOutcome{
+		beforeTree: before, afterTree: afterTree, verification: verification, result: result, patch: patch, snapshot: snapshot,
 		exitCode:     exitCode,
 		changedFiles: changedFiles,
 		diffStat:     diffStat,
@@ -1024,13 +1182,40 @@ func buildIterationPrompt(loop Loop, passNum int) string {
 	if loop.LastSummary != "" && passNum > 1 {
 		fmt.Fprintf(&sb, "Résumé de l'itération précédente : %s\n\n", loop.LastSummary)
 	}
+	plan, _ := json.Marshal(loop.Plan)
+	if selected := nextStep(loop.Plan); selected != nil {
+		fmt.Fprintf(&sb, "Étape à traiter exclusivement : %s — %s\nRésultat attendu : %s\n", selected.ID, selected.Title, selected.Expected)
+	} else if len(loop.Plan) > 0 {
+		sb.WriteString("Aucune étape exécutable : examine les preuves ou explique le blocage ; ne commence pas un autre chantier.\n")
+	}
+	directives, _ := json.Marshal(loop.Directives)
+	fmt.Fprintf(&sb, "Consignes utilisateur durables : %s\n", directives)
+	if len(loop.Iterations) > 0 {
+		prev := IterationRecord{}
+		for i := len(loop.Iterations) - 1; i >= 0; i-- {
+			if loop.Iterations[i].Verification != nil {
+				prev = loop.Iterations[i]
+				break
+			}
+		}
+		if prev.Verification != nil {
+			observed, _ := json.Marshal(prev.Verification)
+			fmt.Fprintf(&sb, "FAITS OBSERVÉS PAR ATLAS (prioritaires sur les déclarations) : %s\n", observed)
+			if !prev.Verification.Passed {
+				sb.WriteString("La prochaine action est de corriger cet échec, avec une approche ciblée.\n")
+			}
+		}
+	}
+	fmt.Fprintf(&sb, "Plan (completed_steps contient les identifiants des étapes terminées) : %s\n", plan)
+	fmt.Fprintf(&sb, "Périmètre : %s\nCritères de réussite : %s\nMémoire persistante :\n%s\n", loop.Scope, loop.Criteria, loop.Memory)
+	sb.WriteString("Termine par ATLAS_RESULT suivi sur la même ligne d’un objet JSON avec les champs string problem, change, checks, limitations, next, decision. Les vérifications rapportées restent des déclarations.\n")
 	sb.WriteString("Objectif :\n")
 	sb.WriteString(loop.Prompt)
 	sb.WriteString("\n\nConsignes :\n")
 	sb.WriteString("- Concentre-toi sur une amélioration concrète et vérifiable par itération.\n")
 	sb.WriteString("- Lance les tests/vérifications pertinents après tes modifications et termine par un court résumé.\n")
 	if loop.StopWhenDone {
-		sb.WriteString("- Si aucune amélioration pertinente ne reste à faire, réponds simplement avec `LOOP_DONE` sur une ligne seule.\n")
+		sb.WriteString("- Si aucune amélioration pertinente ne reste à faire, ajoute `LOOP_DONE` sur une ligne seule après ton bilan ATLAS_RESULT.\n")
 	}
 	return sb.String()
 }

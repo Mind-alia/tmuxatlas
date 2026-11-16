@@ -931,6 +931,7 @@ function AppInner({
               <FilesPage hosts={hosts} />
             ) : currentView === 'loops' ? (
               <LoopsPage
+                currentUsername={username}
                 sessions={sessions}
                 onRefreshSessions={refresh}
                 onOpenSession={openSessionFromView}

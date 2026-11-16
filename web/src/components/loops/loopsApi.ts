@@ -82,6 +82,13 @@ export interface LoopsMeta {
 }
 
 export interface IterationRecord {
+ decision?: string
+ step_id?: string
+  verification?: { command: string; output: string; passed: boolean }
+  result?: { problem: string; change: string; checks: string; limitations: string; next: string; decision: string }
+  snapshot?: boolean
+  instruction?: string
+
   number: number
   status: string
   worker_id?: string
@@ -101,7 +108,21 @@ export interface IterationRecord {
   error?: string
 }
 
+export interface PlanStep { id: string; title: string; done: boolean; state?: string; expected?: string; depends_on?: string[]; evidence_iteration?: number }
+
 export interface LoopItem {
+ limit_reason?: string
+  phase?: string
+  plan?: PlanStep[]
+  time_limit_minutes?: number
+  verify_command?: string
+  mode?: string
+  scope?: string
+  criteria?: string
+  memory?: string
+  outcome?: string
+  pending_instruction?: string
+
   id: string
   name: string
   project_dir: string
@@ -190,6 +211,12 @@ async function postJson<T>(url: string, body: Record<string, unknown>): Promise<
 }
 
 export function createLoop(payload: {
+  time_limit_minutes?: number
+  verify_command?: string
+  mode?: string
+  scope?: string
+  criteria?: string
+
   name?: string
   project_dir: string
   cli?: LoopCLI
@@ -209,6 +236,12 @@ export function createLoop(payload: {
 }
 
 export function updateLoop(payload: {
+  time_limit_minutes?: number
+  verify_command?: string
+  mode?: string
+  scope?: string
+  criteria?: string
+
   id: string
   name?: string
   cli?: LoopCLI
@@ -264,3 +297,9 @@ export function openCliChat(payload: {
 }) {
   return postJson<ChatResponse>('/api/loops/chat', payload)
 }
+
+export function queueInstruction(id: string, text: string) { return postJson<LoopItem>("/api/loops/instruction", { id, text }) }
+
+export function reviewLoop(id: string) { return postJson<LoopItem>("/api/loops/review", { id }) }
+
+export function saveLoopPlan(id: string, plan: PlanStep[]) { return postJson<LoopItem>("/api/loops/plan", {id, plan}) }

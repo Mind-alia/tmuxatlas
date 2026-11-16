@@ -216,3 +216,57 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
+
+// Instruction queues a user instruction for the next pass.
+func (h *Handler) Instruction(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID   string `json:"id"`
+		Text string `json:"text"`
+	}
+	if json.NewDecoder(r.Body).Decode(&req) != nil || req.ID == "" {
+		writeError(w, 400, "identifiant requis")
+		return
+	}
+	owner, _, admin := callerIdentity(r)
+	loop, err := h.mgr.SetInstruction(req.ID, req.Text, owner, admin)
+	if err != nil {
+		writeManagerError(w, err)
+		return
+	}
+	writeJSON(w, 200, loop)
+}
+
+func (h *Handler) Review(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if json.NewDecoder(r.Body).Decode(&req) != nil {
+		writeError(w, 400, "requête invalide")
+		return
+	}
+	owner, _, admin := callerIdentity(r)
+	l, err := h.mgr.Review(req.ID, owner, admin)
+	if err != nil {
+		writeManagerError(w, err)
+		return
+	}
+	writeJSON(w, 200, l)
+}
+
+func (h *Handler) Plan(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID   string     `json:"id"`
+		Plan []PlanStep `json:"plan"`
+	}
+	if json.NewDecoder(r.Body).Decode(&req) != nil {
+		writeError(w, 400, "requête invalide")
+		return
+	}
+	owner, _, admin := callerIdentity(r)
+	l, err := h.mgr.SetPlan(req.ID, req.Plan, owner, admin)
+	if err != nil {
+		writeManagerError(w, err)
+		return
+	}
+	writeJSON(w, 200, l)
+}

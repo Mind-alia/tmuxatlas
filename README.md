@@ -32,7 +32,7 @@ It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode) running 
 ### Non-goals
 
 - **Isolation multi-utilisateur Unix** — Le mode comptes filtre l’interface et l’API, mais ne fournit pas d’isolation entre comptes Unix.
-- **Agent orchestration** — Atlas does not orchestrate agents. On explicit user action it can launch an agent when creating a session or send a reply to a detected question, after server-side revalidation.
+- **Boucles** — Atlas can execute explicitly configured improvement missions or continuous maintenance, with account failover, persistent context, optional verification commands, and per-pass Git snapshots. Results declared by agents remain subject to review. See [Boucles](docs/boucles.md).
 - **tmux management** — TmuxAtlas doesn't manage layouts or workflows. The installer can optionally add a small, clearly marked `mouse on` block to `.tmux.conf`; all other tmux configuration stays yours.
 
 ## Installation

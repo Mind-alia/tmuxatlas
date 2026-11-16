@@ -26,9 +26,9 @@ export const cliMeta: Record<LoopCLI, { title: string; subtitle: string; badge: 
 export const statusMeta: Record<LoopStatus, { label: string; className: string }> = {
   idle: { label: 'Prête', className: 'border-border bg-secondary text-muted-foreground' },
   running: { label: 'En cours', className: 'border-primary/40 bg-primary/15 text-primary' },
-  waiting_reset: { label: 'Attente reset 5h', className: 'border-warning/45 bg-warning/15 text-warning' },
+  waiting_reset: { label: 'Attente disponibilité', className: 'border-warning/45 bg-warning/15 text-warning' },
   paused: { label: 'En pause', className: 'border-warning/40 bg-warning/15 text-warning' },
-  completed: { label: 'Terminée', className: 'border-success/40 bg-success/15 text-success' },
+  completed: { label: 'Exécution terminée', className: 'border-success/40 bg-success/15 text-success' },
   stopped: { label: 'Arrêtée', className: 'border-border bg-secondary text-muted-foreground' },
   error: { label: 'Erreur', className: 'border-destructive/40 bg-destructive/15 text-destructive' },
 }
