@@ -47,10 +47,10 @@ const mic = {
   error: '',
   toggle: vi.fn(),
 }
-const useMicStream = vi.fn((_allowed: boolean) => mic)
+const useMicStream = vi.fn((_allowed: boolean, _hostId: string) => mic)
 
 vi.mock('../hooks/useMicStream', () => ({
-  useMicStream: (allowed: boolean) => useMicStream(allowed),
+  useMicStream: (allowed: boolean, hostId: string) => useMicStream(allowed, hostId),
 }))
 
 vi.mock('../hooks/useTerminal', () => ({
@@ -93,8 +93,8 @@ describe('Terminal workspace controls', () => {
   })
 
   it('does not focus or enable the microphone in an embedded tile', () => {
-    render(<Terminal sessionName="one" hostId="host-a" hostLocal embedded />)
-    expect(useMicStream).toHaveBeenCalledWith(false)
+    render(<Terminal sessionName="one" hostId="host-a" embedded />)
+    expect(useMicStream).toHaveBeenCalledWith(false, 'host-a')
     expect(terminal.focus).not.toHaveBeenCalled()
     expect(screen.queryByRole('toolbar', { name: 'Touches du terminal' })).not.toBeInTheDocument()
     fireEvent.click(document.querySelector('[data-terminal-surface]')!)
@@ -297,29 +297,28 @@ describe('Terminal microphone', () => {
 
   it('hides the button when voice is unavailable', () => {
     render(<Terminal sessionName="s" hostId="h" />)
-    expect(useMicStream).toHaveBeenCalledWith(false)
     expect(screen.queryByRole('button', { name: /microphone/i })).toBeNull()
   })
 
-  it('only allows the microphone for sessions on the local host', () => {
-    render(<Terminal sessionName="s" hostId="h" hostLocal />)
-    expect(useMicStream).toHaveBeenCalledWith(true)
+  it('asks the session host for the microphone, local or not', () => {
+    render(<Terminal sessionName="s" hostId="agent-host" />)
+    expect(useMicStream).toHaveBeenCalledWith(true, 'agent-host')
   })
 
   it('turns the microphone off and shows it is live, including in Zen Mode', () => {
     mic.available = true
     mic.state = 'on'
-    const { rerender } = render(<Terminal sessionName="s" hostId="h" hostLocal />)
+    const { rerender } = render(<Terminal sessionName="s" hostId="h" />)
     fireEvent.click(screen.getByRole('button', { name: 'Désactiver le micro' }))
     expect(mic.toggle).toHaveBeenCalledTimes(1)
-    rerender(<Terminal sessionName="s" hostId="h" hostLocal zenMode onToggleZen={() => {}} />)
+    rerender(<Terminal sessionName="s" hostId="h" zenMode onToggleZen={() => {}} />)
     expect(screen.getByRole('button', { name: 'Désactiver le micro' }).textContent).toContain('Micro activé')
   })
 
   it('shows microphone errors', () => {
     mic.available = true
     mic.error = 'Microphone access was denied in this browser.'
-    render(<Terminal sessionName="s" hostId="h" hostLocal />)
+    render(<Terminal sessionName="s" hostId="h" />)
     expect(screen.getByRole('alert').textContent).toContain('denied')
   })
 })
@@ -350,13 +349,13 @@ describe('Claude talk button', () => {
   })
 
   it('renders in the status bar slot rather than the Terminal toolbar', () => {
-    render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} claudeActive />)
+    render(<Terminal sessionName="s" hostId="h" talkSlot={slot} claudeActive />)
     expect(slot).toContainElement(talk())
     expect(document.querySelector('.terminal-cockpit')).not.toContainElement(talk())
   })
 
   it('shows Stop and Send while holding, and Stop leaves the transcript in the prompt', () => {
-    render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} claudeActive />)
+    render(<Terminal sessionName="s" hostId="h" talkSlot={slot} claudeActive />)
     terminal.focus.mockClear()
     terminal.sendRawInput.mockClear()
     fireEvent.click(talk())
@@ -379,7 +378,7 @@ describe('Claude talk button', () => {
         vi.advanceTimersByTime(ms)
       })
     const startListening = () => {
-      render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} claudeActive />)
+      render(<Terminal sessionName="s" hostId="h" talkSlot={slot} claudeActive />)
       fireEvent.click(talk())
       footer('listening…')
       advance(200)
@@ -423,7 +422,7 @@ describe('Claude talk button', () => {
     })
 
     it('sends nothing when Claude never listened, as in a Claude dialog', () => {
-      render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} claudeActive />)
+      render(<Terminal sessionName="s" hostId="h" talkSlot={slot} claudeActive />)
       fireEvent.click(talk())
       advance(500)
       fireEvent.click(send())
@@ -433,7 +432,7 @@ describe('Claude talk button', () => {
     })
 
     it('ignores words on screen above the footer', () => {
-      render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} claudeActive />)
+      render(<Terminal sessionName="s" hostId="h" talkSlot={slot} claudeActive />)
       fireEvent.click(talk())
       terminal.readScreen.mockReturnValue(['listening…', ...Array.from({ length: 8 }, (_, row) => `output ${row}`)])
       advance(500)
@@ -444,45 +443,45 @@ describe('Claude talk button', () => {
   })
 
   it('releases when the target changes, the microphone stops, or Zen Mode hides it', () => {
-    const view = render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} claudeActive />)
+    const view = render(<Terminal sessionName="s" hostId="h" talkSlot={slot} claudeActive />)
     fireEvent.click(talk())
-    view.rerender(<Terminal sessionName="other" hostId="h" hostLocal talkSlot={slot} claudeActive />)
+    view.rerender(<Terminal sessionName="other" hostId="h" talkSlot={slot} claudeActive />)
     expect(terminal.setVoiceHold).toHaveBeenLastCalledWith(false)
     expect(talk()).toBeEnabled()
 
     fireEvent.click(talk())
     mic.state = 'off'
-    view.rerender(<Terminal sessionName="other" hostId="h" hostLocal talkSlot={slot} claudeActive />)
+    view.rerender(<Terminal sessionName="other" hostId="h" talkSlot={slot} claudeActive />)
     expect(terminal.setVoiceHold).toHaveBeenLastCalledWith(false)
     expect(talk()).toBeDisabled()
 
     mic.state = 'on'
-    view.rerender(<Terminal sessionName="other" hostId="h" hostLocal talkSlot={slot} claudeActive />)
+    view.rerender(<Terminal sessionName="other" hostId="h" talkSlot={slot} claudeActive />)
     fireEvent.click(talk())
     view.rerender(
-      <Terminal sessionName="other" hostId="h" hostLocal talkSlot={null} claudeActive zenMode onToggleZen={() => {}} />,
+      <Terminal sessionName="other" hostId="h" talkSlot={null} claudeActive zenMode onToggleZen={() => {}} />,
     )
     expect(terminal.setVoiceHold).toHaveBeenLastCalledWith(false)
   })
 
   it('is only active while Claude runs in the active pane, and releases when it exits', () => {
-    const view = render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} />)
+    const view = render(<Terminal sessionName="s" hostId="h" talkSlot={slot} />)
     expect(talk()).toBeDisabled()
-    view.rerender(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} claudeActive />)
+    view.rerender(<Terminal sessionName="s" hostId="h" talkSlot={slot} claudeActive />)
     fireEvent.click(talk())
     expect(terminal.setVoiceHold).toHaveBeenLastCalledWith(true)
-    view.rerender(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} />)
+    view.rerender(<Terminal sessionName="s" hostId="h" talkSlot={slot} />)
     expect(terminal.setVoiceHold).toHaveBeenLastCalledWith(false)
     expect(talk()).toBeDisabled()
   })
 
   it('stays disabled until the microphone and Terminal are ready', () => {
     mic.state = 'off'
-    const view = render(<Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} claudeActive />)
+    const view = render(<Terminal sessionName="s" hostId="h" talkSlot={slot} claudeActive />)
     expect(talk()).toBeDisabled()
     mic.state = 'on'
     view.rerender(
-      <Terminal sessionName="s" hostId="h" hostLocal talkSlot={slot} claudeActive connectionState="reconnecting" />,
+      <Terminal sessionName="s" hostId="h" talkSlot={slot} claudeActive connectionState="reconnecting" />,
     )
     expect(talk()).toBeDisabled()
   })

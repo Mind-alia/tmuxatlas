@@ -53,7 +53,7 @@ func waitForSpaces(t *testing.T, output *lockedBuffer, count int) {
 func TestVoiceHold(t *testing.T) {
 	t.Run("repeats until stopped and writes nothing afterwards", func(t *testing.T) {
 		output := &lockedBuffer{}
-		hold := newVoiceHold(output)
+		hold := NewVoiceHold(output)
 		hold.interval = time.Millisecond
 		hold.Start()
 		hold.Start()
@@ -71,7 +71,7 @@ func TestVoiceHold(t *testing.T) {
 
 	t.Run("stops at the limit and can restart", func(t *testing.T) {
 		output := &lockedBuffer{}
-		hold := newVoiceHold(output)
+		hold := NewVoiceHold(output)
 		hold.interval = time.Hour
 		hold.limit = time.Millisecond
 		hold.Start()
@@ -84,13 +84,13 @@ func TestVoiceHold(t *testing.T) {
 	})
 
 	t.Run("stops when the output fails", func(t *testing.T) {
-		hold := newVoiceHold(failingWriter{})
+		hold := NewVoiceHold(failingWriter{})
 		hold.Start()
 		hold.Stop()
 	})
 
 	t.Run("stop without start is harmless", func(t *testing.T) {
-		newVoiceHold(&lockedBuffer{}).Stop()
+		NewVoiceHold(&lockedBuffer{}).Stop()
 	})
 }
 

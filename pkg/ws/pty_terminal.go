@@ -115,7 +115,7 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 
 	var writeMu sync.Mutex
 	var images clipboardimage.Receiver
-	hold := newVoiceHold(ptySess)
+	hold := NewVoiceHold(ptySess)
 	sendResult := func(err error) {
 		message := ""
 		if err != nil {

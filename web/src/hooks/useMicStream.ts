@@ -35,8 +35,8 @@ function micErrorMessage(error: unknown): string {
   return 'Impossible de démarrer le micro.'
 }
 
-async function fetchVoiceStatus(): Promise<VoiceStatus> {
-  const response = await apiFetch('/api/voice')
+async function fetchVoiceStatus(hostId: string): Promise<VoiceStatus> {
+  const response = await apiFetch(`/api/voice?host=${encodeURIComponent(hostId)}`)
   if (!response.ok) return { enabled: false, ready: false }
   return (await response.json()) as VoiceStatus
 }
@@ -59,12 +59,16 @@ function rememberMicTurnedOff(off: boolean) {
 }
 
 /**
- * Streams the browser microphone to the host's virtual microphone. It starts on
- * its own unless this browser turned it off, and all capture stops on stop(),
- * failure or unmount.
+ * Streams the browser microphone to the virtual microphone of the host running
+ * the session: the server's own, or the agent of another host or Unix account.
+ * It starts on its own unless this browser turned it off, and all capture stops
+ * on stop(), failure, a change of host or unmount.
  */
-export function useMicStream(allowed: boolean) {
-  const [enabled, setEnabled] = useState(false)
+export function useMicStream(allowed: boolean, hostId: string) {
+  // The host whose voice status said enabled: a stale answer for another host
+  // never starts a stream to the new one.
+  const [enabledHost, setEnabledHost] = useState<string | null>(null)
+  const enabled = enabledHost === hostId
   const [state, setState] = useState<MicState>('off')
   const [error, setError] = useState('')
   const stopRef = useRef<(() => void) | null>(null)
@@ -73,17 +77,17 @@ export function useMicStream(allowed: boolean) {
   useEffect(() => {
     if (!allowed) return
     let cancelled = false
-    fetchVoiceStatus()
+    fetchVoiceStatus(hostId)
       .then(status => {
-        if (!cancelled) setEnabled(status.enabled)
+        if (!cancelled) setEnabledHost(status.enabled ? hostId : null)
       })
       .catch(() => {
-        if (!cancelled) setEnabled(false)
+        if (!cancelled) setEnabledHost(null)
       })
     return () => {
       cancelled = true
     }
-  }, [allowed])
+  }, [allowed, hostId])
 
   const stop = useCallback(() => {
     attemptRef.current += 1
@@ -117,7 +121,7 @@ export function useMicStream(allowed: boolean) {
     setState('starting')
     stopRef.current = cleanup
     try {
-      const status = await fetchVoiceStatus()
+      const status = await fetchVoiceStatus(hostId)
       if (!isCurrent()) return
       if (status.error) throw new Error(status.error)
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -153,7 +157,7 @@ export function useMicStream(allowed: boolean) {
       }
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const socket = new WebSocket(`${protocol}//${window.location.host}/ws/mic?id=${micTabId}`)
+      const socket = new WebSocket(`${protocol}//${window.location.host}/ws/mic?id=${micTabId}&host=${encodeURIComponent(hostId)}`)
       socket.binaryType = 'arraybuffer'
       cleanups.push(() => {
         socket.onclose = null
@@ -191,7 +195,7 @@ export function useMicStream(allowed: boolean) {
     } catch (startError) {
       fail(micErrorMessage(startError))
     }
-  }, [])
+  }, [hostId])
 
   const toggle = useCallback(() => {
     rememberMicTurnedOff(state !== 'off')
@@ -204,7 +208,8 @@ export function useMicStream(allowed: boolean) {
     else if (enabled && !isMicTurnedOff()) void start()
   }, [allowed, enabled, start, stop])
 
-  useEffect(() => stop, [stop])
+  // A stream feeds one host: leaving it for another host's session ends it.
+  useEffect(() => stop, [hostId, stop])
 
   return { available: allowed && enabled, state, error, toggle }
 }

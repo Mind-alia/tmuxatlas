@@ -38,7 +38,7 @@ var accountOtherRoutes = map[string]string{
 	"GET /api/agent-status": "admin", "DELETE /api/tool-events": "admin",
 	"GET /api/push/vapid-key": "admin", "POST /api/push/subscribe": "admin",
 	"POST /api/push/unsubscribe": "admin", "PUT /api/preferences": "admin", "POST /api/pair": "admin",
-	"GET /ws/peer": "peer", "GET /ws/peer-pty": "peer",
+	"GET /ws/peer": "peer", "GET /ws/peer-pty": "peer", "GET /ws/peer-mic": "peer",
 	"POST /api/pair/complete": "peer", "GET /*": "public",
 	"CONNECT /api/*": "denied", "DELETE /api/*": "denied", "GET /api/*": "denied",
 	"HEAD /api/*": "denied", "OPTIONS /api/*": "denied", "PATCH /api/*": "denied",
