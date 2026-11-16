@@ -23,6 +23,8 @@ After=default.target
 [Service]
 Type=simple
 ExecStart={{.ExecStart}}
+# tmux and the programs in its panes must survive an Atlas restart.
+KillMode=process
 Restart=on-failure
 RestartSec=5
 Environment=PATH={{.Path}}
