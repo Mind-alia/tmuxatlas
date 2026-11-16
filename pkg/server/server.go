@@ -513,6 +513,8 @@ func Run(ctx context.Context, opts *Options) error {
 				json.NewEncoder(w).Encode(snapshot.State.SessionViews())
 			})
 
+			r.Get("/hosts/trust", handleHostTrust(opts, accountPolicy))
+
 			r.Get("/hosts", func(w http.ResponseWriter, r *http.Request) {
 				snapshot, err := coordinator.Snapshot(r.Context())
 				if err != nil {

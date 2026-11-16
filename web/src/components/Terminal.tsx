@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, CornerDownLeft, Keyboard, KeyboardOff, MessageSquareText, Mic } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, CornerDownLeft, Keyboard, KeyboardOff, MessageSquareText, Mic, ShieldAlert } from 'lucide-react'
 import { useMediaQuery, COMPACT_LAYOUT_QUERY } from '../lib/useMediaQuery'
 import { useHostLabel } from '../lib/hostLabel'
 import type { Window as SessionWindow } from '../hooks/useSessions'
@@ -24,6 +24,7 @@ import { TerminalSearchBar } from './TerminalSearchBar'
 import { MobileInputComposer } from './MobileInputComposer'
 import { hideSoftKeyboard, useSoftKeyboardOpen } from '../lib/useSoftKeyboard'
 import { SudoPanel } from './SudoPanel'
+import { useHostTrust } from '../hooks/useHostTrust'
 import { useAccountRole } from '../lib/accountContext'
 
 export interface TerminalCommandActions {
@@ -190,6 +191,7 @@ export function Terminal({
   // Outside the accounts mode the signed-in owner is the administrator; the
   // server still decides and the panel hides itself when refused.
   const sudoAdmin = useAccountRole() !== 'user'
+  const trustedHost = useHostTrust(hostId)
   const {
     connect,
     disconnect,
@@ -674,6 +676,16 @@ export function Terminal({
           onToggleZen={onToggleZen}
           onMore={showMenuAtButton}
         />
+      )}
+      {!trustedHost && (
+        <p
+          role="note"
+          data-testid="untrusted-host-banner"
+          className="flex shrink-0 items-center gap-2 border-b border-destructive/40 bg-destructive/10 px-3 py-1 text-xs font-medium text-destructive"
+        >
+          <ShieldAlert size={14} aria-hidden="true" />
+          Hôte non fiable : ne tapez jamais de mot de passe ici
+        </p>
       )}
       {!embedded && <SudoPanel hostId={hostId} sessionName={sessionName} enabled={sudoAdmin} />}
       {showTalk &&

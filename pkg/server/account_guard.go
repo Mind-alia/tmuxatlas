@@ -18,7 +18,7 @@ import (
 var accountUserRoutes = map[string]bool{
 	"GET /api/voice": true, "GET /api/monitor": true, "GET /api/stats": true, "GET /ws/mic": true,
 	"GET /api/preferences": true, "POST /api/auth/change-password": true, "GET /api/accounts/directory": true,
-	"GET /api/sessions": true, "GET /api/hosts": true, "GET /api/tool-events": true,
+	"GET /api/sessions": true, "GET /api/hosts": true, "GET /api/hosts/trust": true, "GET /api/tool-events": true,
 	"GET /api/activity": true, "GET /api/session/directories": true,
 	"POST /api/session/new": true, "POST /api/session/claim": true, "POST /api/session/release": true,
 	"GET /api/session/preview": true, "POST /api/session/reply": true,

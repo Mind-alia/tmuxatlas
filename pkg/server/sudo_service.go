@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"sync"
 	"time"
 
@@ -34,10 +33,7 @@ func newSudoService(opts *Options) *sudoService {
 	if !opts.AuthEnabled || opts.PeerMgr == nil {
 		return nil
 	}
-	var pinned []string
-	for _, value := range strings.FieldsFunc(opts.SudoPeers, func(r rune) bool { return r == ',' || r == ' ' }) {
-		pinned = append(pinned, value)
-	}
+	pinned := parseFingerprints(opts.SudoPeers)
 	service := &sudoService{
 		opts: opts, store: sudo.NewStore(sudo.DefaultLimits(), nil), admins: newSudoAdmins(opts),
 		pinned: pinned, users: make(map[string]string),
