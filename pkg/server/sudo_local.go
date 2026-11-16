@@ -34,6 +34,11 @@ func registerSudoLocalRoutes(mux *http.ServeMux, broker sudo.Broker) {
 			writeSudoError(w, sudo.ErrInvalidText)
 			return
 		}
+		// Fail fast on this host; the hub validates again.
+		if err := sudo.ValidateCommand(body.Command); err != nil {
+			writeSudoError(w, err)
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
 		view, err := broker.Create(ctx, sudo.CreateInput{Origin: body.Origin, Command: body.Command, Reason: body.Reason})

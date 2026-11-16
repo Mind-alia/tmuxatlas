@@ -208,7 +208,7 @@ func run(ctx context.Context, c *cli.Command) error {
 	})
 	if err != nil {
 		if errors.Is(err, sudo.ErrUnavailable) {
-			return exitError{code: exitUsage, message: "terminal sudo indisponible sur ce TmuxAtlas (hub sans authentification ou version ancienne)"}
+			return exitError{code: exitUsage, message: "terminal sudo indisponible : hub injoignable, sans authentification ou trop ancien"}
 		}
 		return exitError{code: exitUsage, message: err.Error()}
 	}
