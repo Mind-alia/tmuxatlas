@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -61,6 +62,7 @@ type Options struct {
 	ActivityTracker  *activity.Tracker
 	PushKeys         *webpush.VAPIDKeys
 	PushStore        *webpush.Store
+	PushSender       *webpush.Sender
 	PrefStore        *preferences.Store
 	AuthEnabled      bool
 	AccountsAuth     *auth.AccountsAuth
@@ -223,6 +225,8 @@ func Run(ctx context.Context, opts *Options) error {
 		opsMonitor = ops.New(dir)
 		go opsMonitor.Run(ctx)
 	}
+	alertEngine := newAlertEngine(ctx, opts, opsMonitor, hostMonitor)
+	var lastNotificationTest atomic.Int64
 	// The browser microphone feeds programs on this host, so it needs local tmux.
 	var browserMic *voice.Mic
 	if opts.Client != nil && voice.Enabled(os.Getenv("TMUXATLAS_VOICE")) {
@@ -671,11 +675,38 @@ func Run(ctx context.Context, opts *Options) error {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Cache-Control", "no-store")
-				if opsMonitor == nil {
-					_ = json.NewEncoder(w).Encode(ops.Response{Alerts: []ops.Alert{}})
+				body := struct {
+					ops.Response
+					Notifications *ops.EngineView `json:"notifications,omitempty"`
+				}{Response: ops.Response{Alerts: []ops.Alert{}}}
+				if opsMonitor != nil {
+					body.Response = opsMonitor.Snapshot()
+				}
+				if alertEngine != nil {
+					view := alertEngine.View()
+					body.Notifications = &view
+				}
+				_ = json.NewEncoder(w).Encode(body)
+			})
+			// Sends a test notification to every channel (admin only, at most
+			// one every 30 s). Nothing in the request is used.
+			mutations.Post("/ops/notifications/test", func(w http.ResponseWriter, r *http.Request) {
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role != "admin" {
+					http.Error(w, "accès interdit", http.StatusForbidden)
 					return
 				}
-				_ = json.NewEncoder(w).Encode(opsMonitor.Snapshot())
+				if alertEngine == nil {
+					http.Error(w, "notifications indisponibles : ni TMUXATLAS_OPS_DIR ni monitoring", http.StatusServiceUnavailable)
+					return
+				}
+				now := time.Now().Unix()
+				if last := lastNotificationTest.Load(); now-last < 30 || !lastNotificationTest.CompareAndSwap(last, now) {
+					http.Error(w, "un test vient d'être envoyé, réessaie dans 30 s", http.StatusTooManyRequests)
+					return
+				}
+				errs := alertEngine.Test(r.Context())
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"channels": alertEngine.Notifiers(), "errors": errs})
 			})
 
 			// Stats endpoint — aggregate overview data

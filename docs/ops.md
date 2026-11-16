@@ -231,3 +231,63 @@ a check ran), `partial` (local copy done, then R2 or a later step failed) or
 
 The checks are applied in this order: a stuck run hides a failure, which
 hides lateness.
+
+## Phone notifications
+
+Every 30 s the hub evaluates the ops alerts above and the sites probed by the
+host monitor, and notifies the phone when something breaks or comes back.
+
+### What notifies
+
+| Problem | Notified after |
+|---|---|
+| container stopped, restarting in a loop, or unhealthy | 60 s |
+| Docker unreachable | 60 s |
+| container restarted 3 times in 10 min | at once |
+| collector silent | 2 min without a new snapshot |
+| site down | 3 failed probes in a row (one probe per minute) |
+| backup failed, R2 copy failed, backup stuck or late | at once |
+
+"Not set up yet" states (`ops:containers:missing`, `ops:backup:missing`) only
+show on the page.
+
+Sites are those of `TMUXATLAS_MONITOR_URLS` and of the local Caddy
+configuration. They can only be set in the environment, never from the
+browser: a URL typed in the interface would let any admin session make the
+hub request internal addresses (SSRF).
+
+### Anti-spam
+
+- One alert goes `pending → firing → resolving → ok`; one notification when it
+  fires, one when it is resolved, nothing in between.
+- A recovery needs 2 clear checks in a row (about 1 min). A problem that comes
+  back while resolving does not notify again.
+- A reminder every 6 h while it lasts.
+- At least 5 min between two notifications of the same alert.
+- More than 3 notifications due at once are grouped into one.
+- At most 10 notifications per 10 min; the rest wait and are grouped.
+- States are kept in `alerts.json` (data directory), so a restart of the
+  hub does not notify again.
+
+### Channels
+
+- **Web Push** (default): the PWA must be installed and notifications enabled
+  in *Réglages*. Only admins can subscribe (`/api/push/subscribe` is admin
+  only), so ops notifications only reach admins. TTL 1 h, high urgency; the
+  recovery replaces the outage on the phone (same tag). On iOS, Web Push
+  needs iOS 16.4 or later and the app added to the home screen.
+- **ntfy** (optional): set `TMUXATLAS_NTFY_URL=https://ntfy.sh/<topic>` and,
+  for a protected topic, `TMUXATLAS_NTFY_TOKEN`, in the hub's
+  `~/.config/tmuxatlas/.env` (not versioned, see `.env.example`). A token is
+  refused over plain http. On ntfy.sh the topic name is the only secret: use a
+  long random one.
+
+`POST /api/ops/notifications/test` (button on the page, admin only, once every
+30 s) sends a test through every channel. `TMUXATLAS_OPS_NOTIFY=off` turns the
+notifications off.
+
+### Limits
+
+The hub runs on the same machine as production: if the machine or the hub
+itself goes down, nothing is notified. An external check (healthchecks.io,
+UptimeRobot, Cloudflare health checks) on the public site covers that case.

@@ -58,6 +58,7 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 			t.Fatal(err)
 		}
 		t.Setenv("TMUXATLAS_OPS_DIR", opsDir)
+		t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data")) // alerts.json
 	}
 	client, err := tmux.NewClient()
 	if err != nil {
@@ -203,6 +204,24 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 	aliceLogin := loginAs(alice.Username)
 	bobLogin := loginAs(bob.Username)
 	if scenario == "ops" {
+		for _, who := range []login{aliceLogin, {}} {
+			response := call(http.MethodPost, "/api/ops/notifications/test", "", who)
+			response.Body.Close()
+			if response.StatusCode != http.StatusForbidden && response.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("test de notification par un non-admin : %s", response.Status)
+			}
+		}
+		response := call(http.MethodPost, "/api/ops/notifications/test", "", adminLogin)
+		data, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK || !strings.Contains(string(data), `"channels"`) {
+			t.Fatalf("test de notification par l'admin : %s %s", response.Status, data)
+		}
+		again := call(http.MethodPost, "/api/ops/notifications/test", "", adminLogin)
+		again.Body.Close()
+		if again.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("second test immédiat : %s", again.Status)
+		}
 		for _, who := range []login{aliceLogin, bobLogin, {}} {
 			response := call(http.MethodGet, "/api/ops", "", who)
 			data, _ := io.ReadAll(response.Body)
