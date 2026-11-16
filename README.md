@@ -585,6 +585,9 @@ process environment variables take precedence. Start from
 |----------|---------|-------------|
 | `TMUXATLAS_AUTH` | `passkey` | Mode d’authentification : `passkey` ou `accounts` |
 | `TMUXATLAS_GUEST_LOCAL_HOST` | — | `allow` permet d’attribuer l’hôte du hub à un invité (mode comptes) |
+| `TMUXATLAS_FILES` | `off` | Plafond du navigateur de fichiers pour ce compte : `off`, `ro` ou `rw` (voir [docs/files.md](docs/files.md)) |
+| `TMUXATLAS_FILES_ROOT` | `$HOME` | Racine servie par le navigateur de fichiers |
+| `TMUXATLAS_FILES_DENY` | — | Motifs refusés en plus de la liste par défaut, séparés par des virgules |
 | `TMUXATLAS_LISTEN` | `127.0.0.1:7654` | HTTP/WS origin listen address |
 | `TMUXATLAS_PUBLIC_URL` | `http://localhost:7654` | Browser-facing absolute HTTP(S) URL; HTTPS enables Secure cookies |
 | `TMUXATLAS_SESSION_TTL` | `24h` | Idle time before Passkey login is required again; accepts Go durations such as `168h` |

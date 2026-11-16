@@ -28,7 +28,18 @@ var accountUserRoutes = map[string]bool{
 	"POST /api/session/rename": true, "POST /api/session/kill": true,
 	"POST /api/session/select-window": true, "POST /api/session/select-pane": true,
 	"DELETE /api/tool-event": true, "GET /ws/session": true, "GET /ws/events": true,
-	"GET /api/voice": true, "GET /ws/mic": true,
+	"GET /api/files/hosts": true, "GET /api/files/info": true, "GET /api/files/list": true,
+	"GET /api/files/content": true, "GET /api/files/raw": true, "PUT /api/files/content": true,
+	"POST /api/files/upload": true, "POST /api/files/mkdir": true, "POST /api/files/rename": true,
+	"POST /api/files/delete": true, "GET /api/voice": true, "GET /ws/mic": true,
+}
+
+// accountQueryHostRoutes name their host in the host_id query parameter, for
+// any method: their bodies are file contents, not JSON targets.
+var accountQueryHostRoutes = map[string]bool{
+	"/api/files/info": true, "/api/files/list": true, "/api/files/content": true,
+	"/api/files/raw": true, "/api/files/upload": true, "/api/files/mkdir": true,
+	"/api/files/rename": true, "/api/files/delete": true,
 }
 
 // accountTargetedRoutes act on an existing session, which must exist on a
@@ -416,6 +427,18 @@ func (p *accountPolicy) Middleware(next http.Handler) http.Handler {
 		default:
 		}
 		path := r.URL.Path
+		if accountQueryHostRoutes[path] || path == "/api/files/hosts" {
+			if user && accountQueryHostRoutes[path] && !p.guestMayUseHost(identity.User, r.URL.Query().Get("host_id")) {
+				p.mu.Unlock()
+				http.Error(w, "accès interdit", http.StatusForbidden)
+				return
+			}
+			// File operations do not change ownership and can last: they do
+			// not hold the policy lock, which would block every other request.
+			p.mu.Unlock()
+			next.ServeHTTP(w, r)
+			return
+		}
 		targeted := accountTargetedRoutes[path]
 		if user && (targeted || accountHostScopedRoutes[path]) {
 			host, session, pane := r.URL.Query().Get("host_id"), r.URL.Query().Get("session"), r.URL.Query().Get("pane")

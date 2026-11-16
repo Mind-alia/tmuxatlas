@@ -9,6 +9,7 @@ describe('linuxSetupCommands', () => {
     expect(text).toContain('gpasswd -d inv-alice docker')
     expect(text).toContain('loginctl enable-linger inv-alice')
     expect(text).toContain('pair --hub https://atlas.example --code BA-BE --name inv-alice@$(hostname)')
+    expect(text).toContain("TMUXATLAS_FILES=rw")
     expect(text).not.toMatch(/usermod -aG|--groups/)
   })
 

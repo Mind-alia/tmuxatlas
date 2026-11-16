@@ -25,6 +25,9 @@ const (
 	CapabilitySessionExtras    = "session-extras"
 	CapabilitySessionOwnership = "session-ownership"
 	CapabilitySessionOwnerName = "session-owner-name"
+	// CapabilityFiles covers the fs.* operations, served by the Agent under
+	// its own Unix account within its local ceiling (TMUXATLAS_FILES).
+	CapabilityFiles = "files-v1"
 	// CapabilityVoice is advertised only by agents running with TMUXATLAS_VOICE=on:
 	// they accept browser microphones (mic-open) and voice-hold control frames.
 	CapabilityVoice = "voice"
@@ -44,6 +47,7 @@ var RuntimeCapabilities = []string{
 	CapabilitySessionExtras,
 	CapabilitySessionOwnership,
 	CapabilitySessionOwnerName,
+	CapabilityFiles,
 	CapabilityVoice,
 }
 
@@ -59,6 +63,12 @@ func helloCapabilities(voice bool) []string {
 	}
 	return capabilities
 }
+
+// FileOperationPrefix marks the operations that target a host's files rather
+// than a session.
+const FileOperationPrefix = "fs."
+
+func isFileOperation(operation string) bool { return strings.HasPrefix(operation, FileOperationPrefix) }
 
 type SessionTarget struct {
 	HostID  string `json:"host_id"`
@@ -160,7 +170,12 @@ func (request RuntimeRequest) Validate(now time.Time) error {
 	if err := validateBoundedText("operation", request.Operation, maxOperationLength); err != nil {
 		return err
 	}
-	if err := request.Target.Validate(); err != nil {
+	if isFileOperation(request.Operation) {
+		// File operations name a host and no session.
+		if err := validateRuntimeID("host_id", request.Target.HostID); err != nil || request.Target.Session != "" {
+			return errors.New("invalid target: file operations name a host only")
+		}
+	} else if err := request.Target.Validate(); err != nil {
 		return fmt.Errorf("invalid target: %w", err)
 	}
 	if !singleJSONObject(request.Payload) {

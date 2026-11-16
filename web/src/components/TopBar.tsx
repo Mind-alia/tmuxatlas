@@ -19,6 +19,7 @@ interface TopBarProps {
   /** Absent for guests: monitoring describes the hub's own account. */
   onMonitoring?: () => void
   onWall: () => void
+  onFiles?: () => void
   /** Containers and backups; only passed to accounts allowed to see them. */
   onOps?: () => void
   onAdmin?: () => void
@@ -52,6 +53,7 @@ export function TopBar({
   onOverview,
   onMonitoring,
   onWall,
+  onFiles,
   onOps,
   onAdmin,
   onOpenPalette,
@@ -94,6 +96,7 @@ export function TopBar({
   const navigation: Array<readonly [string, string, () => void]> = [
     ['overview', 'Vue d’ensemble', onOverview],
     ['wall', 'Mur', onWall],
+    ...(onFiles ? ([['files', 'Fichiers', onFiles]] as const) : []),
     ...(onMonitoring ? ([['monitoring', 'Monitoring', onMonitoring]] as const) : []),
     ...(onOps ? ([['ops', 'Conteneurs', onOps]] as const) : []),
     ...(role === 'admin' && onAdmin ? ([['admin', 'Administration', onAdmin]] as const) : []),
