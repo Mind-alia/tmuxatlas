@@ -12,10 +12,10 @@ const (
 	voiceHoldLimit = 10 * time.Minute
 )
 
-// voiceHold simulates a held space bar for Claude Code dictation. It runs on the
+// VoiceHold simulates a held space bar for Claude Code dictation. It runs on the
 // server because Claude treats a 200 ms gap as a release, which network jitter
 // between the browser and the server would otherwise trigger.
-type voiceHold struct {
+type VoiceHold struct {
 	output   io.Writer
 	interval time.Duration
 	limit    time.Duration
@@ -25,12 +25,12 @@ type voiceHold struct {
 	done chan struct{}
 }
 
-func newVoiceHold(output io.Writer) *voiceHold {
-	return &voiceHold{output: output, interval: voiceHoldInterval, limit: voiceHoldLimit}
+func NewVoiceHold(output io.Writer) *VoiceHold {
+	return &VoiceHold{output: output, interval: voiceHoldInterval, limit: voiceHoldLimit}
 }
 
 // Start begins repeating space, if it is not already repeating.
-func (h *voiceHold) Start() {
+func (h *VoiceHold) Start() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.stop != nil {
@@ -41,7 +41,7 @@ func (h *voiceHold) Start() {
 	go h.run(stop, done)
 }
 
-func (h *voiceHold) run(stop <-chan struct{}, done chan<- struct{}) {
+func (h *VoiceHold) run(stop <-chan struct{}, done chan<- struct{}) {
 	defer close(done)
 	ticker := time.NewTicker(h.interval)
 	defer ticker.Stop()
@@ -63,7 +63,7 @@ func (h *voiceHold) run(stop <-chan struct{}, done chan<- struct{}) {
 
 // Stop ends the repeat and returns once no further space can be written, so
 // input sent afterwards follows it.
-func (h *voiceHold) Stop() {
+func (h *VoiceHold) Stop() {
 	h.mu.Lock()
 	stop, done := h.stop, h.done
 	h.stop, h.done = nil, nil
