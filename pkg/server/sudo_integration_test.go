@@ -60,7 +60,7 @@ func TestSudoTerminalEndToEnd(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
-	sudotermtest.Install(t)
+	fakeSudo := sudotermtest.Install(t)
 
 	hubID, _ := identity.Generate("hub")
 	agentID, _ := identity.Generate("agents")
@@ -97,9 +97,15 @@ func TestSudoTerminalEndToEnd(t *testing.T) {
 	agent := startTestPeer(t, ctx, server.URL, agentID, store)
 	go agent.Run(ctx)
 	sudoPeer := startTestPeer(t, ctx, server.URL, sudoID, store)
-	runner, err := sudoterm.NewRunner(sudoterm.Config{MaxDuration: 20 * time.Second, IdleTimeout: 10 * time.Second})
+	runner, err := sudoterm.NewRunner(sudoterm.Config{
+		MaxDuration: 20 * time.Second, IdleTimeout: 10 * time.Second,
+		Path: filepath.Dir(fakeSudo) + ":" + sudoterm.SystemPath,
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if resolved, err := runner.LookSudo(); err != nil || resolved != fakeSudo {
+		t.Fatalf("the terminal would run %q, not the fake sudo: refusing", resolved)
 	}
 	auditPath, _ := sudoterm.AuditPath()
 	audit, err := sudoterm.NewAudit(auditPath)
@@ -120,7 +126,7 @@ func TestSudoTerminalEndToEnd(t *testing.T) {
 	var view sudo.AgentView
 	eventually(t, "the request", func() bool {
 		view, err = broker.Create(ctx, sudo.CreateInput{
-			Command: "echo bonjour; echo erreur >&2", Reason: "test",
+			Command: "echo bonjour-$((40+2))", Reason: "test",
 			Origin: sudo.Origin{HostID: "forged", Session: "claude", Pane: "%1"},
 		})
 		return err == nil
@@ -150,8 +156,13 @@ func TestSudoTerminalEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	var screen strings.Builder
-	typed := false
+	step := 0 // 0: wait for the proposal, 1: wait for sudo's prompt, 2: wait for the output
 	sawEchoOff := false
+	send := func(text string) {
+		if err := browser.WriteMessage(websocket.BinaryMessage, []byte(text)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	_ = browser.SetReadDeadline(time.Now().Add(15 * time.Second))
 	for {
 		kind, data, err := browser.ReadMessage()
@@ -174,45 +185,52 @@ func TestSudoTerminalEndToEnd(t *testing.T) {
 		} else {
 			screen.Write(data)
 		}
-		if !typed && sawEchoOff && strings.Contains(screen.String(), "mot de passe de") {
-			typed = true
-			if err := browser.WriteMessage(websocket.BinaryMessage, []byte(sudotermtest.TypedLine+"\r")); err != nil {
-				t.Fatal(err)
+		shown := screen.String()
+		switch {
+		case step == 0 && strings.Contains(shown, "sudo echo bonjour-$((40+2))"):
+			if strings.Contains(shown, "bonjour-42") {
+				t.Fatalf("the proposed command ran by itself: %q", shown)
 			}
+			step = 1
+			send("\r") // the human runs it
+		case step == 1 && sawEchoOff && strings.Contains(shown, "password:"):
+			step = 2
+			send(sudotermtest.TypedLine + "\r")
+		case step == 2 && strings.Contains(shown, "bonjour-42"):
+			step = 3
+			send("exit\r")
 		}
 	}
-	if !typed || !strings.Contains(screen.String(), "bonjour") || strings.Contains(screen.String(), sudotermtest.TypedLine) {
-		t.Fatalf("screen = %q (typed=%v)", screen.String(), typed)
+	shown := screen.String()
+	if step != 3 || !strings.Contains(shown, "# Proposé par "+agentID.Fingerprint()) || strings.Contains(shown, sudotermtest.TypedLine) {
+		t.Fatalf("screen = %q (step %d)", shown, step)
 	}
 
-	eventually(t, "the capture", func() bool {
+	eventually(t, "the terminal to close", func() bool {
 		request, _ = service.store.Get(view.ID)
-		return request.Status == sudo.StatusAwaitingReview
+		return request.Status == sudo.StatusClosed
 	})
-	if !strings.Contains(request.Capture.Output, "bonjour") || !strings.Contains(request.Capture.Output, "erreur") ||
-		strings.Contains(request.Capture.Output, sudotermtest.TypedLine) || strings.Contains(request.Capture.Output, "mot de passe") {
-		t.Fatalf("capture = %q", request.Capture.Output)
-	}
-	// Nothing reaches the agent before the review.
+	// Nothing reaches the agent before the decision.
 	waitCtx, stop := context.WithTimeout(ctx, 100*time.Millisecond)
 	pending, _ := broker.Wait(waitCtx, view.ID)
 	stop()
-	if pending.Output != "" || pending.Status.Final() {
-		t.Fatalf("agent saw %+v before review", pending)
+	if pending.Status.Final() || pending.Note != "" {
+		t.Fatalf("agent saw %+v before the decision", pending)
 	}
-	if _, err := service.store.Review(view.ID, sudo.DecisionSend, admin, "ok"); err != nil {
+	if _, err := service.store.Done(view.ID, admin, "jq installé"); err != nil {
 		t.Fatal(err)
 	}
 	waitCtx, stop = context.WithTimeout(ctx, 5*time.Second)
 	final, err := broker.Wait(waitCtx, view.ID)
 	stop()
-	if err != nil || final.Status != sudo.StatusDelivered || !strings.Contains(final.Output, "bonjour") || final.ExitCode == nil || *final.ExitCode != 0 {
+	if err != nil || final != (sudo.AgentView{ID: view.ID, Status: sudo.StatusDone, Note: "jq installé"}) {
 		t.Fatalf("agent result = %+v, %v", final, err)
 	}
 	eventually(t, "the sudo event to clear", func() bool { return len(sudoEvents(tracker)) == 0 })
 
 	data, err := os.ReadFile(auditPath)
-	if err != nil || strings.Count(string(data), "\n") != 2 || strings.Contains(string(data), sudotermtest.TypedLine) {
+	if err != nil || strings.Count(string(data), "\n") != 2 || strings.Contains(string(data), sudotermtest.TypedLine) ||
+		strings.Contains(string(data), "bonjour-42") {
 		t.Fatalf("audit = %q, %v", data, err)
 	}
 }

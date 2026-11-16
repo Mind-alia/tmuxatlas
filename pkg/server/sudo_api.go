@@ -118,26 +118,14 @@ func (s *sudoService) registerSudoAPI(r chi.Router, mutations chi.Router) {
 		}
 		writeSudoJSON(w, http.StatusOK, grant)
 	})
-	mutations.With(admin).Post("/sudo/requests/{id}/review", func(w http.ResponseWriter, r *http.Request) {
+	mutations.With(admin).Post("/sudo/requests/{id}/done", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Decision sudo.Decision `json:"decision"`
-			Note     string        `json:"note"`
+			Note string `json:"note"`
 		}
 		if !decodeSudoBody(w, r, &body) {
 			return
 		}
-		request, err := s.store.Review(chi.URLParam(r, "id"), body.Decision, actor(r), body.Note)
-		respond(w, request, err)
-	})
-	mutations.With(admin).Post("/sudo/requests/{id}/rerun", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Version int    `json:"version"`
-			Command string `json:"command"`
-		}
-		if !decodeSudoBody(w, r, &body) {
-			return
-		}
-		request, err := s.store.Rerun(chi.URLParam(r, "id"), body.Version, body.Command, actor(r))
+		request, err := s.store.Done(chi.URLParam(r, "id"), actor(r), body.Note)
 		respond(w, request, err)
 	})
 }
@@ -191,7 +179,7 @@ func (s *sudoService) HandleTerminal(w http.ResponseWriter, r *http.Request) {
 	log := logrus.WithFields(logrus.Fields{"request": request.ID, "version": request.Version, "approver": actor.Name})
 	connection, err := s.terminalPeer(request.Peer, request.Origin.HostID)
 	if err != nil {
-		_, _ = s.store.Fail(request.ID, err.Error())
+		_, _ = s.store.Reopen(request.ID, err.Error())
 		sudoWSError(browser, err.Error())
 		return
 	}
@@ -209,11 +197,12 @@ func (s *sudoService) HandleTerminal(w http.ResponseWriter, r *http.Request) {
 	target := peer.SessionTarget{HostID: request.Peer, Session: peer.SudoSession(request.ID)}
 	owner, err := s.opts.PTYRelay.RegisterPending(connection, target, browser)
 	if err != nil {
-		_, _ = s.store.Fail(request.ID, "peer sudo hors ligne")
+		_, _ = s.store.Reopen(request.ID, "peer sudo hors ligne")
 		sudoWSError(browser, "peer sudo hors ligne")
 		return
 	}
 	defer owner.Teardown("sudo-handler-exit")
+	defer s.track(request.ID, func() { owner.Teardown("sudo-decided") })()
 	message, _ := peer.NewMessage(peer.MsgSudoOpen, peer.SudoOpenPayload{
 		StreamID: owner.StreamID, AttachToken: owner.AttachToken, Generation: connection.Generation,
 		RequestID: request.ID, Version: request.Version, Command: request.Command,
@@ -223,7 +212,7 @@ func (s *sudoService) HandleTerminal(w http.ResponseWriter, r *http.Request) {
 	err = connection.Send(ctx, message)
 	cancel()
 	if err != nil {
-		_, _ = s.store.Fail(request.ID, "peer sudo injoignable")
+		_, _ = s.store.Reopen(request.ID, "peer sudo injoignable")
 		sudoWSError(browser, "peer sudo injoignable")
 		return
 	}
@@ -240,17 +229,17 @@ func (s *sudoService) HandleTerminal(w http.ResponseWriter, r *http.Request) {
 			owner.Bridge()
 			return
 		case <-ticker.C:
-			// The peer refused before attaching (NOPASSWD, audit…).
+			// The peer refused before attaching (audit, busy…).
 			if current, ok := s.store.Get(request.ID); ok && current.Status != sudo.StatusRunning {
 				sudoWSError(browser, current.Note)
 				return
 			}
 		case <-timeout.C:
-			_, _ = s.store.Fail(request.ID, "le peer sudo n'a pas ouvert le terminal")
+			_, _ = s.store.Reopen(request.ID, "le peer sudo n'a pas ouvert le terminal")
 			sudoWSError(browser, "le peer sudo n'a pas ouvert le terminal")
 			return
 		case <-connection.Done():
-			_, _ = s.store.Fail(request.ID, "peer sudo déconnecté")
+			_, _ = s.store.Reopen(request.ID, "peer sudo déconnecté")
 			sudoWSError(browser, "peer sudo déconnecté")
 			return
 		}

@@ -82,3 +82,23 @@ func TestSudoRequestsOnlyFromListedRequesters(t *testing.T) {
 		t.Fatalf("local request from a listed hub: %v", err)
 	}
 }
+
+func TestDecisionClosesAnOpenTerminal(t *testing.T) {
+	service := &sudoService{opts: &Options{}, store: sudo.NewStore(sudo.DefaultLimits(), nil)}
+	service.store.OnChange(service.onChange)
+	request, _ := service.store.Create(sudo.CreateInput{Origin: sudo.Origin{HostID: "host-agents"}, Command: "id"})
+	admin := sudo.Actor{ID: "a", Name: "admin"}
+	_, grant, _ := service.store.Approve(request.ID, 1, "peer-admin", admin)
+	if _, err := service.store.Redeem(grant.Token, admin); err != nil {
+		t.Fatal(err)
+	}
+	closed := 0
+	untrack := service.track(request.ID, func() { closed++ })
+	defer untrack()
+	if _, err := service.store.Done(request.ID, admin, "fait"); err != nil {
+		t.Fatal(err)
+	}
+	if closed != 1 {
+		t.Fatalf("terminal closed %d times after the decision", closed)
+	}
+}

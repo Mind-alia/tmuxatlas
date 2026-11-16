@@ -15,7 +15,7 @@ func TestAuditAppendsPrivateLines(t *testing.T) {
 	code := 0
 	entries := []AuditEntry{
 		{Event: "open", RequestID: "sudo-1", Version: 2, Command: "apt-get install -y jq", Approver: "admin"},
-		{Event: "finished", RequestID: "sudo-1", Version: 2, Command: "apt-get install -y jq", ExitCode: &code, OutputBytes: 42},
+		{Event: "closed", RequestID: "sudo-1", Version: 2, Command: "apt-get install -y jq", ShellExit: &code, DurationMS: 42},
 	}
 	for _, entry := range entries {
 		if err := audit.Append(entry); err != nil {
@@ -32,7 +32,7 @@ func TestAuditAppendsPrivateLines(t *testing.T) {
 	if err != nil || len(read) != 2 {
 		t.Fatalf("ReadAudit = %+v, %v", read, err)
 	}
-	if read[0].CommandSHA256 != CommandDigest("apt-get install -y jq") || read[1].ExitCode == nil || read[0].Time.IsZero() {
+	if read[0].CommandSHA256 != CommandDigest("apt-get install -y jq") || read[1].ShellExit == nil || read[0].Time.IsZero() {
 		t.Fatalf("entries = %+v", read)
 	}
 }

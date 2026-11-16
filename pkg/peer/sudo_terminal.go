@@ -1,8 +1,6 @@
 package peer
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"os/user"
 	"strconv"
@@ -16,10 +14,7 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/sudoterm"
 )
 
-// maxSudoResultJSON keeps a result below the hub's control read limit.
-const maxSudoResultJSON = 200 << 10
-
-// sudoTerminal runs approved commands on the sudo peer. It exists only
+// sudoTerminal opens approved terminals on the sudo peer. It exists only
 // when the agent was started with --sudo-terminal.
 type sudoTerminal struct {
 	client *Client
@@ -51,6 +46,7 @@ func (c *Client) helloCapabilities() []string {
 
 func (t *sudoTerminal) record(entry sudoterm.AuditEntry, open SudoOpenPayload) error {
 	entry.RequestID, entry.Version, entry.Command = open.RequestID, open.Version, open.Command
+	entry.Requester = open.Origin.HostID
 	entry.Approver, entry.UnixUser = open.Approver, t.user
 	entry.OriginHost, entry.OriginSession = open.Origin.HostName, open.Origin.Session
 	if entry.OriginHost == "" {
@@ -60,17 +56,6 @@ func (t *sudoTerminal) record(entry sudoterm.AuditEntry, open SudoOpenPayload) e
 }
 
 func (t *sudoTerminal) report(result SudoResultPayload) {
-	for {
-		data, err := json.Marshal(result)
-		if err != nil {
-			return
-		}
-		if len(data) <= maxSudoResultJSON || result.Output == "" {
-			break
-		}
-		result.Output = result.Output[:len(result.Output)/2]
-		result.Truncated = true
-	}
 	if message, err := NewMessage(MsgSudoResult, result); err == nil {
 		if err := t.client.sendControl(message); err != nil {
 			logrus.WithField("request", result.RequestID).Warn("could not report sudo result to hub")
@@ -95,13 +80,6 @@ func (t *sudoTerminal) Open(open SudoOpenPayload) {
 		fail("commande invalide")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	err := t.runner.Preflight(ctx)
-	cancel()
-	if err != nil {
-		fail(err.Error())
-		return
-	}
 	if err := t.record(sudoterm.AuditEntry{Event: "open"}, open); err != nil {
 		fail("journal d'audit inaccessible")
 		return
@@ -112,7 +90,7 @@ func (t *sudoTerminal) Open(open SudoOpenPayload) {
 		return
 	}
 	screen := &wsScreen{conn: conn}
-	run, err := t.runner.Start(open.Command, open.Cols, open.Rows, screen)
+	run, err := t.runner.Start(sudoterm.Proposal{Command: open.Command, Requester: open.Origin.HostID}, open.Cols, open.Rows, screen)
 	if err != nil {
 		_ = conn.Close()
 		fail(err.Error())
@@ -166,13 +144,11 @@ func (t *sudoTerminal) Open(open SudoOpenPayload) {
 	screen.close("sudo-finished")
 	code := result.ExitCode
 	_ = t.record(sudoterm.AuditEntry{
-		Event: "finished", ExitCode: &code, DurationMS: result.Duration.Milliseconds(),
-		OutputBytes: len(result.Output), Truncated: result.Truncated, Redactions: result.Redactions, Reason: result.Error,
+		Event: "closed", ShellExit: &code, DurationMS: result.Duration.Milliseconds(), Reason: result.Error,
 	}, open)
 	t.report(SudoResultPayload{
 		RequestID: open.RequestID, Version: open.Version, StreamID: open.StreamID, Started: true,
-		ExitCode: result.ExitCode, Output: string(result.Output), Truncated: result.Truncated,
-		Redactions: result.Redactions, DurationMS: result.Duration.Milliseconds(), Error: result.Error,
+		DurationMS: result.Duration.Milliseconds(), Error: result.Error,
 	})
 	log.WithField("summary", sudoterm.Describe(result)).Info("sudo terminal closed")
 }

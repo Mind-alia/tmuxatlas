@@ -10,7 +10,6 @@ import {
   OPEN_SUDO_STATUSES,
   openSudoSocket,
   sudoApi,
-  type SudoDecision,
   type SudoPeer,
   type SudoRequest,
   type SudoStatus,
@@ -21,13 +20,11 @@ const statusLabels: Record<SudoStatus, string> = {
   pending: 'En attente',
   approved: 'Approuvée',
   running: 'Terminal ouvert',
-  awaiting_review: 'À relire',
-  delivered: 'Résultat envoyé',
-  withheld: 'Rien envoyé',
+  closed: 'Terminal fermé',
+  done: 'Terminé',
   refused: 'Refusée',
   expired: 'Expirée',
   cancelled: 'Annulée par l’agent',
-  failed: 'Échec',
 }
 
 interface Props {
@@ -38,9 +35,10 @@ interface Props {
 }
 
 /**
- * Sudo requests made by the agent of this session: edit, approve, type the
- * password in a dedicated terminal, then review what goes back. Nothing here
- * is stored in the browser.
+ * Sudo requests made by the agent of this session: edit, approve, then work in
+ * a dedicated interactive terminal where the proposed command waits at the
+ * prompt, and mark the request done or refused. The agent only receives that
+ * status and the note. Nothing here is stored in the browser.
  */
 export function SudoPanel({ hostId, sessionName, enabled }: Props) {
   const { requests, available, error, refresh } = useSudoRequests(hostId, sessionName, enabled)
@@ -112,17 +110,18 @@ function SudoRequestView({ request, onChange }: { request: SudoRequest; onChange
       </dl>
       {request.status !== 'pending' && <SudoCommand command={request.command} label={`Commande v${request.version}`} />}
       {request.status === 'pending' && <PendingStep request={request} busy={busy} run={run} onGrant={setGrant} />}
-      {(request.status === 'approved' || request.status === 'running') &&
-        (grant ? (
-          <SudoTerminal grant={grant} onClosed={() => void onChange()} />
-        ) : (
+      {grant && request.status !== 'pending' ? (
+        <SudoTerminal grant={grant} onClosed={() => void onChange()} />
+      ) : (
+        (request.status === 'approved' || request.status === 'running') && (
           <p className="text-muted-foreground">
             {request.status === 'running'
               ? 'Le terminal sudo est ouvert dans un autre onglet.'
               : 'Approuvée dans un autre onglet : le terminal s’y ouvre.'}
           </p>
-        ))}
-      {request.status === 'awaiting_review' && <ReviewStep request={request} busy={busy} run={run} />}
+        )
+      )}
+      {(request.status === 'running' || request.status === 'closed') && <OutcomeStep request={request} busy={busy} run={run} />}
       {error && <p className="text-destructive">{error}</p>}
     </div>
   )
@@ -182,7 +181,8 @@ function PendingStep({ request, busy, run, onGrant }: StepProps & { onGrant: (gr
   return (
     <div className="flex flex-col gap-2">
       <span className="text-xs text-muted-foreground">
-        Commande à approuver (v{request.version}), lancée avec <code>sudo -k -- sh -c</code> :
+        Commande proposée (v{request.version}) : le terminal l’affichera à l’invite, précédée de <code>sudo</code>, sans la
+        lancer.
       </span>
       <SudoCommand command={request.command} label={`Commande v${request.version}`} />
       <label className="flex flex-col gap-1">
@@ -309,7 +309,7 @@ function SudoTerminal({ grant, onClosed }: { grant: string; onClosed: () => void
     }
     socket.onclose = () => {
       setPasswordMode(false)
-      setStatus(current => current || 'Terminal fermé. Relis le résultat avant de l’envoyer.')
+      setStatus(current => current || 'Terminal fermé. Indique si c’est terminé ou refusé.')
       closedRef.current()
     }
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => fit.fit())
@@ -327,8 +327,7 @@ function SudoTerminal({ grant, onClosed }: { grant: string; onClosed: () => void
     <div className="flex flex-col gap-1">
       {passwordMode && (
         <p role="status" className="flex items-center gap-1 text-xs text-warning">
-          <ShieldAlert size={14} aria-hidden="true" /> Saisie masquée : le mot de passe va à sudo, ni à l’agent ni à la
-          capture.
+          <ShieldAlert size={14} aria-hidden="true" /> Saisie masquée : le mot de passe va à sudo, jamais à l’agent.
         </p>
       )}
       {status && <p className="text-xs text-muted-foreground">{status}</p>}
@@ -337,56 +336,29 @@ function SudoTerminal({ grant, onClosed }: { grant: string; onClosed: () => void
   )
 }
 
-function ReviewStep({ request, busy, run }: StepProps) {
-  const capture = request.capture
+/** Done or refused, with a note: all the agent will ever receive. */
+function OutcomeStep({ request, busy, run }: StepProps) {
   const [note, setNote] = useState('')
-  const [command, setCommand] = useState(request.command)
-  const decide = (decision: SudoDecision) => run(() => sudoApi.review(request.id, decision, note))
-  if (!capture) return null
   return (
     <div className="flex flex-col gap-2">
       <p className="text-xs text-muted-foreground">
-        Code de sortie <strong className="text-foreground">{capture.exit_code}</strong>
-        {capture.error ? ` · ${capture.error}` : ''}
-        {capture.output_truncated ? ' · sortie tronquée' : ''}
-        {capture.redactions > 0 ? ` · ${capture.redactions} passage(s) caviardé(s)` : ''}
+        L’agent ne recevra que « terminé » ou « refusé » et cette note : ni la sortie, ni les frappes.
+        {request.session?.reason ? ` Terminal fermé : ${request.session.reason}.` : ''}
       </p>
-      <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded border border-border bg-card p-2 font-mono text-xs">
-        {capture.output || '(aucune sortie)'}
-      </pre>
       <input
         aria-label="Note pour l’agent"
         placeholder="Note pour l’agent (optionnelle)"
         className="rounded border border-border bg-background px-2 py-1 text-xs"
         value={note}
-        onChange={event => setNote(event.target.value)}
+        maxLength={500}
+        onChange={event => setNote(event.target.value.replace(/[\r\n]/g, ' '))}
       />
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="primary" disabled={busy} onClick={() => void decide('send')}>
-          Envoyer sortie et code
+        <Button size="sm" variant="primary" disabled={busy} onClick={() => void run(() => sudoApi.done(request.id, note))}>
+          Terminé
         </Button>
-        <Button size="sm" disabled={busy} onClick={() => void decide('exit-code')}>
-          Code de sortie seul
-        </Button>
-        <Button size="sm" variant="destructive" disabled={busy} onClick={() => void decide('nothing')}>
-          Rien
-        </Button>
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <input
-          aria-label="Commande à relancer"
-          className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 font-mono text-xs"
-          value={command}
-          spellCheck={false}
-          autoComplete="off"
-          onChange={event => setCommand(event.target.value.replace(/[\r\n]/g, ' '))}
-        />
-        <Button
-          size="sm"
-          disabled={busy || command.trim() === ''}
-          onClick={() => void run(() => sudoApi.rerun(request.id, request.version, command))}
-        >
-          Modifier et relancer (nouvelle approbation)
+        <Button size="sm" variant="destructive" disabled={busy} onClick={() => void run(() => sudoApi.refuse(request.id, note))}>
+          Refusé
         </Button>
       </div>
     </div>

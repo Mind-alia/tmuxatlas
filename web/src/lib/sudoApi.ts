@@ -1,18 +1,6 @@
 import { apiFetch } from './api'
 
-export type SudoStatus =
-  | 'pending'
-  | 'approved'
-  | 'running'
-  | 'awaiting_review'
-  | 'delivered'
-  | 'withheld'
-  | 'refused'
-  | 'expired'
-  | 'cancelled'
-  | 'failed'
-
-export type SudoDecision = 'send' | 'exit-code' | 'nothing'
+export type SudoStatus = 'pending' | 'approved' | 'running' | 'closed' | 'done' | 'refused' | 'expired' | 'cancelled'
 
 export interface SudoOrigin {
   host_id: string
@@ -33,15 +21,11 @@ export interface SudoRevision {
   at: string
 }
 
-export interface SudoCapture {
+/** When the terminal closed; never what was shown or typed in it. */
+export interface SudoSession {
   version: number
-  command: string
-  exit_code: number
-  output: string
-  output_truncated: boolean
-  redactions: number
   duration: number
-  error?: string
+  reason?: string
 }
 
 export interface SudoRequest {
@@ -58,8 +42,7 @@ export interface SudoRequest {
   expires_at: string
   approver?: { id: string; name: string }
   peer?: string
-  capture?: SudoCapture
-  decision?: SudoDecision
+  session?: SudoSession
   note?: string
 }
 
@@ -80,7 +63,7 @@ export interface SudoGrant {
 /** Thrown when this server does not offer the sudo terminal to this user. */
 export class SudoUnavailableError extends Error {}
 
-export const OPEN_SUDO_STATUSES: SudoStatus[] = ['pending', 'approved', 'running', 'awaiting_review']
+export const OPEN_SUDO_STATUSES: SudoStatus[] = ['pending', 'approved', 'running', 'closed']
 
 async function sudoJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await apiFetch(`/api/sudo${path}`, { cache: 'no-store', ...init })
@@ -108,10 +91,7 @@ export const sudoApi = {
   refuse: (id: string, note: string) => post<SudoRequest>(`/requests/${encodeURIComponent(id)}/refuse`, { note }),
   approve: (id: string, version: number, peer: string) =>
     post<SudoGrant>(`/requests/${encodeURIComponent(id)}/approve`, { version, peer }),
-  review: (id: string, decision: SudoDecision, note: string) =>
-    post<SudoRequest>(`/requests/${encodeURIComponent(id)}/review`, { decision, note }),
-  rerun: (id: string, version: number, command: string) =>
-    post<SudoRequest>(`/requests/${encodeURIComponent(id)}/rerun`, { version, command }),
+  done: (id: string, note: string) => post<SudoRequest>(`/requests/${encodeURIComponent(id)}/done`, { note }),
 }
 
 /** Opens the sudo terminal. The grant travels in the first frame, never in the URL. */
