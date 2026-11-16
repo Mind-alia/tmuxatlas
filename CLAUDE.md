@@ -42,6 +42,7 @@ pkg/
   agentcheck/            # Agent installation & hook configuration checks
   activity/              # Activity tracking (sparklines)
   monitor/               # Host monitoring: metrics, services, probes, alerts (`/api/monitor`, disable with TMUXATLAS_MONITOR=off)
+  ops/                   # Admin-only ops status read from a shared directory: containers (`/api/ops`, `TMUXATLAS_OPS_DIR`, see docs/ops.md)
   fleethealth/           # Fleet health evaluation
   httpguard/             # HTTP request guards (body limits and deadlines)
   ingress/               # Bounded admission controls for ingress connections

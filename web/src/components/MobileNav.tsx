@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import {
   Activity,
+  Container,
   FolderOpen,
   Inbox,
   LayoutGrid,
@@ -31,6 +32,7 @@ export function MobileNav({
   onMonitoring,
   onWall,
   onFiles,
+  onOps,
   onAdmin,
   onSettings,
   onNewSession,
@@ -44,6 +46,7 @@ export function MobileNav({
   onMonitoring: () => void
   onWall?: () => void
   onFiles?: () => void
+  onOps?: () => void
   onAdmin?: () => void
   onSettings: () => void
   onNewSession?: () => void
@@ -59,6 +62,7 @@ export function MobileNav({
   const secondary: Destination[] = [
     ...(onNewSession ? [{ label: 'Nouvelle session', icon: Plus, action: onNewSession }] : []),
     ...(onWall ? [{ label: 'Mur de sessions', icon: LayoutGrid, action: onWall, active: currentView === 'wall' }] : []),
+    ...(onOps ? [{ label: 'Conteneurs', icon: Container, action: onOps, active: currentView === 'ops' }] : []),
     ...(role === 'admin' && onAdmin
       ? [{ label: 'Administration', icon: Shield, action: onAdmin, active: currentView === 'admin' }]
       : []),

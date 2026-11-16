@@ -40,7 +40,7 @@ var accountOtherRoutes = map[string]string{
 	"POST /api/auth/logout": "authenticated", "GET /api/version": "public",
 	"GET /api/admin/users": "admin", "POST /api/admin/users": "admin",
 	"PATCH /api/admin/users/{id}": "admin", "DELETE /api/admin/users/{id}": "admin",
-	"GET /api/admin/sessions": "admin", "GET /api/peers": "admin",
+	"GET /api/admin/sessions": "admin", "GET /api/ops": "admin", "GET /api/peers": "admin",
 	"GET /api/agent-status": "admin", "DELETE /api/tool-events": "admin",
 	"GET /api/push/vapid-key": "admin", "POST /api/push/subscribe": "admin",
 	"POST /api/push/unsubscribe": "admin", "PUT /api/preferences": "admin", "POST /api/pair": "admin",
