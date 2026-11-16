@@ -86,7 +86,7 @@ func ExecuteAgent(ctx context.Context, c *cli.Command) error {
 	peerClient := peer.NewClient(
 		hubURL, nodeIdentity, peerStore, stateMgr, peerMgr, actTracker, tracker, client.TmuxPath(),
 	)
-	fileService, err := openFileService()
+	fileService, err := openFileService(false)
 	if err != nil {
 		return err
 	}
@@ -129,11 +129,17 @@ func ExecuteAgent(ctx context.Context, c *cli.Command) error {
 }
 
 // openFileService serves this account's own files within the ceiling it sets
-// in its environment (TMUXATLAS_FILES=off|ro|rw, off by default).
-func openFileService() (*files.Service, error) {
+// in its environment (TMUXATLAS_FILES=off|ro|rw, off by default). The hub's
+// own host may not go beyond ro.
+func openFileService(hub bool) (*files.Service, error) {
 	config, err := files.ConfigFromEnv()
 	if err != nil {
 		return nil, err
+	}
+	if hub {
+		if err := config.CheckHub(); err != nil {
+			return nil, err
+		}
 	}
 	service, err := files.NewService(config)
 	if err != nil {

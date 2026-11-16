@@ -5,6 +5,7 @@
 package files
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -41,7 +42,20 @@ const (
 var DefaultDeny = []string{
 	".ssh", ".gnupg", ".config/tmuxatlas", ".env*", "*.pem", "*.key", ".docker",
 	".netrc", ".git-credentials", ".pgpass", ".aws", ".kube", ".password-store",
-	".local/share/keyrings",
+	".local/share/keyrings", ".config/rclone", ".claude", ".bash_history",
+	".config/gh", ".npmrc", ".local/share/tmuxatlas", ".local/state",
+}
+
+// ErrHubReadWrite refuses TMUXATLAS_FILES=rw on the hub, whose account runs
+// the production: writing there from a browser is never needed.
+var ErrHubReadWrite = errors.New("TMUXATLAS_FILES=rw est refusé sur le hub : utilisez ro ou off")
+
+// CheckHub rejects a ceiling the hub's own host must not have.
+func (c Config) CheckHub() error {
+	if c.Mode == ModeReadWrite {
+		return ErrHubReadWrite
+	}
+	return nil
 }
 
 type Config struct {
@@ -98,6 +112,21 @@ func denied(rel string, patterns []string) bool {
 			if ok, _ := path.Match(pattern, part); ok {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// holdsDenied reports whether rel is a parent of a path excluded by a
+// pattern with a slash. Those patterns are anchored at the root: moving such
+// a parent (".config" to "c") would expose "c/tmuxatlas" under a new name.
+func holdsDenied(rel string, patterns []string) bool {
+	if rel == "." || rel == "" {
+		return true
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(pattern, "/") && strings.HasPrefix(pattern, rel+"/") {
+			return true
 		}
 	}
 	return false

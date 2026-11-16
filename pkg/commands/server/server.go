@@ -308,7 +308,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 	// that host's Unix account. A pure hub has no host of its own.
 	var fileService *files.Service
 	if !pureHub {
-		if fileService, err = openFileService(); err != nil {
+		if fileService, err = openFileService(true); err != nil {
 			return err
 		}
 		defer fileService.Close()
