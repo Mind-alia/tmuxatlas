@@ -392,7 +392,12 @@ func (p *accountPolicy) Middleware(next http.Handler) http.Handler {
 				return
 			}
 		}
-		if path == "/ws/session" || path == "/ws/events" || path == "/ws/mic" {
+		// Long-lived connections must not keep the policy mutex: every other
+		// request of every account would wait for them to close. /ws/sudo is
+		// absent from accountUserRoutes, so only administrators reach this point
+		// and take the unregistered branch; the handler itself closes the
+		// terminal when the session is revoked.
+		if path == "/ws/session" || path == "/ws/events" || path == "/ws/mic" || path == "/ws/sudo" {
 			if user {
 				ctx, cancel := context.WithCancel(r.Context())
 				p.nextID++

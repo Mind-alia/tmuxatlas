@@ -52,9 +52,23 @@ func startTestPeer(t *testing.T, ctx context.Context, hubURL string, id *identit
 	return peer.NewClient(hubURL, id, store, stateMgr, manager, activity.NewTracker(), toolevents.NewTracker(), client.TmuxPath())
 }
 
-// TestSudoTerminalEndToEnd follows one request from an agent peer through
-// the hub to the sudo peer and a browser, with a fake sudo.
-func TestSudoTerminalEndToEnd(t *testing.T) {
+// sudoRig is a hub with an agent peer and a sudo peer running a fake sudo.
+type sudoRig struct {
+	ctx       context.Context
+	service   *sudoService
+	server    *httptest.Server
+	tracker   *toolevents.Tracker
+	agentID   *identity.Identity
+	sudoID    *identity.Identity
+	broker    sudo.Broker
+	auditPath string
+}
+
+// newSudoRig starts the rig. configure adjusts the hub options before the
+// sudo service exists; routes mounts /ws/sudo and whatever else the test
+// needs.
+func newSudoRig(t *testing.T, configure func(*Options), routes func(*http.ServeMux, *sudoService)) *sudoRig {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
@@ -80,20 +94,21 @@ func TestSudoTerminalEndToEnd(t *testing.T) {
 	tracker := toolevents.NewTracker()
 	handler := peer.NewHandler(manager, store, tracker, identity.NewPairingManager(), relay, "")
 	opts := &Options{AuthEnabled: true, PeerMgr: manager, Tracker: tracker, PTYRelay: relay, PeerHandler: handler, SudoPeers: sudoID.Fingerprint(), SudoRequesters: agentID.Fingerprint()}
+	if configure != nil {
+		configure(opts)
+	}
 	service := newSudoService(opts)
-	admin := sudo.Actor{ID: "u-admin", Name: "admin"}
-	service.admins = fixedAdmin{admin}
 	handler.SetSudoHub(service)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/peer", handler.HandlePeer)
 	mux.HandleFunc("/ws/peer-pty", relay.HandlePeerPTY)
-	mux.HandleFunc("/ws/sudo", service.HandleTerminal)
+	routes(mux, service)
 	server := httptest.NewServer(mux)
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	agent := startTestPeer(t, ctx, server.URL, agentID, store)
 	go agent.Run(ctx)
 	sudoPeer := startTestPeer(t, ctx, server.URL, sudoID, store)
@@ -120,17 +135,56 @@ func TestSudoTerminalEndToEnd(t *testing.T) {
 		return len(peers) == 1 && peers[0].Online && peers[0].UnixUser != ""
 	})
 	eventually(t, "the agent peer", func() bool { return manager.GetPeerConnection(agentID.Fingerprint()) != nil })
+	return &sudoRig{ctx: ctx, service: service, server: server, tracker: tracker, agentID: agentID, sudoID: sudoID,
+		broker: agent.SudoBroker(), auditPath: auditPath}
+}
 
-	// The agent asks through its own peer; the hub stamps its identity.
-	broker := agent.SudoBroker()
+// request files a request through the agent's own peer.
+func (rig *sudoRig) request(t *testing.T, command string) sudo.AgentView {
+	t.Helper()
 	var view sudo.AgentView
+	var err error
 	eventually(t, "the request", func() bool {
-		view, err = broker.Create(ctx, sudo.CreateInput{
-			Command: "echo bonjour-$((40+2))", Reason: "test",
+		view, err = rig.broker.Create(rig.ctx, sudo.CreateInput{
+			Command: command, Reason: "test",
 			Origin: sudo.Origin{HostID: "forged", Session: "claude", Pane: "%1"},
 		})
 		return err == nil
 	})
+	return view
+}
+
+// open approves a request as admin and opens its terminal in a browser.
+func (rig *sudoRig) open(t *testing.T, id string, admin sudo.Actor, header http.Header) *websocket.Conn {
+	t.Helper()
+	_, grant, err := rig.service.store.Approve(id, 1, rig.sudoID.Fingerprint(), admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header.Set("Origin", rig.server.URL)
+	browser, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(rig.server.URL, "http")+"/ws/sudo", header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { browser.Close() })
+	if err := browser.WriteJSON(map[string]any{"type": "open", "grant": grant.Token, "cols": 80, "rows": 24}); err != nil {
+		t.Fatal(err)
+	}
+	return browser
+}
+
+// TestSudoTerminalEndToEnd follows one request from an agent peer through
+// the hub to the sudo peer and a browser, with a fake sudo.
+func TestSudoTerminalEndToEnd(t *testing.T) {
+	admin := sudo.Actor{ID: "u-admin", Name: "admin"}
+	rig := newSudoRig(t, nil, func(mux *http.ServeMux, service *sudoService) {
+		service.admins = fixedAdmin{admin}
+		mux.HandleFunc("/ws/sudo", service.HandleTerminal)
+	})
+	service, tracker, agentID, broker, ctx, auditPath := rig.service, rig.tracker, rig.agentID, rig.broker, rig.ctx, rig.auditPath
+
+	// The agent asks through its own peer; the hub stamps its identity.
+	view := rig.request(t, "echo bonjour-$((40+2))")
 	request, _ := service.store.Get(view.ID)
 	if request.Origin.HostID != agentID.Fingerprint() || request.Status != sudo.StatusPending {
 		t.Fatalf("request = %+v", request)
@@ -141,20 +195,7 @@ func TestSudoTerminalEndToEnd(t *testing.T) {
 	if _, err := service.terminalPeer(agentID.Fingerprint(), request.Origin.HostID); err == nil {
 		t.Fatal("the agent's own peer was accepted as a sudo terminal")
 	}
-	_, grant, err := service.store.Approve(view.ID, 1, sudoID.Fingerprint(), admin)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	header := http.Header{"Origin": []string{server.URL}}
-	browser, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/ws/sudo", header)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer browser.Close()
-	if err := browser.WriteJSON(map[string]any{"type": "open", "grant": grant.Token, "cols": 80, "rows": 24}); err != nil {
-		t.Fatal(err)
-	}
+	browser := rig.open(t, view.ID, admin, http.Header{})
 	var screen strings.Builder
 	step := 0 // 0: wait for the proposal, 1: wait for sudo's prompt, 2: wait for the output
 	sawEchoOff := false
