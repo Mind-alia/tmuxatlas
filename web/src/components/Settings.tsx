@@ -11,7 +11,10 @@ import type { PWAInstallState } from '../hooks/usePWAInstall'
 import { Button, ToastProvider, useToast } from './ui'
 import { useApplicationState } from '../state/provider'
 import { useHostLabel } from '../lib/hostLabel'
+import { TALK_HOTKEY_HOLD_MS, TALK_HOTKEYS, setTalkHotkey, useTalkHotkey, type TalkHotkey } from '../lib/talkHotkey'
 import { ChevronRight } from 'lucide-react'
+
+const talkHotkeyOptions = TALK_HOTKEYS.map(({ value, label }) => ({ value, label }))
 
 const terminalFontFamilies = [
   'Space Mono',
@@ -225,6 +228,7 @@ function SettingsContent({
   pwaInstall,
 }: SettingsProps) {
   const { prefs, updatePrefs, saveState, saveError, retrySave, isLocalOnly } = usePreferences()
+  const talkHotkey = useTalkHotkey()
   const { hosts } = useApplicationState()
   const hostLabel = useHostLabel()
   const { dismiss, toast } = useToast()
@@ -583,6 +587,16 @@ function SettingsContent({
                 value={prefs.quick_switcher_shortcut}
                 onChange={v => update({ quick_switcher_shortcut: v })}
                 options={shortcutOptions}
+              />
+            </Row>
+            <Row
+              label="Touche du micro"
+              description={`Maintenir ${TALK_HOTKEY_HOLD_MS / 1000} s pour parler à l’agent du terminal, appuyer à nouveau pour arrêter. Propre à ce navigateur.`}
+            >
+              <SelectInput
+                value={talkHotkey}
+                onChange={v => setTalkHotkey(v as TalkHotkey)}
+                options={talkHotkeyOptions}
               />
             </Row>
             <Divider />

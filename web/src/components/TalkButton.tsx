@@ -3,6 +3,7 @@ import { ArrowUp, Square } from 'lucide-react'
 import { agyPromptHasText, readAgyVoiceStatus } from '../lib/agyVoiceStatus'
 import { readClaudeVoiceStatus } from '../lib/claudeVoiceStatus'
 import type { DictatingAgent } from '../lib/talkAgent'
+import { TALK_HOTKEY_HOLD_MS, talkHotkeyShort, useTalkHotkey, useTalkKey } from '../lib/talkHotkey'
 
 const POLL_MS = 100
 const RELEASE_SETTLE_MS = 300
@@ -33,6 +34,25 @@ const voices: Record<DictatingAgent, Voice> = {
 type Phase = 'idle' | 'holding' | 'sending'
 
 const ROUND = 'grid h-11 w-11 shrink-0 place-items-center rounded-full disabled:opacity-40 md:h-7 md:w-7'
+const TALK = 'relative min-h-11 shrink-0 overflow-hidden rounded border border-border px-2 text-muted-foreground hover:text-foreground disabled:opacity-40 md:min-h-8'
+const HOLD_SECONDS = TALK_HOTKEY_HOLD_MS / 1000
+
+/** The Talk key named for tooltips, or '' when this button does not answer it. */
+function useTalkKeyLabel(hotkey: boolean | undefined) {
+  const key = useTalkHotkey()
+  return hotkey && key !== 'off' ? talkHotkeyShort(key) : ''
+}
+
+/** Fills the Talk button while the Talk key is held, until dictation starts. */
+function ArmingFill() {
+  return (
+    <span
+      aria-hidden="true"
+      className="atlas-talk-arming absolute inset-0 origin-left bg-primary/25"
+      style={{ animationDuration: `${TALK_HOTKEY_HOLD_MS}ms` }}
+    />
+  )
+}
 
 /**
  * Runs the agent's own dictation until Stop or Send: onHold holds Claude Code's
@@ -46,6 +66,7 @@ export function TalkButton({
   readScreen,
   onSubmit,
   targetLabel,
+  hotkey,
 }: {
   agent?: DictatingAgent
   disabled: boolean
@@ -54,10 +75,27 @@ export function TalkButton({
   onSubmit: () => void
   /** Names the session when several Talk buttons share the page, as on the Wall. */
   targetLabel?: string
+  /** Whether this button answers the Talk key: one button per page does. */
+  hotkey?: boolean
 }) {
   const voice = voices[agent]
   const [phase, setPhase] = useState<Phase>('idle')
   const [notice, setNotice] = useState('')
+  const keyLabel = useTalkKeyLabel(hotkey)
+  const start = () => {
+    setNotice('')
+    heard.current = false
+    setPhase('holding')
+    onHold(true)
+  }
+  const arming = useTalkKey({
+    active: Boolean(hotkey),
+    dictating: phase === 'holding',
+    onHeld: () => {
+      if (!disabled && phase === 'idle') start()
+    },
+    onPress: () => setPhase('idle'),
+  })
   const latest = useRef({ onHold, readScreen, onSubmit, voice })
   useEffect(() => {
     latest.current = { onHold, readScreen, onSubmit, voice }
@@ -128,16 +166,12 @@ export function TalkButton({
           type="button"
           disabled={disabled}
           aria-label={`Talk : parler à ${voice.name}${targetLabel ? ` dans ${targetLabel}` : ''}`}
-          title={voice.hint}
-          className="min-h-11 shrink-0 rounded border border-border px-2 text-muted-foreground hover:text-foreground disabled:opacity-40 md:min-h-8"
-          onClick={() => {
-            setNotice('')
-            heard.current = false
-            setPhase('holding')
-            onHold(true)
-          }}
+          title={keyLabel ? `${voice.hint} · ou maintiens ${keyLabel} ${HOLD_SECONDS} s` : voice.hint}
+          className={TALK}
+          onClick={start}
         >
-          Talk
+          {arming && <ArmingFill />}
+          <span className="relative">Talk</span>
         </button>
         {notice && (
           <span role="alert" title={notice} className="ml-2 min-w-0 truncate font-normal text-destructive">
@@ -155,7 +189,7 @@ export function TalkButton({
         type="button"
         disabled={sending}
         aria-label="Arrêter la dictée et modifier le texte"
-        title="Arrêter et modifier le texte"
+        title={keyLabel ? `Arrêter et modifier le texte (ou appuie sur ${keyLabel})` : 'Arrêter et modifier le texte'}
         className={`${ROUND} border border-border bg-muted text-foreground hover:opacity-80`}
         onClick={() => setPhase('idle')}
       >
@@ -203,6 +237,7 @@ export function RelayTalkButton({
   targetLabel,
   liveText = '',
   livePlacement = 'above-left',
+  hotkey,
 }: {
   agentName: string
   disabled: boolean
@@ -215,7 +250,10 @@ export function RelayTalkButton({
   /** Where the transcript shows: below the app or Wall tile header,
    * above the mobile toolbar. */
   livePlacement?: 'above-left' | 'above-right' | 'below-right'
+  /** Whether this button answers the Talk key: one button per page does. */
+  hotkey?: boolean
 }) {
+  const keyLabel = useTalkKeyLabel(hotkey)
   const [phase, setPhase] = useState<RelayPhase>('idle')
   const [notice, setNotice] = useState('')
   const latest = useRef({ relay, onHold })
@@ -274,6 +312,15 @@ export function RelayTalkButton({
       (error: Error) => finish(error.message),
     )
   }
+  const arming = useTalkKey({
+    active: Boolean(hotkey),
+    dictating: phase === 'starting' || phase === 'holding',
+    onHeld: () => {
+      if (!disabled && phaseRef.current === 'idle') start()
+    },
+    onPress: () => stop(false),
+  })
+  const hint = `Claude transcrit ta voix, puis le texte est tapé dans ${agentName}`
 
   if (phase === 'idle') {
     return (
@@ -282,11 +329,12 @@ export function RelayTalkButton({
           type="button"
           disabled={disabled}
           aria-label={`Talk : parler à ${agentName}${targetLabel ? ` dans ${targetLabel}` : ''}`}
-          title={`Claude transcrit ta voix, puis le texte est tapé dans ${agentName}`}
-          className="min-h-11 shrink-0 rounded border border-border px-2 text-muted-foreground hover:text-foreground disabled:opacity-40 md:min-h-8"
+          title={keyLabel ? `${hint} · ou maintiens ${keyLabel} ${HOLD_SECONDS} s` : hint}
+          className={TALK}
           onClick={start}
         >
-          Talk
+          {arming && <ArmingFill />}
+          <span className="relative">Talk</span>
         </button>
         {notice && (
           <span role="alert" title={notice} className="ml-2 min-w-0 truncate font-normal text-destructive">
@@ -314,7 +362,7 @@ export function RelayTalkButton({
         type="button"
         disabled={busy}
         aria-label="Arrêter la dictée et modifier le texte"
-        title={phase === 'starting' ? 'Annuler la dictée' : 'Arrêter et modifier le texte'}
+        title={`${phase === 'starting' ? 'Annuler la dictée' : 'Arrêter et modifier le texte'}${keyLabel ? ` (ou appuie sur ${keyLabel})` : ''}`}
         className={`${ROUND} border border-border bg-muted text-foreground hover:opacity-80`}
         onClick={() => stop(false)}
       >

@@ -780,6 +780,13 @@ html[data-visual-viewport-constrained] .mobile-composer-meta {
 }
 .atlas-rise { animation: atlas-rise var(--motion-slow) var(--motion-ease) both; }
 
+/* Holding the Talk key fills the Talk button until dictation starts (the duration is set inline). */
+@keyframes atlas-talk-arming {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+.atlas-talk-arming { animation: atlas-talk-arming 3s linear forwards; }
+
 /* Moving between views cross-fades instead of jumping. */
 ::view-transition-old(root),
 ::view-transition-new(root) {

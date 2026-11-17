@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, CornerDownLeft, Keyboard, KeyboardOff, MessageSquareText, Mic } from 'lucide-react'
 import { useMediaQuery, COMPACT_LAYOUT_QUERY } from '../lib/useMediaQuery'
@@ -17,6 +17,7 @@ import { useMicStream, type MicState } from '../hooks/useMicStream'
 import { readAgyVoiceStatus } from '../lib/agyVoiceStatus'
 import type { TalkAgent } from '../lib/talkAgent'
 import { RelayTalkButton, TalkButton, type DictationRelay } from './TalkButton'
+import { claimTalkKey, releaseTalkKey, useTalkKeyOwner } from '../lib/talkHotkey'
 import { TerminalCockpit } from './TerminalCockpit'
 import { TerminalContextMenu, type TerminalMenuPosition } from './TerminalContextMenu'
 import { TerminalPasteConfirmation } from './TerminalPasteConfirmation'
@@ -170,6 +171,10 @@ export function Terminal({
   if (!inputRef.current) inputRef.current = new MobileTerminalInput()
   const input = inputRef.current
   const targetKey = terminalTargetKey(hostId, sessionName)
+  // The session terminal always answers the Talk key; on the Wall, the tile touched last does.
+  const talkKeyId = useId()
+  const talkKeyOwner = useTalkKeyOwner()
+  const answersTalkKey = !embedded || talkKeyOwner === talkKeyId
   const resolveHostLabel = useHostLabel()
   const hostLabel = resolveHostLabel(hostId, hostName === hostId ? 'Hôte' : hostName || 'Hôte') || 'Hôte'
   const targetLabel = `${hostLabel}/${sessionName}`
@@ -266,6 +271,7 @@ export function Terminal({
     disabled: boolean,
     label?: string,
     livePlacement: 'above-left' | 'above-right' | 'below-right' = 'above-left',
+    hotkey = false,
   ) =>
     talkAgent === 'codex' ? (
       <RelayTalkButton
@@ -277,6 +283,7 @@ export function Terminal({
         targetLabel={label}
         liveText={dictationText}
         livePlacement={livePlacement}
+        hotkey={hotkey}
       />
     ) : (
       <TalkButton
@@ -287,6 +294,7 @@ export function Terminal({
         readScreen={readScreen}
         onSubmit={submitPrompt}
         targetLabel={label}
+        hotkey={hotkey}
       />
     )
 
@@ -492,6 +500,20 @@ export function Terminal({
     }
   }, [claimSize, embedded])
 
+  // On the Wall, the Talk key follows the tile touched last.
+  useEffect(() => {
+    const container = containerRef.current
+    if (!embedded || !container) return
+    const claim = () => claimTalkKey(talkKeyId)
+    container.addEventListener('pointerdown', claim, { passive: true })
+    container.addEventListener('focusin', claim)
+    return () => {
+      container.removeEventListener('pointerdown', claim)
+      container.removeEventListener('focusin', claim)
+      releaseTalkKey(talkKeyId)
+    }
+  }, [embedded, talkKeyId])
+
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -675,6 +697,7 @@ export function Terminal({
             !talkAgent || talkMic?.state !== 'on' || workspaceConnection !== 'connected' || talkLocked,
             embedded ? targetLabel : undefined,
             embedded || sharedMic ? 'below-right' : 'above-left',
+            answersTalkKey,
           ),
           talkSlot,
         )}
