@@ -1,79 +1,27 @@
-import { Alerts, NUM, StatusBadge, Table, toneColor } from '../monitoring/Monitoring'
-import { formatDuration, formatRelative } from '../monitoring/format'
+import { useEffect, useState } from 'react'
+import { Alerts, toneColor } from '../monitoring/Monitoring'
+import { formatRelative } from '../monitoring/format'
 import { BackupsPanel } from './BackupsPanel'
+import { DockerPage } from './docker/DockerPage'
+import { Tabs } from './docker/parts'
 import { NotificationsPanel } from './NotificationsPanel'
-import type { OpsContainer, OpsContainers, OpsResponse } from './types'
+import type { OpsContainers, OpsResponse } from './types'
 import { useOps } from './useOps'
 
-const statusLabel: Record<string, string> = {
-  healthy: 'en bonne santé',
-  running: 'en marche',
-  unhealthy: 'en mauvaise santé',
-  starting: 'démarrage',
-  restarting: 'redémarre en boucle',
-  paused: 'en pause',
-  exited: 'arrêté',
-  dead: 'mort',
-  created: 'créé',
-  removing: 'suppression',
-  unknown: 'inconnu',
-}
+type OpsTab = 'containers' | 'backups'
 
-function since(c: OpsContainer): string {
-  if (c.state === 'running' && c.uptime_seconds !== undefined) return formatDuration(c.uptime_seconds)
-  if (c.bad_since) return formatRelative(c.bad_since)
-  return '—'
-}
-
-function ContainersTable({ items }: { items: OpsContainer[] }) {
-  return (
-    <Table
-      label="Conteneurs"
-      head={['État', 'Conteneur', 'Image', 'Redémarrages', 'Uptime / arrêt']}
-      numeric={[3]}
-      empty={items.length === 0}
-    >
-      {items.map(c => (
-        <tr key={c.id}>
-          <td>
-            <StatusBadge tone={c.tone} label={statusLabel[c.status] ?? c.status} />
-          </td>
-          <td className="max-w-[260px]">
-            <div className="font-medium text-foreground" title={c.short_id}>
-              {c.name}
-            </div>
-            {(c.compose_project || c.exited_desc) && (
-              <div
-                className="truncate text-2xs"
-                style={{ color: c.exited_desc ? toneColor.critical : undefined }}
-              >
-                {c.exited_desc ||
-                  `${c.compose_project}${c.compose_service ? ` / ${c.compose_service}` : ''}`}
-              </div>
-            )}
-          </td>
-          <td className="max-w-[240px] truncate text-muted-foreground" title={c.image}>
-            {c.image}
-          </td>
-          <td
-            className={NUM}
-            style={{ color: c.restarts_10m >= 3 ? toneColor.warning : undefined }}
-            title={`${c.restarts_10m} sur 10 min, ${c.restart_count} au total pour Docker`}
-          >
-            {c.restarts_10m > 0 ? `${c.restarts_10m} / 10 min` : c.restart_count}
-          </td>
-          <td className="whitespace-nowrap text-muted-foreground">{since(c)}</td>
-        </tr>
-      ))}
-    </Table>
-  )
-}
-
+/** The collector feeds the phone alerts about containers: say when it stopped. */
 function Freshness({ containers }: { containers: OpsContainers }) {
-  if (!containers.available) return null
+  if (!containers.available) {
+    return (
+      <p className="mb-3 text-2xs text-muted-foreground">
+        Surveillance des conteneurs pour les alertes : aucun relevé ({containers.error ?? 'collecteur absent'}).
+      </p>
+    )
+  }
   return (
     <p className="mb-3 text-2xs text-muted-foreground">
-      Relevé {formatRelative(containers.collected_at)}
+      Surveillance des conteneurs pour les alertes : relevé {formatRelative(containers.collected_at)}
       {containers.stale && (
         <span style={{ color: toneColor.critical }}> — périmé, le collecteur ne répond plus</span>
       )}
@@ -83,54 +31,44 @@ function Freshness({ containers }: { containers: OpsContainers }) {
 
 function NotConfigured() {
   return (
-    <div className="max-w-2xl rounded-lg border border-border bg-card p-4 text-xs leading-relaxed">
-      <p className="mb-2 font-medium">Le suivi des conteneurs n’est pas configuré sur ce hub.</p>
+    <div className="mb-6 max-w-2xl rounded-lg border border-border bg-card p-4 text-xs leading-relaxed">
+      <p className="mb-2 font-medium">Les alertes sur les conteneurs et les sauvegardes ne sont pas configurées.</p>
       <p className="text-muted-foreground">
-        Atlas ne parle jamais à Docker : un collecteur, lancé par le compte qui possède Docker, écrit l’état
-        des conteneurs dans un dossier que le hub lit. Installe <code>contrib/ops/docker-snapshot.sh</code> et
-        son timer, puis démarre le hub avec <code>TMUXATLAS_OPS_DIR</code>. Voir <code>docs/ops.md</code>.
+        Elles lisent un relevé écrit par un collecteur, lancé par le compte qui possède Docker. Installe{' '}
+        <code>contrib/ops/docker-snapshot.sh</code> et son timer, puis démarre le hub avec <code>TMUXATLAS_OPS_DIR</code>.
+        Voir <code>docs/ops.md</code>. L’onglet Conteneurs, lui, interroge Docker directement.
       </p>
     </div>
   )
 }
 
+/** Alerts, backups and notifications, read from the ops directory (unchanged by the live view). */
 export function OpsView({ data }: { data: OpsResponse }) {
   if (!data.configured) {
     return (
       <>
         <NotConfigured />
-        {data.notifications && (
-          <div className="mt-6">
-            <NotificationsPanel notifications={data.notifications} />
-          </div>
-        )}
+        {data.notifications && <NotificationsPanel notifications={data.notifications} />}
       </>
     )
   }
-  const items = data.containers.items ?? []
   return (
     <>
       <Alerts alerts={data.alerts ?? []} okText="Conteneurs et sauvegardes sont en ordre." />
+      <Freshness containers={data.containers} />
       {data.backups && <BackupsPanel backups={data.backups} />}
       {data.notifications && <NotificationsPanel notifications={data.notifications} />}
-      <section className="mb-6">
-        <h2 className="mb-1 text-sm font-medium">Conteneurs</h2>
-        <Freshness containers={data.containers} />
-        {data.containers.available ? (
-          <ContainersTable items={items} />
-        ) : (
-          <p className="text-xs text-muted-foreground">Aucune donnée : {data.containers.error}</p>
-        )}
-      </section>
     </>
   )
 }
 
-export function OpsPage() {
-  const { data, status, failed } = useOps()
+function readTab(): OpsTab {
+  return new URLSearchParams(window.location.search).get('vue') === 'sauvegardes' ? 'backups' : 'containers'
+}
+
+function BackupsTab({ ops: { data, status, failed } }: { ops: ReturnType<typeof useOps> }) {
   return (
-    <main className="flex-1 overflow-y-auto p-4 text-sm sm:p-6">
-      <h1 className="mb-5 text-2xl font-medium">Conteneurs et sauvegardes</h1>
+    <>
       {status === 'loading' && <p className="text-xs text-muted-foreground">Chargement…</p>}
       {status === 'forbidden' && (
         <p className="text-xs text-muted-foreground">Cette page est réservée aux administrateurs.</p>
@@ -140,6 +78,62 @@ export function OpsPage() {
         <p className="mb-3 text-2xs text-warning">Dernière actualisation en échec, nouvel essai dans 15 s.</p>
       )}
       {status === 'ready' && data && <OpsView data={data} />}
+    </>
+  )
+}
+
+export function OpsPage({ onOpenSession }: { onOpenSession?: (sessionKey: string) => void }) {
+  const [tab, setTab] = useState<OpsTab>(readTab)
+  // Polled on both tabs: the backups tab shows it, the containers tab counts its alerts.
+  const ops = useOps()
+  const alertCount = ops.data?.alerts?.length ?? 0
+
+  useEffect(() => {
+    const onPop = () => setTab(readTab())
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
+  const changeTab = (next: OpsTab) => {
+    setTab(next)
+    const url = next === 'backups' ? `${window.location.pathname}?vue=sauvegardes` : window.location.pathname
+    window.history.replaceState(window.history.state, '', url)
+  }
+
+  return (
+    <main className="flex-1 overflow-y-auto p-4 text-sm sm:p-6">
+      <h1 className="mb-3 text-2xl font-medium">Conteneurs</h1>
+      <div className="mb-4">
+        <Tabs
+          label="Sections de la page Conteneurs"
+          idPrefix="ops"
+          value={tab}
+          onChange={changeTab}
+          items={[
+            { id: 'containers', label: 'Conteneurs' },
+            {
+              id: 'backups',
+              label: (
+                <>
+                  Sauvegardes et alertes
+                  {alertCount > 0 && (
+                    <span
+                      className="rounded-full px-1.5 text-2xs font-semibold tabular-nums"
+                      style={{ color: toneColor.critical, background: `color-mix(in oklch, ${toneColor.critical} 14%, transparent)` }}
+                    >
+                      <span className="sr-only">, alertes en cours : </span>
+                      {alertCount}
+                    </span>
+                  )}
+                </>
+              ),
+            },
+          ]}
+        />
+      </div>
+      <div role="tabpanel" id="ops-panel" aria-labelledby={`ops-tab-${tab}`}>
+        {tab === 'containers' ? <DockerPage onOpenSession={onOpenSession} /> : <BackupsTab ops={ops} />}
+      </div>
     </main>
   )
 }

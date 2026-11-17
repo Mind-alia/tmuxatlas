@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TopBar } from '../TopBar'
 import { OpsView } from './OpsPage'
@@ -33,19 +33,12 @@ function response(overrides: Partial<OpsResponse> = {}): OpsResponse {
 describe('OpsView', () => {
   afterEach(cleanup)
 
-  it('liste les conteneurs avec leur état, leurs redémarrages et leur uptime', () => {
+  it('garde les alertes et dit quand le collecteur a fait son dernier relevé', () => {
     render(<OpsView data={response()} />)
-    const table = screen.getByRole('region', { name: 'Conteneurs' })
-    const rows = within(table).getAllByRole('row')
-    expect(rows).toHaveLength(3)
-    expect(rows[1]).toHaveTextContent('arrêté')
-    expect(rows[1]).toHaveTextContent('sorti en erreur (code 1)')
-    expect(rows[1]).toHaveTextContent('il y a 5 min')
-    expect(rows[2]).toHaveTextContent('en bonne santé')
-    expect(rows[2]).toHaveTextContent('tf / web')
-    expect(rows[2]).toHaveTextContent('3 / 10 min')
-    expect(rows[2]).toHaveTextContent('2 h 0 min')
     expect(screen.getByText('Conteneur worker arrêté')).toBeInTheDocument()
+    expect(screen.getByText(/relevé il y a 10 s/)).toBeInTheDocument()
+    // La liste des conteneurs est désormais l’onglet Conteneurs, lu en direct dans Docker.
+    expect(screen.queryByRole('region', { name: 'Conteneurs' })).toBeNull()
   })
 
   it('signale un relevé périmé', () => {
@@ -55,7 +48,7 @@ describe('OpsView', () => {
 
   it('explique comment configurer le suivi quand le hub ne lit aucun dossier', () => {
     render(<OpsView data={{ configured: false, containers: { available: false, stale: false, docker_ok: false, items: [] }, alerts: [] }} />)
-    expect(screen.getByText(/n’est pas configuré/)).toBeInTheDocument()
+    expect(screen.getByText(/ne sont pas configurées/)).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Conteneurs' })).toBeNull()
   })
 })

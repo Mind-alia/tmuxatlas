@@ -378,6 +378,7 @@ func Run(ctx context.Context, opts *Options) error {
 		fileExplorer = files.New()
 	}
 	publicRouter.Use(fileBodyLimit(fileExplorer))
+	dockerUI := newDockerUI(opts, actionRouter)
 	accountPolicy := newAccountPolicy(opts)
 	if actionRouter != nil {
 		accountPolicy.router = actionRouter
@@ -433,6 +434,10 @@ func Run(ctx context.Context, opts *Options) error {
 				"commit":  common.COMMIT,
 			})
 		})
+
+		// Containers view — live Docker Engine API, admin only (pkg/dockerui).
+		// Its routes carry their own authentication (see dockerRouters).
+		dockerUI.Register(dockerRouters(r, opts, originMiddleware))
 
 		// Protected API routes
 		r.Group(func(r chi.Router) {
