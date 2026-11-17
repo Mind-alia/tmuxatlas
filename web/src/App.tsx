@@ -564,6 +564,22 @@ function AppInner({
     [currentView, navigateTo, refresh, refocusTerminal, workspacePreferences],
   )
 
+  // A container shell opened from the Containers page is a new tmux session:
+  // wait for it like a session created from the dialog.
+  const openCreatedSession = useCallback(
+    async (sessKey: string) => {
+      workspacePreferences.recordRecent(sessKey)
+      pendingSessionRef.current = sessKey
+      navigateTo(sessKey)
+      await refresh()
+      window.setTimeout(() => {
+        if (pendingSessionRef.current === sessKey) pendingSessionRef.current = null
+      }, 10_000)
+      setTimeout(() => refocusTerminal(), 300)
+    },
+    [navigateTo, refresh, refocusTerminal, workspacePreferences],
+  )
+
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)
     setTimeout(() => refocusTerminal(), 0)
@@ -914,7 +930,7 @@ function AppInner({
             ) : currentView === 'files' ? (
               <FilesPage hosts={hosts} />
             ) : currentView === 'ops' && role !== 'user' ? (
-              <OpsPage />
+              <OpsPage onOpenSession={key => void openCreatedSession(key)} />
             ) : currentView === 'wall' ? (
               wallReady && (
                 <WallView

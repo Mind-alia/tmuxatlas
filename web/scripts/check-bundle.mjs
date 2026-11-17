@@ -10,8 +10,10 @@ const limits = {
   // le Mur et À traiter augmentent aussi le budget global. Marge d’environ 5 %.
   'xterm gzip': 97 * 1024,
   // L’explorateur de fichiers (éditeur, Markdown, coloration) ajoute environ
-  // 42 Kio brotli, chargés seulement à l’ouverture de /files. Marge d’environ 5 %.
-  'total brotli': 292 * 1024,
+  // 42 Kio brotli, chargés seulement à l’ouverture de /files. La vue Docker de
+  // l’onglet Conteneurs en ajoute environ 11, chargés seulement sur /ops.
+  // Marge d’environ 5 %.
+  'total brotli': 314 * 1024,
 }
 let entryGzip = 0
 let xtermGzip = 0
