@@ -388,10 +388,10 @@ describe('useTerminal lifecycle and guarded input', () => {
     expect(addon.dispose).toHaveBeenCalledTimes(1)
   })
 
-  it('holds keystrokes back while the pane reads a password without echo', () => {
+  it('holds keystrokes back while the pane reads a password without echo', async () => {
     const { result } = renderHook(() => useTerminal('work', 'host-a'))
+    await connectTerminal(result, terminalContainer())
     act(() => {
-      result.current.connect(terminalContainer())
       FakeWebSocket.sockets[0].open()
     })
     const socket = FakeWebSocket.sockets[0]
