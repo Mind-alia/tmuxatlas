@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+**Working from the `agents` account: read and follow [`docs/regles-agent.md`](docs/regles-agent.md) first** (which branch to start from, what the user expects, deployment and security rules).
+
 ## Project Overview
 
 TmuxAtlas is a web dashboard for monitoring and interacting with tmux sessions. Go backend + React/Vite frontend embedded in a single binary. The binary name is `tmuxatlas`.
