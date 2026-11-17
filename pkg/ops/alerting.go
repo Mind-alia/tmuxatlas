@@ -51,6 +51,11 @@ type Policy struct {
 	GroupAbove     int           // more due notifications than this in one round are grouped
 	MaxPerWindow   int           // global cap...
 	Window         time.Duration // ...over this window
+	// A notification that no channel accepted is tried again after
+	// RetryBase, doubling up to RetryMax, MaxAttempts times in all.
+	RetryBase   time.Duration
+	RetryMax    time.Duration
+	MaxAttempts int
 }
 
 // DefaultPolicy follows docs/ops.md.
@@ -61,6 +66,9 @@ var DefaultPolicy = Policy{
 	GroupAbove:     3,
 	MaxPerWindow:   10,
 	Window:         10 * time.Minute,
+	RetryBase:      time.Minute,
+	RetryMax:       15 * time.Minute,
+	MaxAttempts:    6,
 }
 
 // Alert phases: ok (no state) → pending → firing → resolving → ok.
@@ -84,7 +92,25 @@ type AlertState struct {
 	// is only announced for problems that were announced.
 	Notified bool   `json:"notified"`
 	OKCount  int    `json:"ok_count,omitempty"`
-	Due      string `json:"due,omitempty"` // firing | reminder | resolved, waiting for the throttle
+	Due      string `json:"due,omitempty"` // firing | reminder | resolved, waiting for the throttle or a retry
+	// Attempts counts the deliveries of Due that every channel refused;
+	// RetryAt is when the next one may go.
+	Attempts int       `json:"attempts,omitempty"`
+	RetryAt  time.Time `json:"retry_at,omitempty"`
+}
+
+// setDue changes what is waiting to be sent. A new kind starts with a clean
+// retry count.
+func (st *AlertState) setDue(kind string) {
+	if st.Due != kind {
+		st.Due, st.Attempts, st.RetryAt = kind, 0, time.Time{}
+	}
+}
+
+// outgoing is one notification with the alerts it stands for.
+type outgoing struct {
+	notification Notification
+	states       []*AlertState
 }
 
 type persistedAlerts struct {
@@ -96,6 +122,9 @@ type persistedAlerts struct {
 
 // Engine decides which notifications to send. It is safe for concurrent use.
 type Engine struct {
+	// evalMu serializes Evaluate, so the states picked by step are still the
+	// ones settle confirms after the delivery, which runs without mu.
+	evalMu    sync.Mutex
 	mu        sync.Mutex
 	policy    Policy
 	notifiers []Notifier
@@ -128,20 +157,32 @@ func (e *Engine) Notifiers() []string {
 	return names
 }
 
-// Evaluate applies one round of signals and sends what is due.
+// Evaluate applies one round of signals and sends what is due. An alert
+// counts as notified only once a channel accepted the notification.
 func (e *Engine) Evaluate(ctx context.Context, signals []Signal) {
+	e.evalMu.Lock()
+	defer e.evalMu.Unlock()
 	e.mu.Lock()
 	out := e.step(signals)
 	e.save()
 	e.mu.Unlock()
-	for _, n := range out {
-		e.deliver(ctx, n)
+	if len(out) == 0 {
+		return
 	}
+	delivered := make([]bool, len(out))
+	for i, o := range out {
+		delivered[i] = e.deliver(ctx, o.notification)
+	}
+	e.mu.Lock()
+	e.settle(out, delivered)
+	e.save()
+	e.mu.Unlock()
 }
 
-// step updates the states and returns the notifications to send now. The
-// caller holds e.mu.
-func (e *Engine) step(signals []Signal) []Notification {
+// step updates the states and returns the notifications to send now,
+// without recording them as sent: settle does that once the delivery is
+// known. The caller holds e.mu.
+func (e *Engine) step(signals []Signal) []outgoing {
 	now := e.now()
 	p := e.policy
 	active := make(map[string]Signal, len(signals))
@@ -160,16 +201,24 @@ func (e *Engine) step(signals []Signal) []Notification {
 		switch st.Phase {
 		case PhasePending:
 			if now.Sub(st.Since) >= s.Pending {
-				st.Phase, st.FiredAt, st.Due = PhaseFiring, now, "firing"
+				st.Phase, st.FiredAt = PhaseFiring, now
+				st.setDue("firing")
 			}
 		case PhaseResolving:
 			st.Phase = PhaseFiring // flapping back: no new notification
 			if st.Due == "resolved" {
-				st.Due = ""
+				st.setDue("")
 			}
 		case PhaseFiring:
-			if st.Due == "" && st.Notified && now.Sub(st.LastSent) >= p.Reminder {
-				st.Due = "reminder"
+			// LastSent without Notified: the first notification was given up
+			// on, so the next round announces the problem instead of
+			// reminding of it.
+			if st.Due == "" && !st.LastSent.IsZero() && now.Sub(st.LastSent) >= p.Reminder {
+				if st.Notified {
+					st.setDue("reminder")
+				} else {
+					st.setDue("firing")
+				}
 			}
 		}
 	}
@@ -184,14 +233,14 @@ func (e *Engine) step(signals []Signal) []Notification {
 		case PhaseFiring:
 			st.Phase, st.OKCount = PhaseResolving, 0
 			if st.Due == "firing" || st.Due == "reminder" {
-				st.Due = "" // never announced, or no need to remind
+				st.setDue("") // never announced, or no need to remind
 			}
 		}
 		if st.Phase == PhaseResolving && st.Due != "resolved" {
 			st.OKCount++
 			if st.OKCount >= p.ResolveAfterOK {
 				if st.Notified {
-					st.Due = "resolved"
+					st.setDue("resolved")
 				} else {
 					delete(e.states, key)
 				}
@@ -211,7 +260,7 @@ func (e *Engine) step(signals []Signal) []Notification {
 		if at, ok := e.lastByKey[st.Key]; ok && at.After(last) {
 			last = at
 		}
-		if st.Due != "" && (last.IsZero() || now.Sub(last) >= p.MinInterval) {
+		if st.Due != "" && (last.IsZero() || now.Sub(last) >= p.MinInterval) && !now.Before(st.RetryAt) {
 			due = append(due, st)
 		}
 	}
@@ -230,25 +279,37 @@ func (e *Engine) step(signals []Signal) []Notification {
 		e.logger.WithField("due", len(due)).Warn("plafond de notifications atteint, envoi différé")
 		return nil
 	}
-	var out []Notification
+	var out []outgoing
 	if len(due) > p.GroupAbove || len(due) > budget {
-		out = append(out, groupNotification(due, now))
+		out = append(out, outgoing{groupNotification(due, now), due})
 	} else {
 		for _, st := range due {
-			out = append(out, notificationFor(st, now))
+			out = append(out, outgoing{notificationFor(st, now), []*AlertState{st}})
 		}
 	}
-	for _, st := range due {
-		e.markSent(st, now)
-	}
-	for range out {
+	return out
+}
+
+// settle records the outcome of one round of deliveries. The caller holds
+// e.mu.
+func (e *Engine) settle(out []outgoing, delivered []bool) {
+	now := e.now()
+	for i, o := range out {
+		if !delivered[i] {
+			for _, st := range o.states {
+				e.markFailed(st, now)
+			}
+			continue
+		}
+		for _, st := range o.states {
+			e.markSent(st, now)
+		}
 		e.sent = append(e.sent, now)
+		e.recent = append(e.recent, o.notification)
 	}
-	e.recent = append(e.recent, out...)
 	if len(e.recent) > 50 {
 		e.recent = e.recent[len(e.recent)-50:]
 	}
-	return out
 }
 
 func (e *Engine) markSent(st *AlertState, now time.Time) {
@@ -260,7 +321,30 @@ func (e *Engine) markSent(st *AlertState, now time.Time) {
 	case "resolved":
 		delete(e.states, st.Key)
 	}
-	st.Due = ""
+	st.setDue("")
+}
+
+// markFailed keeps a notification that no channel accepted waiting for its
+// next attempt. After MaxAttempts it is given up on: a problem still there
+// is announced again one reminder interval later, a recovery is dropped.
+func (e *Engine) markFailed(st *AlertState, now time.Time) {
+	p := e.policy
+	st.Attempts++
+	if st.Attempts < p.MaxAttempts {
+		delay := p.RetryBase << (st.Attempts - 1)
+		if delay <= 0 || delay > p.RetryMax {
+			delay = p.RetryMax
+		}
+		st.RetryAt = now.Add(delay)
+		return
+	}
+	e.logger.WithField("key", st.Key).WithField("kind", st.Due).WithField("attempts", st.Attempts).
+		Warn("notification abandonnée, aucun canal ne l'a acceptée")
+	if st.Due == "resolved" {
+		delete(e.states, st.Key)
+	}
+	st.LastSent = now
+	st.setDue("")
 }
 
 func (e *Engine) pruneSent(now time.Time) {
@@ -323,14 +407,22 @@ func groupNotification(due []*AlertState, now time.Time) Notification {
 	return n
 }
 
-func (e *Engine) deliver(ctx context.Context, n Notification) {
+// deliver sends n through every channel and reports whether at least one
+// accepted it. Retrying after a partial failure would repeat the
+// notification on the channels that work, so one success is enough. Without
+// any channel there is nothing to wait for.
+func (e *Engine) deliver(ctx context.Context, n Notification) bool {
+	delivered := len(e.notifiers) == 0
 	for _, notifier := range e.notifiers {
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		if err := notifier.Notify(ctx, n); err != nil {
 			e.logger.WithError(err).WithField("channel", notifier.Name()).WithField("key", n.Key).Warn("envoi de notification")
+		} else {
+			delivered = true
 		}
 		cancel()
 	}
+	return delivered
 }
 
 // Test sends a test notification through every channel, outside the

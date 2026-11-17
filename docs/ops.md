@@ -343,6 +343,11 @@ hub request internal addresses (SSRF).
 - At least 5 min between two notifications of the same alert.
 - More than 3 notifications due at once are grouped into one.
 - At most 10 notifications per 10 min; the rest wait and are grouped.
+- A notification counts as sent once a channel accepted it. If every channel
+  fails, it is tried again after 1, 2, 4, 8 then 15 min (6 attempts). After
+  that a problem still there is announced again 6 h later, and an undelivered
+  recovery is dropped. With several channels, one success is enough: the
+  failing one is only logged.
 - States are kept in `alerts.json` (data directory), so a restart of the
   hub does not notify again.
 

@@ -182,6 +182,119 @@ func TestEnginePersistsStates(t *testing.T) {
 	}
 }
 
+// flaky is a channel that can be cut.
+type flaky struct {
+	recorder
+	down     bool
+	attempts int
+}
+
+func (f *flaky) Notify(ctx context.Context, n Notification) error {
+	f.attempts++
+	if f.down {
+		return fmt.Errorf("réseau injoignable")
+	}
+	return f.recorder.Notify(ctx, n)
+}
+
+func newFlakyEngine() (*Engine, *flaky, *clock) {
+	channel := &flaky{down: true}
+	c := &clock{t: time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)}
+	e := NewEngine("", DefaultPolicy, channel)
+	e.now = c.now
+	return e, channel, c
+}
+
+func TestEngineRetriesUndeliveredNotification(t *testing.T) {
+	e, channel, c := newFlakyEngine()
+	ctx := context.Background()
+	failed := Signal{Key: "ops:backup:failed", Severity: "critical", Title: "Sauvegarde en échec"}
+	e.Evaluate(ctx, []Signal{failed})
+	if v := e.View(); channel.attempts != 1 || len(v.Alerts) != 1 || v.Alerts[0].Notified || v.Alerts[0].Due != "firing" || len(v.Recent) != 0 {
+		t.Fatalf("un envoi refusé ne compte pas comme envoyé : %d essais, %+v", channel.attempts, v)
+	}
+	c.advance(30 * time.Second)
+	e.Evaluate(ctx, []Signal{failed})
+	if channel.attempts != 1 {
+		t.Fatalf("nouvel essai avant le délai : %d essais", channel.attempts)
+	}
+	c.advance(10 * time.Minute)
+	e.Evaluate(ctx, []Signal{failed})
+	if channel.attempts != 2 {
+		t.Fatalf("pas de nouvel essai dix minutes plus tard : %d essais", channel.attempts)
+	}
+	channel.down = false
+	c.advance(2 * time.Minute)
+	e.Evaluate(ctx, []Signal{failed})
+	if got := kinds(channel.take()); got != "firing:ops:backup:failed" {
+		t.Fatalf("après le retour du canal : %q", got)
+	}
+	if v := e.View(); !v.Alerts[0].Notified || v.Alerts[0].Due != "" || v.Alerts[0].Attempts != 0 || len(v.Recent) != 1 {
+		t.Fatalf("état après livraison : %+v", v)
+	}
+	for i := 0; i < 20; i++ {
+		c.advance(30 * time.Second)
+		e.Evaluate(ctx, []Signal{failed})
+	}
+	if got := kinds(channel.take()); got != "" {
+		t.Fatalf("doublon après livraison : %q", got)
+	}
+}
+
+func TestEngineGivesUpAfterBoundedRetries(t *testing.T) {
+	e, channel, c := newFlakyEngine()
+	ctx := context.Background()
+	failed := Signal{Key: "ops:backup:failed", Severity: "critical", Title: "Sauvegarde en échec"}
+	for i := 0; i < 2*120; i++ { // two hours with the channel down
+		e.Evaluate(ctx, []Signal{failed})
+		c.advance(30 * time.Second)
+	}
+	if channel.attempts != DefaultPolicy.MaxAttempts {
+		t.Fatalf("%d essais, %d attendus", channel.attempts, DefaultPolicy.MaxAttempts)
+	}
+	// still down and never announced: a new series starts one reminder later
+	channel.down = false
+	for i := 0; i < 5*120; i++ {
+		e.Evaluate(ctx, []Signal{failed})
+		c.advance(30 * time.Second)
+	}
+	if got := kinds(channel.take()); got != "firing:ops:backup:failed" {
+		t.Fatalf("la panne jamais annoncée doit l'être au cycle suivant : %q", got)
+	}
+}
+
+func TestEngineKeepsUndeliveredRecovery(t *testing.T) {
+	e, channel, c := newFlakyEngine()
+	ctx := context.Background()
+	channel.down = false
+	failed := Signal{Key: "ops:backup:failed", Severity: "critical", Title: "Sauvegarde en échec"}
+	e.Evaluate(ctx, []Signal{failed})
+	if got := kinds(channel.take()); got != "firing:ops:backup:failed" {
+		t.Fatalf("panne : %q", got)
+	}
+	channel.down = true
+	c.advance(6 * time.Minute)
+	for i := 0; i < 3; i++ {
+		e.Evaluate(ctx, nil)
+		c.advance(30 * time.Second)
+	}
+	before := channel.attempts
+	if v := e.View(); len(v.Alerts) != 1 || v.Alerts[0].Due != "resolved" || len(v.Recent) != 1 {
+		t.Fatalf("le rétablissement non livré doit rester en attente : %+v", v)
+	}
+	channel.down = false
+	for i := 0; i < 10 && len(e.View().Alerts) > 0; i++ {
+		c.advance(time.Minute)
+		e.Evaluate(ctx, nil)
+	}
+	if got := kinds(channel.take()); got != "resolved:ops:backup:failed" || channel.attempts <= before {
+		t.Fatalf("rétablissement après le retour du canal : %q", got)
+	}
+	if v := e.View(); len(v.Alerts) != 0 || len(v.Recent) != 2 {
+		t.Fatalf("vue finale : %+v", v)
+	}
+}
+
 func TestSignals(t *testing.T) {
 	resp := Response{Alerts: []Alert{
 		{Key: "ops:containers:missing"}, {Key: "ops:backup:missing"},
