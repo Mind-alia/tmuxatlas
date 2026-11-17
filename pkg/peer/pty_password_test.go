@@ -12,7 +12,7 @@ import (
 
 func setEcho(t *testing.T, fd int, echo, canonical bool) {
 	t.Helper()
-	termios, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	termios, err := unix.IoctlGetTermios(fd, ioctlGetTermios)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +23,7 @@ func setEcho(t *testing.T, fd int, echo, canonical bool) {
 	if canonical {
 		termios.Lflag |= unix.ICANON
 	}
-	if err := unix.IoctlSetTermios(fd, unix.TCSETS, termios); err != nil {
+	if err := unix.IoctlSetTermios(fd, ioctlSetTermios, termios); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -425,15 +425,15 @@ func termios(file *os.File) (*unix.Termios, bool) {
 	}
 	var value *unix.Termios
 	var ioctlErr error
-	if err := conn.Control(func(fd uintptr) { value, ioctlErr = unix.IoctlGetTermios(int(fd), unix.TCGETS) }); err != nil || ioctlErr != nil {
+	if err := conn.Control(func(fd uintptr) { value, ioctlErr = unix.IoctlGetTermios(int(fd), ioctlGetTermios) }); err != nil || ioctlErr != nil {
 		return nil, false
 	}
 	return value, true
 }
 
 // PasswordMode reports whether a terminal is in canonical mode without
-// echo. Full-screen programs use raw mode and are not reported. On Linux a
-// PTY master answers for its slave.
+// echo. Full-screen programs use raw mode and are not reported. A PTY master
+// answers for its slave.
 func PasswordMode(file *os.File) (bool, bool) {
 	value, ok := termios(file)
 	if !ok {
