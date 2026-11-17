@@ -3,11 +3,36 @@ import { runAction, openTerminal } from './api'
 import { ContainerDetail } from './ContainerDetail'
 import { ContainersList, InlineError, SummaryTiles, type ListCallbacks } from './ContainersList'
 import { isActive } from './model'
-import { ConfirmDialog, type ConfirmRequest, type DetailTab, type PendingKind } from './parts'
+import { ConfirmDialog, Tabs, type ConfirmRequest, type DetailTab, type PendingKind } from './parts'
+import { ImagesPanel, VolumesPanel } from './ResourcesPanels'
 import { useDockerContainers } from './useDockerContainers'
 import type { DockerAction, DockerContainer } from './types'
 
 const detailTabs: DetailTab[] = ['logs', 'inspect', 'stats', 'terminal']
+
+type Section = 'containers' | 'images' | 'volumes'
+
+const sections: { id: Section; label: string }[] = [
+  { id: 'containers', label: 'Conteneurs' },
+  { id: 'images', label: 'Images' },
+  { id: 'volumes', label: 'Volumes' },
+]
+
+/** The section lives in the URL too (?vue=images), so a reload keeps it. */
+function readSection(): Section {
+  const value = new URLSearchParams(window.location.search).get('vue')
+  return value === 'images' || value === 'volumes' ? value : 'containers'
+}
+
+function writeSection(section: Section) {
+  const params = new URLSearchParams(window.location.search)
+  if (section === 'containers') params.delete('vue')
+  else params.set('vue', section)
+  params.delete('c')
+  params.delete('onglet')
+  const query = params.toString()
+  window.history.pushState(window.history.state, '', `${window.location.pathname}${query ? `?${query}` : ''}`)
+}
 
 /** The open container and tab live in the URL (?c=…&onglet=…), so Back returns to the list. */
 function readLocation(): { id: string | null; tab: DetailTab } {
@@ -48,6 +73,7 @@ function omit<T>(record: Record<string, T>, key: string): Record<string, T> {
 export function DockerPage({ onOpenSession }: { onOpenSession?: (sessionKey: string) => void }) {
   const { data, history, status, failure, refresh } = useDockerContainers()
   const [{ id: selectedId, tab }, setSelection] = useState(readLocation)
+  const [section, setSection] = useState<Section>(readSection)
   const [pending, setPending] = useState<Record<string, PendingKind>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
@@ -57,7 +83,10 @@ export function DockerPage({ onOpenSession }: { onOpenSession?: (sessionKey: str
   }, [selectedId])
 
   useEffect(() => {
-    const onPop = () => setSelection(readLocation())
+    const onPop = () => {
+      setSelection(readLocation())
+      setSection(readSection())
+    }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
@@ -164,7 +193,25 @@ export function DockerPage({ onOpenSession }: { onOpenSession?: (sessionKey: str
           Dernière actualisation en échec ({failure}), nouvel essai dans 3 s.
         </p>
       )}
-      {selectedId ? (
+      {!selectedId && (
+        <div className="mb-4">
+          <Tabs
+            items={sections}
+            value={section}
+            onChange={next => {
+              writeSection(next)
+              setSection(next)
+            }}
+            label="Ressources Docker"
+            idPrefix="docker-section"
+          />
+        </div>
+      )}
+      {!selectedId && section === 'images' ? (
+        <ImagesPanel onContainersChanged={() => void refresh()} />
+      ) : !selectedId && section === 'volumes' ? (
+        <VolumesPanel />
+      ) : selectedId ? (
         selected ? (
           <ContainerDetail
             container={selected}

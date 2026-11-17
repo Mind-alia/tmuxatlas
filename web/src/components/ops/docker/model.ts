@@ -1,5 +1,5 @@
 import { formatBytes, formatPercent, formatRelative } from '../../monitoring/format'
-import type { DockerContainer, DockerPort, DockerStats } from './types'
+import type { DockerContainer, DockerCreatePort, DockerPort, DockerStats } from './types'
 
 /** Colour of the status dot: green running, grey stopped, orange in transition, red failed. */
 export type DotTone = 'running' | 'stopped' | 'transition' | 'error'
@@ -183,4 +183,45 @@ export function matches(c: DockerContainer, query: string): boolean {
 
 export function filterContainers(list: DockerContainer[], query: string, onlyRunning: boolean) {
   return list.filter(c => (!onlyRunning || isActive(c)) && matches(c, query))
+}
+
+/** Parses the "Run" form: one "8080:80" or "8080:80/udp" per line. */
+export function parsePorts(text: string, hostIp: string): DockerCreatePort[] | string {
+  const out: DockerCreatePort[] = []
+  for (const raw of text.split('\n')) {
+    const line = raw.trim()
+    if (!line) continue
+    const match = /^(\d{1,5}):(\d{1,5})(?:\/(tcp|udp))?$/.exec(line)
+    if (!match) return `Port illisible : « ${line} » (attendu : 8080:80)`
+    const host = Number(match[1])
+    const container = Number(match[2])
+    if (host < 1 || host > 65535 || container < 1 || container > 65535) return `Port hors limites : « ${line} »`
+    out.push({ host_ip: hostIp, host, container, proto: (match[3] as 'tcp' | 'udp' | undefined) ?? 'tcp' })
+  }
+  return out
+}
+
+/** One "volume:/chemin" per line. */
+export function parseMounts(text: string): { volume: string; path: string }[] | string {
+  const out: { volume: string; path: string }[] = []
+  for (const raw of text.split('\n')) {
+    const line = raw.trim()
+    if (!line) continue
+    const match = /^([A-Za-z0-9][A-Za-z0-9_.-]*):(\/[A-Za-z0-9._/@+-]+)$/.exec(line)
+    if (!match) return `Volume illisible : « ${line} » (attendu : nom-du-volume:/chemin)`
+    out.push({ volume: match[1], path: match[2] })
+  }
+  return out
+}
+
+/** One "NOM=valeur" per line. */
+export function parseEnv(text: string): string[] | string {
+  const out: string[] = []
+  for (const raw of text.split('\n')) {
+    const line = raw.trim()
+    if (!line) continue
+    if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(line)) return `Variable illisible : « ${line} » (attendu : NOM=valeur)`
+    out.push(line)
+  }
+  return out
 }

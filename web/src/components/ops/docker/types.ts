@@ -91,3 +91,58 @@ export interface DockerTerminal {
   session: string
   created: boolean
 }
+
+export interface DockerImage {
+  id: string
+  short_id: string
+  tags: string[] | null
+  size: number
+  /** Unix seconds. */
+  created: number
+  containers: string[] | null
+}
+
+export interface DockerImages {
+  images: DockerImage[] | null
+  total_size: number
+  collected_at: number
+}
+
+export interface DockerVolume {
+  name: string
+  driver: string
+  created_at?: string
+  /** null while Docker has not measured the volume. */
+  size: number | null
+  anonymous?: boolean
+  compose_project?: string
+  containers: string[] | null
+}
+
+export interface DockerVolumes {
+  volumes: DockerVolume[] | null
+  collected_at: number
+}
+
+export interface DockerResourceResult {
+  name: string
+  action: string
+  detail?: string
+}
+
+export interface DockerCreatePort {
+  host_ip?: string
+  host: number
+  container: number
+  proto?: 'tcp' | 'udp'
+}
+
+export interface DockerCreateRequest {
+  image: string
+  name?: string
+  ports?: DockerCreatePort[]
+  env?: string[]
+  volumes?: { volume: string; path: string }[]
+  restart?: 'no' | 'always' | 'unless-stopped' | 'on-failure'
+  start?: boolean
+}

@@ -6,6 +6,8 @@ type apiContainer struct {
 	ID      string            `json:"Id"`
 	Names   []string          `json:"Names"`
 	Image   string            `json:"Image"`
+	ImageID string            `json:"ImageID"`
+	Mounts  []apiMount        `json:"Mounts"`
 	Created int64             `json:"Created"`
 	Ports   []apiPort         `json:"Ports"`
 	Labels  map[string]string `json:"Labels"`
@@ -15,6 +17,13 @@ type apiContainer struct {
 	Health *struct {
 		Status string `json:"Status"`
 	} `json:"Health"`
+}
+
+// apiMount is one mount of a container; Name is set for named volumes.
+type apiMount struct {
+	Type        string `json:"Type"`
+	Name        string `json:"Name"`
+	Destination string `json:"Destination"`
 }
 
 type apiPort struct {

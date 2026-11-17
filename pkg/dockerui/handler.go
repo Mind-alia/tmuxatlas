@@ -23,6 +23,14 @@ var Routes = []string{
 	"POST /docker/containers/{id}/restart",
 	"POST /docker/containers/{id}/terminal",
 	"DELETE /docker/containers/{id}",
+	"POST /docker/containers",
+	"GET /docker/images",
+	"POST /docker/images/pull",
+	"POST /docker/images/prune",
+	"DELETE /docker/images/{id}",
+	"GET /docker/volumes",
+	"POST /docker/volumes",
+	"DELETE /docker/volumes/{name}",
 }
 
 // Register mounts the routes. read carries the server's authentication;
@@ -38,6 +46,7 @@ func (s *Service) Register(read, mutate chi.Router) {
 	}
 	mutate.Post("/docker/containers/{id}/terminal", s.handleTerminal)
 	mutate.Delete("/docker/containers/{id}", s.handleRemove)
+	s.registerResources(read, mutate)
 }
 
 // AdminOnly refuses signed-in accounts that are not admins. The account

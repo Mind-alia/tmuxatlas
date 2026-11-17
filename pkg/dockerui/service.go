@@ -143,6 +143,8 @@ type Service struct {
 	inspects  map[string]inspectEntry
 
 	stats statsCache
+
+	volumes volumeSizes
 }
 
 type inspectEntry struct {

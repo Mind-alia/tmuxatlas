@@ -73,13 +73,25 @@ func newAPIClient(socket string) *apiClient {
 // do sends one request. Paths are unversioned so the daemon answers with its
 // own API version: pinning one would break on engines that dropped it.
 func (c *apiClient) do(ctx context.Context, method, path string, query url.Values) (*http.Response, error) {
+	return c.doBody(ctx, method, path, query, nil)
+}
+
+// doBody is do with an optional JSON body.
+func (c *apiClient) doBody(ctx context.Context, method, path string, query url.Values, body []byte) (*http.Response, error) {
 	target := "http://docker" + path
 	if len(query) > 0 {
 		target += "?" + query.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, method, target, nil)
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, target, reader)
 	if err != nil {
 		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("User-Agent", "tmuxatlas-dockerui")
 	resp, err := c.http.Do(req)

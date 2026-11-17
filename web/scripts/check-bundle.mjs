@@ -10,12 +10,11 @@ const limits = {
   // le Mur et À traiter augmentent aussi le budget global. Le panneau Sudo et
   // la touche du micro ajoutent environ 4 Kio au chunk Terminal. Marge d’environ 3 %.
   'xterm gzip': 102 * 1024,
-  // L’explorateur de fichiers (éditeur, Markdown, coloration) ajoute environ
-  // 42 Kio brotli, chargés seulement à l’ouverture de /files. La vue Docker de
-  // l’onglet Conteneurs en ajoute environ 11, chargés seulement sur /ops ;
-  // l’onglet Boucles environ 6, plus 1 pour la récupération après interruption.
-  // Marge d’environ 5 %.
-  'total brotli': 314 * 1024,
+  // L’explorateur de fichiers (éditeur, Markdown, coloration) pèse environ
+  // 42 Kio brotli, la vue Docker (conteneurs, images, volumes) environ 14,
+  // l’onglet Boucles et les comptes CLI du monitoring environ 20. Tous sont
+  // chargés à la demande. Marge d’environ 3 %.
+  'total brotli': 340 * 1024,
 }
 let entryGzip = 0
 let xtermGzip = 0

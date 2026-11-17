@@ -27,6 +27,14 @@ timeout and every response is read with a size bound.
 | `POST /docker/containers/{id}/start`, `stop`, `restart` | same | stop waits for the container's grace period |
 | `DELETE /docker/containers/{id}` | `DELETE /containers/{id}` | refused (409) while running; never `force` nor `v` |
 | `POST /docker/containers/{id}/terminal` | — | opens a shell in a tmux session, see below |
+| `POST /docker/containers` | `/containers/create`, then `/start` | the "Run" dialog of the Images tab: image, name, ports (published on `127.0.0.1` unless `host_ip` says otherwise), `NAME=value` variables, named volumes (never a host path), restart policy; unknown fields are refused |
+| `GET /docker/images` | `/images/json`, `/containers/json?all=1` | tags, size, age and the containers created from each image |
+| `POST /docker/images/pull` | `/images/create?fromImage=…&tag=…` | public images only (no registry credentials); waits for the end of the download, at most 10 min; an `error` line of the stream is a failure |
+| `POST /docker/images/prune` | `/images/prune` with `dangling=true` | untagged images only |
+| `DELETE /docker/images/{id}` | `DELETE /images/{tag or id}` | never `force`: refused (409) while a container uses the image; an image with several tags loses them one by one |
+| `GET /docker/volumes` | `/volumes`, `/containers/json?all=1`, `/system/df?type=volume` | sizes are read in the background and cached one minute (`null` until then) |
+| `POST /docker/volumes` | `/volumes/create` | local driver, name only |
+| `DELETE /docker/volumes/{name}` | `DELETE /volumes/{name}` | never `force`: refused (409) while a container mounts the volume; only a name Docker listed is sent |
 
 - `{id}` must be 12 to 64 lowercase hex characters and is resolved against a
   fresh listing; only the full ID returned by Docker is used afterwards.

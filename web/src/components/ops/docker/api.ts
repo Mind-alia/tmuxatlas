@@ -1,5 +1,14 @@
 import { apiFetch } from '../../../lib/api'
-import type { DockerAction, DockerList, DockerLogs, DockerTerminal } from './types'
+import type {
+  DockerAction,
+  DockerCreateRequest,
+  DockerImages,
+  DockerList,
+  DockerLogs,
+  DockerResourceResult,
+  DockerTerminal,
+  DockerVolumes,
+} from './types'
 
 export class DockerApiError extends Error {
   status: number
@@ -68,4 +77,40 @@ export function fetchInspect(id: string, signal?: AbortSignal) {
 
 export function openTerminal(id: string) {
   return request<DockerTerminal>(`${base(id)}/terminal`, { method: 'POST' })
+}
+
+export function fetchImages(signal?: AbortSignal) {
+  return request<DockerImages>('/api/docker/images', { signal })
+}
+
+export function pullImage(image: string) {
+  return request<DockerResourceResult>('/api/docker/images/pull', { method: 'POST', body: JSON.stringify({ image }) })
+}
+
+export function pruneImages() {
+  return request<DockerResourceResult>('/api/docker/images/prune', { method: 'POST' })
+}
+
+export function removeImage(id: string) {
+  const hex = id.replace(/^sha256:/, '')
+  return request<DockerResourceResult>(`/api/docker/images/${encodeURIComponent(hex)}`, { method: 'DELETE' })
+}
+
+export function fetchVolumes(signal?: AbortSignal) {
+  return request<DockerVolumes>('/api/docker/volumes', { signal })
+}
+
+export function createVolume(name: string) {
+  return request<DockerResourceResult>('/api/docker/volumes', { method: 'POST', body: JSON.stringify({ name }) })
+}
+
+export function removeVolume(name: string) {
+  return request<DockerResourceResult>(`/api/docker/volumes/${encodeURIComponent(name)}`, { method: 'DELETE' })
+}
+
+export function createContainer(body: DockerCreateRequest) {
+  return request<{ id: string; name: string; action: string }>('/api/docker/containers', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
 }

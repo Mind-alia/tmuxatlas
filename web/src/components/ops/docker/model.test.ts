@@ -122,3 +122,19 @@ describe('modèle des conteneurs', () => {
     expect(mergeLines([a, b], [])).toEqual([a, b])
   })
 })
+
+describe('formulaire de lancement', () => {
+  it('lit les ports, volumes et variables ligne par ligne', async () => {
+    const { parseEnv, parseMounts, parsePorts } = await import('./model')
+    expect(parsePorts('8080:80\n\n 53:53/udp ', '127.0.0.1')).toEqual([
+      { host_ip: '127.0.0.1', host: 8080, container: 80, proto: 'tcp' },
+      { host_ip: '127.0.0.1', host: 53, container: 53, proto: 'udp' },
+    ])
+    expect(parsePorts('80', '127.0.0.1')).toMatch(/illisible/)
+    expect(parsePorts('70000:80', '127.0.0.1')).toMatch(/hors limites/)
+    expect(parseMounts('data:/var/lib/x')).toEqual([{ volume: 'data', path: '/var/lib/x' }])
+    expect(parseMounts('/etc:/host')).toMatch(/illisible/)
+    expect(parseEnv('A=1\nB=x y')).toEqual(['A=1', 'B=x y'])
+    expect(parseEnv('novalue')).toMatch(/illisible/)
+  })
+})

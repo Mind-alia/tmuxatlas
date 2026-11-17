@@ -3,6 +3,7 @@ package dockerui
 import (
 	"encoding/binary"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -39,6 +40,9 @@ type fakeDocker struct {
 	logsQuery  []string
 	cpuTotal   uint64
 	system     uint64
+	images     []map[string]any
+	volumes    []map[string]any
+	bodies     []string // JSON bodies of the POST requests, in order
 	// hangInspect makes inspect requests hang, as with a stuck containerd.
 	hangInspect atomic.Bool
 }
@@ -78,6 +82,17 @@ func newFakeDocker(t *testing.T) *fakeDocker {
 	f.add(workerID, "/worker", "busybox", "exited", "Exited (3) 5 minutes ago", nil, nil)
 	f.add(toolID, "/tool", "alpine", "created", "Created", nil, nil)
 	f.mu.Lock()
+	f.containers[webID]["ImageID"] = nginxImage
+	f.containers[webID]["Mounts"] = []map[string]any{{"Type": "volume", "Name": "shop_data", "Destination": "/data"}, {"Type": "bind", "Destination": "/etc/x"}}
+	f.images = []map[string]any{
+		{"Id": nginxImage, "RepoTags": []string{"nginx:1.27"}, "Created": 1700000000, "Size": 200 << 20},
+		{"Id": oldImage, "RepoTags": []string{"app:v1", "app:latest"}, "Created": 1690000000, "Size": 50 << 20},
+		{"Id": danglingImage, "RepoTags": []string{"<none>:<none>"}, "Created": 1680000000, "Size": 10 << 20},
+	}
+	f.volumes = []map[string]any{
+		{"Name": "shop_data", "Driver": "local", "CreatedAt": "2026-11-01T10:00:00Z", "Labels": map[string]string{"com.docker.compose.project": "shop"}},
+		{"Name": "spare", "Driver": "local", "CreatedAt": "2026-11-02T10:00:00Z"},
+	}
 	f.containers[webID]["Health"] = map[string]any{"Status": "healthy", "FailingStreak": 0}
 	f.mu.Unlock()
 	return f
@@ -175,6 +190,9 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"NCPU": 4, "MemTotal": 8 << 30, "ServerVersion": "29.2.1"})
 		return
 	}
+	if f.serveResources(w, r) {
+		return
+	}
 	rest, ok := strings.CutPrefix(path, "/containers/")
 	if !ok {
 		notFound()
@@ -240,6 +258,74 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		notFound()
 	}
+}
+
+// IDs of the fake images.
+const (
+	nginxImage    = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	oldImage      = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	danglingImage = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	createdID     = "5555555555555555555555555555555555555555555555555555555555555555"
+)
+
+// serveResources answers the image, volume and creation calls. f.mu is held.
+func (f *fakeDocker) serveResources(w http.ResponseWriter, r *http.Request) bool {
+	path := r.URL.Path
+	if r.Method == http.MethodPost {
+		body, _ := io.ReadAll(r.Body)
+		f.bodies = append(f.bodies, string(body))
+	}
+	conflict := func(message string) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": message})
+	}
+	switch {
+	case path == "/images/json":
+		_ = json.NewEncoder(w).Encode(f.images)
+	case path == "/images/create" && r.Method == http.MethodPost:
+		if r.URL.Query().Get("fromImage") == "private/app" {
+			_, _ = w.Write([]byte(`{"status":"Pulling"}` + "\n" + `{"error":"pull access denied"}` + "\n"))
+			return true
+		}
+		_, _ = w.Write([]byte(`{"status":"Pulling from library/x"}` + "\n" + `{"status":"Status: Downloaded newer image"}` + "\n"))
+	case path == "/images/prune" && r.Method == http.MethodPost:
+		_ = json.NewEncoder(w).Encode(map[string]any{"ImagesDeleted": []any{}, "SpaceReclaimed": 10 << 20})
+	case strings.HasPrefix(path, "/images/") && r.Method == http.MethodDelete:
+		target := strings.TrimPrefix(path, "/images/")
+		if target == nginxImage {
+			conflict("image is being used by running container")
+			return true
+		}
+		_ = json.NewEncoder(w).Encode([]any{})
+	case path == "/volumes" && r.Method == http.MethodGet:
+		_ = json.NewEncoder(w).Encode(map[string]any{"Volumes": f.volumes})
+	case path == "/system/df":
+		_ = json.NewEncoder(w).Encode(map[string]any{"Volumes": []map[string]any{
+			{"Name": "shop_data", "UsageData": map[string]any{"Size": 4096, "RefCount": 1}},
+			{"Name": "spare", "UsageData": map[string]any{"Size": -1, "RefCount": 0}},
+		}})
+	case path == "/volumes/create" && r.Method == http.MethodPost:
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"Name": "new"})
+	case strings.HasPrefix(path, "/volumes/") && r.Method == http.MethodDelete:
+		if strings.TrimPrefix(path, "/volumes/") == "shop_data" {
+			conflict("volume is in use")
+			return true
+		}
+		w.WriteHeader(http.StatusNoContent)
+	case path == "/containers/create" && r.Method == http.MethodPost:
+		if strings.Contains(f.bodies[len(f.bodies)-1], `"Image":"missing:latest"`) {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"message": "No such image"})
+			return true
+		}
+		f.containers[createdID] = map[string]any{"Id": createdID, "Names": []string{"/new"}, "State": "created", "Status": "Created"}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"Id": createdID})
+	default:
+		return false
+	}
+	return true
 }
 
 // frame builds one multiplexed log frame.
