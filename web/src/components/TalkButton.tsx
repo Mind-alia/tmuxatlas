@@ -3,7 +3,7 @@ import { ArrowUp, Square } from 'lucide-react'
 import { agyPromptHasText, readAgyVoiceStatus } from '../lib/agyVoiceStatus'
 import { readClaudeVoiceStatus } from '../lib/claudeVoiceStatus'
 import type { DictatingAgent } from '../lib/talkAgent'
-import { TALK_HOTKEY_HOLD_MS, talkHotkeyShort, useTalkHotkey, useTalkKey } from '../lib/talkHotkey'
+import { TALK_HOTKEY_HOLD_MS, talkHotkeyShort, useHoldCountdown, useTalkHotkey, useTalkKey } from '../lib/talkHotkey'
 
 const POLL_MS = 100
 const RELEASE_SETTLE_MS = 300
@@ -36,6 +36,7 @@ type Phase = 'idle' | 'holding' | 'sending'
 const ROUND = 'grid h-11 w-11 shrink-0 place-items-center rounded-full disabled:opacity-40 md:h-7 md:w-7'
 const TALK = 'relative min-h-11 shrink-0 overflow-hidden rounded border border-border px-2 text-muted-foreground hover:text-foreground disabled:opacity-40 md:min-h-8'
 const HOLD_SECONDS = TALK_HOTKEY_HOLD_MS / 1000
+const UNAVAILABLE = 'Talk indisponible ici : il faut Claude dans ce terminal et le micro actif.'
 
 /** The Talk key named for tooltips, or '' when this button does not answer it. */
 function useTalkKeyLabel(hotkey: boolean | undefined) {
@@ -88,14 +89,17 @@ export function TalkButton({
     setPhase('holding')
     onHold(true)
   }
-  const arming = useTalkKey({
+  const armedAt = useTalkKey({
     active: Boolean(hotkey),
     dictating: phase === 'holding',
     onHeld: () => {
-      if (!disabled && phase === 'idle') start()
+      if (phase !== 'idle') return
+      if (disabled) setNotice(UNAVAILABLE)
+      else start()
     },
     onPress: () => setPhase('idle'),
   })
+  const countdown = useHoldCountdown(armedAt)
   const latest = useRef({ onHold, readScreen, onSubmit, voice })
   useEffect(() => {
     latest.current = { onHold, readScreen, onSubmit, voice }
@@ -170,8 +174,8 @@ export function TalkButton({
           className={TALK}
           onClick={start}
         >
-          {arming && <ArmingFill />}
-          <span className="relative">Talk</span>
+          {armedAt !== null && <ArmingFill />}
+          <span className="relative">{armedAt !== null ? `${countdown} s…` : 'Talk'}</span>
         </button>
         {notice && (
           <span role="alert" title={notice} className="ml-2 min-w-0 truncate font-normal text-destructive">
@@ -312,14 +316,17 @@ export function RelayTalkButton({
       (error: Error) => finish(error.message),
     )
   }
-  const arming = useTalkKey({
+  const armedAt = useTalkKey({
     active: Boolean(hotkey),
     dictating: phase === 'starting' || phase === 'holding',
     onHeld: () => {
-      if (!disabled && phaseRef.current === 'idle') start()
+      if (phaseRef.current !== 'idle') return
+      if (disabled) setNotice(UNAVAILABLE)
+      else start()
     },
     onPress: () => stop(false),
   })
+  const countdown = useHoldCountdown(armedAt)
   const hint = `Claude transcrit ta voix, puis le texte est tapé dans ${agentName}`
 
   if (phase === 'idle') {
@@ -333,8 +340,8 @@ export function RelayTalkButton({
           className={TALK}
           onClick={start}
         >
-          {arming && <ArmingFill />}
-          <span className="relative">Talk</span>
+          {armedAt !== null && <ArmingFill />}
+          <span className="relative">{armedAt !== null ? `${countdown} s…` : 'Talk'}</span>
         </button>
         {notice && (
           <span role="alert" title={notice} className="ml-2 min-w-0 truncate font-normal text-destructive">
