@@ -1,7 +1,8 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TalkButton } from '../components/TalkButton'
-import { DEFAULT_TALK_HOTKEY, TALK_HOTKEY_HOLD_MS, setTalkHotkey } from './talkHotkey'
+import { TalkKeyPicker } from '../components/TalkKeyPicker'
+import { DEFAULT_TALK_HOTKEY, TALK_HOTKEY_HOLD_MS, isTalkKeyCode, setTalkHotkey, talkHotkeyMatches } from './talkHotkey'
 
 function renderTalk(props: { disabled?: boolean; hotkey?: boolean } = {}) {
   const onHold = vi.fn()
@@ -35,14 +36,24 @@ describe('Talk key', () => {
     setTalkHotkey(DEFAULT_TALK_HOTKEY)
   })
 
-  it('starts dictation after the key is held for the hold time', () => {
+  it.each(['AltRight', 'AltLeft'])('starts dictation after %s is held for the hold time', code => {
     const onHold = renderTalk()
-    down('AltRight')
+    down(code)
     wait(TALK_HOTKEY_HOLD_MS - 1)
     expect(onHold).not.toHaveBeenCalled()
     wait(1)
     expect(onHold).toHaveBeenCalledWith(true)
     expect(dictating()).toBe(true)
+  })
+
+  it('counts the seconds down on the Talk button while the key is held', () => {
+    renderTalk()
+    down('AltRight')
+    expect(screen.getByRole('button', { name: /Talk/ }).textContent).toBe('3 s…')
+    wait(1100)
+    expect(screen.getByRole('button', { name: /Talk/ }).textContent).toBe('2 s…')
+    up('AltRight')
+    expect(screen.getByRole('button', { name: /Talk/ }).textContent).toBe('Talk')
   })
 
   it('does nothing when the key is released early', () => {
@@ -63,6 +74,14 @@ describe('Talk key', () => {
     expect(onHold).not.toHaveBeenCalled()
   })
 
+  it('lets Option-click select text: a click cancels the hold', () => {
+    const onHold = renderTalk()
+    down('AltLeft')
+    fireEvent.pointerDown(document.body)
+    wait(TALK_HOTKEY_HOLD_MS)
+    expect(onHold).not.toHaveBeenCalled()
+  })
+
   it('stops dictation and keeps the text when the key is pressed again', () => {
     const onHold = renderTalk()
     down('AltRight')
@@ -75,11 +94,12 @@ describe('Talk key', () => {
     expect(screen.getByRole('button', { name: /Talk/ })).toBeTruthy()
   })
 
-  it('ignores the key while Talk is unavailable', () => {
+  it('says why when Talk is unavailable', () => {
     const onHold = renderTalk({ disabled: true })
     down('AltRight')
     wait(TALK_HOTKEY_HOLD_MS)
     expect(onHold).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert').textContent).toMatch(/Talk indisponible ici/)
   })
 
   it('ignores the key on a Talk button that does not own it', () => {
@@ -87,6 +107,18 @@ describe('Talk key', () => {
     down('AltRight')
     wait(TALK_HOTKEY_HOLD_MS)
     expect(onHold).not.toHaveBeenCalled()
+  })
+
+  it('answers only the chosen key', () => {
+    setTalkHotkey('MetaRight')
+    const onHold = renderTalk()
+    down('AltRight')
+    wait(TALK_HOTKEY_HOLD_MS)
+    expect(onHold).not.toHaveBeenCalled()
+    up('AltRight')
+    down('MetaRight')
+    wait(TALK_HOTKEY_HOLD_MS)
+    expect(onHold).toHaveBeenCalledWith(true)
   })
 
   it('can be turned off', () => {
@@ -105,5 +137,34 @@ describe('Talk key', () => {
     expect(event.defaultPrevented).toBe(true)
     wait(TALK_HOTKEY_HOLD_MS)
     expect(onHold).toHaveBeenCalledWith(true)
+  })
+})
+
+describe('Talk key choice', () => {
+  afterEach(() => {
+    cleanup()
+    setTalkHotkey(DEFAULT_TALK_HOTKEY)
+  })
+
+  it('accepts only keys that type nothing', () => {
+    expect(isTalkKeyCode('AltRight')).toBe(true)
+    expect(isTalkKeyCode('MetaLeft')).toBe(true)
+    expect(isTalkKeyCode('F5')).toBe(true)
+    expect(isTalkKeyCode('KeyA')).toBe(false)
+    expect(isTalkKeyCode('Space')).toBe(false)
+    expect(isTalkKeyCode('Escape')).toBe(false)
+    expect(talkHotkeyMatches('Option', 'AltLeft')).toBe(true)
+    expect(talkHotkeyMatches('Option', 'MetaLeft')).toBe(false)
+  })
+
+  it('records the key pressed after "Choisir une touche"', () => {
+    render(<TalkKeyPicker />)
+    expect(screen.getByTestId('talk-key').textContent).toBe('⌥ Option (gauche ou droite)')
+    fireEvent.click(screen.getByRole('button', { name: 'Choisir une touche' }))
+    down('KeyA')
+    expect(screen.getByRole('status').textContent).toMatch(/sert à taper du texte/)
+    down('MetaRight')
+    expect(screen.getByTestId('talk-key').textContent).toBe('⌘ Commande droite')
+    expect(screen.getByRole('status').textContent).toBe('Touche reçue : ⌘ Commande droite.')
   })
 })
