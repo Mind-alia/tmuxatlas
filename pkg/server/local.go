@@ -13,7 +13,7 @@ import (
 
 const localToolEventBodyLimit = 4096
 
-func newLocalRouter(tracker *toolevents.Tracker, peerMgr *peer.Manager, pairing *identity.PairingManager, passkeys *auth.PasskeyManager, health ...RuntimeHealth) http.Handler {
+func newLocalRouter(tracker *toolevents.Tracker, peerMgr *peer.Manager, pairing *identity.PairingManager, passkeys *auth.PasskeyManager, health ...RuntimeHealth) *http.ServeMux {
 	mux := http.NewServeMux()
 	if len(health) > 0 {
 		mux.Handle("/health", healthHandler(health[0]))

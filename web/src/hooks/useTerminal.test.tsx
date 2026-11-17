@@ -388,6 +388,33 @@ describe('useTerminal lifecycle and guarded input', () => {
     expect(addon.dispose).toHaveBeenCalledTimes(1)
   })
 
+  it('holds keystrokes back while the pane reads a password without echo', async () => {
+    const { result } = renderHook(() => useTerminal('work', 'host-a'))
+    await connectTerminal(result, terminalContainer())
+    act(() => {
+      FakeWebSocket.sockets[0].open()
+    })
+    const socket = FakeWebSocket.sockets[0]
+    const typed = (data: string) => (xtermState.terminals[0] as any).dataListeners.forEach((listener: any) => listener(data))
+    const binaryFrames = () => socket.send.mock.calls.filter(([frame]) => typeof frame !== 'string').length
+
+    act(() => socket.message(JSON.stringify({ type: 'echo', on: false })))
+    expect(result.current.passwordPrompt).toBe(true)
+    act(() => typed('x'))
+    expect(result.current.sendInput('y')).toBe(false)
+    expect(binaryFrames()).toBe(0)
+
+    act(() => result.current.allowPasswordInput())
+    expect(result.current.passwordPrompt).toBe(false)
+    act(() => typed('z'))
+    expect(binaryFrames()).toBe(1)
+
+    act(() => socket.message(JSON.stringify({ type: 'echo', on: true })))
+    act(() => socket.message(JSON.stringify({ type: 'echo', on: false })))
+    act(() => typed('w'))
+    expect(binaryFrames()).toBe(1) // the override ended with the prompt
+  })
+
   it('sends one exact command frame and bypasses modifiers', async () => {
     const input = new MobileTerminalInput()
     input.cycle('ctrl')

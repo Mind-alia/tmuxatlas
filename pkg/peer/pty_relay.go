@@ -97,7 +97,7 @@ func (relay *PTYRelay) CompletePending(streamID, hostID string, generation uint6
 	relay.mu.Lock()
 	owner := relay.pending[streamID]
 	if owner == nil || owner.HostID != hostID || owner.Generation != generation ||
-		owner.AttachToken != token || owner.Target.Session != session {
+		!tokenEqual(owner.AttachToken, token) || owner.Target.Session != session {
 		relay.mu.Unlock()
 		return false
 	}
@@ -226,6 +226,13 @@ func (owner *PTYOwner) Bridge() {
 				}
 				if frame.Type == "image-result" {
 					result, _ := json.Marshal(map[string]string{"type": "image-result", "error": frame.Reason})
+					if err := browserWrite(websocket.TextMessage, result); err != nil {
+						return
+					}
+				}
+				if frame.Type == "echo" {
+					// The terminal reads input without echo: a password prompt.
+					result, _ := json.Marshal(map[string]any{"type": "echo", "on": frame.Reason == "on"})
 					if err := browserWrite(websocket.TextMessage, result); err != nil {
 						return
 					}

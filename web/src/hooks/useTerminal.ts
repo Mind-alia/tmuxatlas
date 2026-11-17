@@ -3,7 +3,7 @@ import { Terminal, type IDisposable } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebLinksAddon } from '@xterm/addon-web-links'
-import { ClipboardAddon, type ClipboardSelectionType, type IClipboardProvider } from '@xterm/addon-clipboard'
+import { ClipboardAddon } from '@xterm/addon-clipboard'
 import type { ISearchOptions, SearchAddon } from '@xterm/addon-search'
 import { usePreferences } from './usePreferences'
 import { getXtermTheme } from '../theme'
@@ -21,6 +21,7 @@ import {
 import { ensureTerminalFont } from '../fonts'
 import '@xterm/xterm/css/xterm.css'
 import { micTabId } from '../lib/micTab'
+import { osc52ClipboardProvider } from '../lib/terminalClipboard'
 
 export type PtyConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
 
@@ -76,6 +77,11 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
   const termRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  // The pane reads a line without echo (a password prompt): keystrokes are
+  // held back unless the human explicitly allows them.
+  const passwordPromptRef = useRef(false)
+  const passwordOverrideRef = useRef(false)
+  const [passwordPrompt, setPasswordPrompt] = useState(false)
   const containerRef = useRef<HTMLElement | null>(null)
   const terminalDisposablesRef = useRef<IDisposable[]>([])
   const domCleanupRef = useRef<Array<() => void>>([])
@@ -213,6 +219,9 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
 
   const sendRawInput = useCallback(
     (data: Uint8Array, capture?: TerminalConnectionCapture): boolean => {
+      if (passwordPromptRef.current && !passwordOverrideRef.current) {
+        throw new TerminalInputError('password-prompt', 'Saisie bloquée : le terminal attend un mot de passe.')
+      }
       const expected = capture ?? captureConnection()
       if (!expected) {
         throw new TerminalInputError('not-connected', 'Le terminal est déconnecté.')
@@ -375,22 +384,12 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
         macOptionClickForcesSelection: true,
       })
       const fitAddon = new FitAddon()
-      const clipboardProvider: IClipboardProvider = {
-        readText(selection: ClipboardSelectionType): Promise<string> {
-          if (selection !== 'c') return Promise.resolve('')
-          return navigator.clipboard?.readText?.() ?? Promise.resolve('')
-        },
-        writeText(selection: ClipboardSelectionType, text: string): Promise<void> {
-          if (selection !== 'c') return Promise.resolve()
-          return writeClipboard(text, true)
-        },
-      }
 
       term.loadAddon(new Unicode11Addon())
       term.unicode.activeVersion = '11'
       term.loadAddon(fitAddon)
       term.loadAddon(new WebLinksAddon())
-      term.loadAddon(new ClipboardAddon(undefined, clipboardProvider))
+      term.loadAddon(new ClipboardAddon(undefined, osc52ClipboardProvider))
       termRef.current = term
       fitAddonRef.current = fitAddon
       term.open(container)
@@ -485,6 +484,7 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
         term.onData(data => {
           const socket = wsRef.current
           if (!socket || socket.readyState !== WebSocket.OPEN) return
+          if (passwordPromptRef.current && !passwordOverrideRef.current) return
           const bytes = mobileInput ? mobileInput.encode(data) : new TextEncoder().encode(data)
           try {
             socket.send(bytes)
@@ -592,7 +592,7 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
           if (!isCurrent()) return
           if (typeof event.data === 'string') {
             try {
-              const message = JSON.parse(event.data) as { type?: string; error?: string; action?: string; text?: string }
+              const message = JSON.parse(event.data) as { type?: string; error?: string; action?: string; text?: string; on?: boolean }
               if (message.type === 'dictation' && message.action === 'partial') {
                 setDictationText(message.text || '')
                 return
@@ -602,6 +602,13 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
                 dictationRef.current.delete(message.action || '')
                 if (message.error) pending?.reject(new Error(message.error))
                 else pending?.resolve()
+                return
+              }
+              if (message.type === 'echo') {
+                const prompt = message.on === false
+                passwordPromptRef.current = prompt
+                if (!prompt) passwordOverrideRef.current = false
+                setPasswordPrompt(prompt)
                 return
               }
               if (message.type === 'image-result') {
@@ -628,6 +635,9 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
           wsRef.current = null
           for (const pending of dictationRef.current.values()) pending.reject(new Error('Le terminal est déconnecté.'))
           dictationRef.current.clear()
+          passwordPromptRef.current = false
+          passwordOverrideRef.current = false
+          setPasswordPrompt(false)
           if (imageUploadRef.current) {
             imageUploadRef.current = false
             setImagePasteStatus('Échec du collage de l’image : Terminal déconnecté.')
@@ -919,8 +929,17 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
     setSearchState(state => ({ ...state, resultIndex: -1, resultCount: 0 }))
   }, [])
 
+  /** Lets keystrokes through until the prompt ends: a deliberate human choice. */
+  const allowPasswordInput = useCallback(() => {
+    passwordOverrideRef.current = true
+    setPasswordPrompt(false)
+    termRef.current?.focus()
+  }, [])
+
   return {
     termRef,
+    passwordPrompt,
+    allowPasswordInput,
     connect,
     disconnect,
     reconnect,

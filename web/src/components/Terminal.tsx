@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, CornerDownLeft, Keyboard, KeyboardOff, MessageSquareText, Mic } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, CornerDownLeft, Keyboard, KeyboardOff, MessageSquareText, Mic, ShieldAlert } from 'lucide-react'
 import { useMediaQuery, COMPACT_LAYOUT_QUERY } from '../lib/useMediaQuery'
 import { useHostLabel } from '../lib/hostLabel'
 import type { Window as SessionWindow } from '../hooks/useSessions'
@@ -24,6 +24,9 @@ import { TerminalPasteConfirmation } from './TerminalPasteConfirmation'
 import { TerminalSearchBar } from './TerminalSearchBar'
 import { MobileInputComposer } from './MobileInputComposer'
 import { hideSoftKeyboard, useSoftKeyboardOpen } from '../lib/useSoftKeyboard'
+import { SudoPanel } from './SudoPanel'
+import { useHostTrust } from '../hooks/useHostTrust'
+import { useAccountRole } from '../lib/accountContext'
 
 export interface TerminalCommandActions {
   reconnect: () => void
@@ -190,6 +193,10 @@ export function Terminal({
   const [contextMenu, setContextMenu] = useState<TerminalMenuPosition | null>(null)
   const [pendingPaste, setPendingPaste] = useState<PendingTerminalPaste | null>(null)
   const [pasteError, setPasteError] = useState('')
+  // Outside the accounts mode the signed-in owner is the administrator; the
+  // server still decides and the panel hides itself when refused.
+  const sudoAdmin = useAccountRole() !== 'user'
+  const trustedHost = useHostTrust(hostId)
   const {
     connect,
     disconnect,
@@ -214,6 +221,8 @@ export function Terminal({
     copySelection,
     pasteClipboard,
     imagePasteStatus,
+    passwordPrompt,
+    allowPasswordInput,
     commitClipboardPaste,
     selectAll,
     searchState,
@@ -690,6 +699,17 @@ export function Terminal({
           onMore={showMenuAtButton}
         />
       )}
+      {!trustedHost && (
+        <p
+          role="note"
+          data-testid="untrusted-host-banner"
+          className="flex shrink-0 items-center gap-2 border-b border-destructive/40 bg-destructive/10 px-3 py-1 text-xs font-medium text-destructive"
+        >
+          <ShieldAlert size={14} aria-hidden="true" />
+          Hôte non fiable : ne tapez jamais de mot de passe ici
+        </p>
+      )}
+      {!embedded && <SudoPanel hostId={hostId} sessionName={sessionName} enabled={sudoAdmin} />}
       {showTalk &&
         talkSlot &&
         createPortal(
@@ -768,6 +788,24 @@ export function Terminal({
                 </button>
               )}
             </div>
+          </div>
+        )}
+        {passwordPrompt && (
+          <div
+            role="alert"
+            className="absolute inset-x-2 top-2 z-20 flex flex-wrap items-center gap-2 rounded border border-warning bg-card/95 px-3 py-2 text-sm"
+          >
+            <span>
+              Ce terminal attend un mot de passe sans écho : les frappes sont bloquées. Un agent peut imiter une invite
+              sudo ; pour un sudo demandé par l’agent, utilise le panneau Sudo.
+            </span>
+            <button
+              type="button"
+              onClick={allowPasswordInput}
+              className="min-h-9 rounded border border-warning px-3 text-warning"
+            >
+              Taper quand même
+            </button>
           </div>
         )}
         {imagePasteStatus && (

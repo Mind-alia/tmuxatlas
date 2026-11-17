@@ -35,6 +35,17 @@ type Handler struct {
 	ptyRelay         *PTYRelay
 	publicURL        string
 	handshakeTimeout time.Duration
+	sudo             SudoHub
+}
+
+// SudoHub receives the sudo messages of authenticated peers.
+type SudoHub interface {
+	HandlePeerSudo(hostID string, connection *PeerConnection, message *Message)
+}
+
+// SetSudoHub enables sudo messages. Call it before serving peers.
+func (h *Handler) SetSudoHub(hub SudoHub) {
+	h.sudo = hub
 }
 
 // NewHandler creates a new peer connection handler
@@ -294,6 +305,11 @@ func (h *Handler) handlePeerMessage(peerID string, connection *PeerConnection, m
 			return
 		}
 		h.manager.UpdatePeerStats(peerID, payload.Stats)
+
+	case MsgSudoCreate, MsgSudoCancel, MsgSudoWatch, MsgSudoResult, MsgSudoTerminalInfo:
+		if h.sudo != nil {
+			h.sudo.HandlePeerSudo(peerID, connection, msg)
+		}
 
 	default:
 		log.WithField("type", msg.Type).Debug("unknown message type from peer")
