@@ -34,7 +34,7 @@ func (c *Client) EnableSudoTerminal(runner *sudoterm.Runner, audit *sudoterm.Aud
 }
 
 func (c *Client) helloCapabilities() []string {
-	capabilities := append([]string(nil), RuntimeCapabilities...)
+	capabilities := agentCapabilities(c.Voice() != nil)
 	capabilities = append(capabilities, CapabilitySudoRequests)
 	if c.sudoTerminal != nil {
 		capabilities = append(capabilities, CapabilitySudoTerminal)

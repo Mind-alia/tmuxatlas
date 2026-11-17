@@ -3,6 +3,7 @@ package peer
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -191,10 +192,11 @@ func TestPTYBridgeKeepsStreamOnTerminalOnlyRequests(t *testing.T) {
 		browserClient, browserServer := websocketPair(t)
 		agentClient, agentServer := websocketPair(t)
 		relay := NewPTYRelay()
-		capabilities := RuntimeCapabilities
+		// Without voice, voice-hold is dropped; voice is covered below.
+		capabilities := agentCapabilities(false)
 		if !withClaim {
 			capabilities = nil
-			for _, capability := range RuntimeCapabilities {
+			for _, capability := range agentCapabilities(false) {
 				if capability != CapabilityPTYClaim {
 					capabilities = append(capabilities, capability)
 				}
@@ -252,5 +254,69 @@ func TestPTYBridgeKeepsStreamOnTerminalOnlyRequests(t *testing.T) {
 			t.Fatalf("resize=%#v err=%v", resize, err)
 		}
 		owner.Teardown("test-end")
+	}
+}
+
+func TestPTYBridgeForwardsVoiceHoldOnlyToAgentsWithVoice(t *testing.T) {
+	for _, withVoice := range []bool{true, false} {
+		t.Run("voice="+strconv.FormatBool(withVoice), func(t *testing.T) {
+			browserClient, browserServer := websocketPair(t)
+			agentClient, agentServer := websocketPair(t)
+			relay := NewPTYRelay()
+			connection := newPeerConnection(t.Context(), "host", 2, agentCapabilities(withVoice), "instance", 1,
+				func(*Message) error { return nil }, nil)
+			owner, err := relay.RegisterPending(connection, SessionTarget{HostID: "host", Session: "s"}, browserServer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			relay.CompletePending(owner.StreamID, "host", 2, owner.AttachToken, "s", agentServer)
+			go owner.Bridge()
+
+			if err := browserClient.WriteMessage(websocket.TextMessage, []byte(`{"type":"voice-hold","on":true}`)); err != nil {
+				t.Fatal(err)
+			}
+			// The terminal must stay open either way: a resize still reaches the agent.
+			if err := browserClient.WriteMessage(websocket.TextMessage, []byte(`{"type":"resize","cols":90,"rows":30}`)); err != nil {
+				t.Fatal(err)
+			}
+			agentClient.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_, data, err := agentClient.ReadMessage()
+			if err != nil {
+				t.Fatal(err)
+			}
+			frame, err := DecodePTYControlFrame(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withVoice {
+				if frame.Type != "voice-hold" || !frame.On {
+					t.Fatalf("first frame = %#v", frame)
+				}
+				_, data, err = agentClient.ReadMessage()
+				if err != nil {
+					t.Fatal(err)
+				}
+				frame, _ = DecodePTYControlFrame(data)
+			}
+			if frame.Type != "resize" || frame.Cols != 90 {
+				t.Fatalf("resize after voice-hold = %#v", frame)
+			}
+		})
+	}
+}
+
+func TestVoiceHoldControlFrameValidation(t *testing.T) {
+	valid := PTYControlFrame{Version: PTYFrameVersion, Type: "voice-hold", Sequence: 1, On: true}
+	if err := valid.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, frame := range map[string]PTYControlFrame{
+		"data":         {Version: PTYFrameVersion, Type: "voice-hold", Sequence: 1, Data: "x"},
+		"size":         {Version: PTYFrameVersion, Type: "voice-hold", Sequence: 1, Cols: 1, Rows: 1},
+		"on in resize": {Version: PTYFrameVersion, Type: "resize", Sequence: 1, Cols: 1, Rows: 1, On: true},
+	} {
+		if frame.Validate() == nil {
+			t.Errorf("%s: invalid frame accepted", name)
+		}
 	}
 }

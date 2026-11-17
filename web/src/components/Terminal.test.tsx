@@ -50,10 +50,10 @@ const mic = {
   error: '',
   toggle: vi.fn(),
 }
-const useMicStream = vi.fn((_allowed: boolean) => mic)
+const useMicStream = vi.fn((_allowed: boolean, _alwaysOn?: boolean, _hostId?: string) => mic)
 
 vi.mock('../hooks/useMicStream', () => ({
-  useMicStream: (allowed: boolean) => useMicStream(allowed),
+  useMicStream: (allowed: boolean, alwaysOn?: boolean, hostId?: string) => useMicStream(allowed, alwaysOn, hostId),
 }))
 
 vi.mock('../hooks/useTerminal', () => ({
@@ -97,7 +97,7 @@ describe('Terminal workspace controls', () => {
 
   it('does not focus or enable the microphone in an embedded tile', () => {
     render(<Terminal sessionName="one" hostId="host-a" hostLocal embedded />)
-    expect(useMicStream).toHaveBeenCalledWith(false)
+    expect(useMicStream).toHaveBeenCalledWith(false, false, '')
     expect(terminal.focus).not.toHaveBeenCalled()
     expect(screen.queryByRole('toolbar', { name: 'Touches du terminal' })).not.toBeInTheDocument()
     fireEvent.click(document.querySelector('[data-terminal-surface]')!)
@@ -376,13 +376,28 @@ describe('Terminal microphone', () => {
 
   it('hides the button when voice is unavailable', () => {
     render(<Terminal sessionName="s" hostId="h" />)
-    expect(useMicStream).toHaveBeenCalledWith(false)
-    expect(screen.queryByRole('button', { name: /microphone/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /micro/i })).toBeNull()
   })
 
-  it('only allows the microphone for sessions on the local host', () => {
-    render(<Terminal sessionName="s" hostId="h" hostLocal />)
-    expect(useMicStream).toHaveBeenCalledWith(true)
+  it('streams a local session to this server, and leaves it to the shared microphone', () => {
+    const view = render(<Terminal sessionName="s" hostId="h" hostLocal />)
+    expect(useMicStream).toHaveBeenLastCalledWith(true, false, '')
+    view.rerender(<Terminal sessionName="s" hostId="h" hostLocal sharedMic={{ available: true, state: 'on' }} />)
+    expect(useMicStream).toHaveBeenLastCalledWith(false, false, '')
+  })
+
+  it('streams a session of another host or account to that host, even beside the shared microphone', () => {
+    mic.available = true
+    mic.state = 'on'
+    render(<Terminal sessionName="s" hostId="agents-host" sharedMic={{ available: true, state: 'on' }} />)
+    expect(useMicStream).toHaveBeenLastCalledWith(true, false, 'agents-host')
+    fireEvent.click(screen.getByRole('button', { name: 'Désactiver le micro' }))
+    expect(mic.toggle).toHaveBeenCalledTimes(1)
+  })
+
+  it('never streams from a Wall tile of another host', () => {
+    render(<Terminal embedded sessionName="s" hostId="agents-host" />)
+    expect(useMicStream).toHaveBeenLastCalledWith(false, false, 'agents-host')
   })
 
   it('turns the microphone off and shows it is live, including in Zen Mode', () => {
@@ -573,7 +588,7 @@ describe('Claude talk button', () => {
           onTalkHold={onTalkHold}
         />,
       )
-      expect(useMicStream).toHaveBeenLastCalledWith(false)
+      expect(useMicStream).toHaveBeenLastCalledWith(false, false, '')
       expect(slot).toContainElement(wallTalk())
       fireEvent.click(wallTalk())
       expect(terminal.setVoiceHold).toHaveBeenLastCalledWith(true)

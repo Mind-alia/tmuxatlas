@@ -299,9 +299,41 @@ func (m *Mic) HandleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	m.serve(r.Context(), conn, id)
+}
+
+// ServeConn plays the frames of a microphone that the hub relays to this agent
+// from a browser tab, on a connection the agent opened. Setup errors close the
+// connection with their reason, which the hub passes on to the browser.
+func (m *Mic) ServeConn(conn *websocket.Conn, id string) {
+	defer conn.Close()
+	if !validStreamID(id) {
+		closeWith(conn, websocket.ClosePolicyViolation, "invalid microphone id")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*commandTimeout)
+	err := m.Setup(ctx)
+	cancel()
+	if err != nil {
+		logrus.WithError(err).Warn("voice setup failed")
+		closeWith(conn, websocket.CloseInternalServerErr, truncateReason(err.Error()))
+		return
+	}
+	m.serve(context.Background(), conn, id)
+}
+
+// truncateReason keeps a close reason within the 123 bytes a close frame allows.
+func truncateReason(reason string) string {
+	if len(reason) <= 120 {
+		return reason
+	}
+	return reason[:117] + "..."
+}
+
+func (m *Mic) serve(ctx context.Context, conn *websocket.Conn, id string) {
 	conn.SetReadLimit(maxFrameBytes)
 
-	sink, removeSink, err := m.createSink(r.Context())
+	sink, removeSink, err := m.createSink(ctx)
 	if err != nil {
 		logrus.WithError(err).Error("failed to create the tab's virtual microphone")
 		closeWith(conn, websocket.CloseInternalServerErr, "microphone setup failed")

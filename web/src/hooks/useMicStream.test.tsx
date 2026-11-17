@@ -62,4 +62,25 @@ describe('useMicStream', () => {
     await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(1))
     expect(localStorage.getItem('tmuxatlas.mic.off')).toBeNull()
   })
+
+  it('asks this server for voice without a host, and the session host otherwise', async () => {
+    renderHook(() => useMicStream(false))
+    renderHook(() => useMicStream(true))
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/voice'))
+    renderHook(() => useMicStream(true, false, 'agents host'))
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/voice?host=agents%20host'))
+  })
+
+  it('stops the stream when the session moves to another host', async () => {
+    getUserMedia.mockReturnValue(new Promise(() => {}))
+    const hook = renderHook(({ host }) => useMicStream(true, false, host), { initialProps: { host: 'host-a' } })
+    await waitFor(() => expect(hook.result.current.state).toBe('starting'))
+    apiFetch.mockResolvedValue({ ok: true, json: async () => ({ enabled: false, ready: false }) })
+    hook.rerender({ host: 'host-b' })
+    await waitFor(() => expect(hook.result.current.state).toBe('off'))
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/voice?host=host-b'))
+    expect(hook.result.current.available).toBe(false)
+    // The previous host's answer must not start a stream to the new host.
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+  })
 })
