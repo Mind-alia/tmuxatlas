@@ -1,10 +1,66 @@
 # Ops: containers, backups and notifications
 
-The **Conteneurs** tab shows the Docker containers of the production account
-(state, health, restarts, uptime). Only admins can see it: `GET /api/ops` is
-refused to `user` accounts by the server, not just hidden in the interface.
+The **Conteneurs** tab has two sections, both admin-only (refused to `user`
+accounts by the server, not just hidden in the interface):
 
-## Who does what
+- **Conteneurs**: a live view modelled on the Containers view of Docker
+  Desktop, read from the Docker Engine API (`pkg/dockerui`, see
+  [Live view](#live-view-pkgdockerui) below): state, health, ports, CPU and
+  memory, logs, inspect, start/stop/restart/delete and a shell in a container.
+- **Sauvegardes et alertes**: the alerts, the backups panel and the phone
+  notifications, fed by the collector described next (`GET /api/ops`).
+
+The phone alerts never depend on the live view: they keep reading the
+collector's snapshot, so they work even with `TMUXATLAS_DOCKER=off`.
+
+## Live view (`pkg/dockerui`)
+
+The hub talks to the Engine API over its unix socket with `net/http`; it runs
+no `docker` command, except the shell described below. Every call has a
+timeout and every response is read with a size bound.
+
+| Route (under `/api`) | Docker call | Notes |
+|---|---|---|
+| `GET /docker/containers` | `/containers/json?all=1`, `/info`, inspect, `/stats` | inspect cached 15 s (or until the state changes), stats refreshed at most every 3 s and shared by every poll |
+| `GET /docker/containers/{id}/logs?tail=N&since=T` | `/logs` | stdout and stderr with timestamps, demultiplexed without TTY; at most 2000 lines and 2 MiB |
+| `GET /docker/containers/{id}/inspect` | `/containers/{id}/json` | every environment value replaced by `••••`, plus values of secret-looking keys, flags and URL passwords |
+| `POST /docker/containers/{id}/start`, `stop`, `restart` | same | stop waits for the container's grace period |
+| `DELETE /docker/containers/{id}` | `DELETE /containers/{id}` | refused (409) while running; never `force` nor `v` |
+| `POST /docker/containers/{id}/terminal` | — | opens a shell in a tmux session, see below |
+
+- `{id}` must be 12 to 64 lowercase hex characters and is resolved against a
+  fresh listing; only the full ID returned by Docker is used afterwards.
+- The changes carry the same checks as every other change: session, `Origin`
+  and CSRF token (only the `Origin` check without authentication, like the
+  file explorer). Each one is logged with the account, the container and the
+  result.
+- **Terminal.** The hub creates (or reuses) the tmux session
+  `docker-<container name>` with the same `new` action as the *Nouvelle
+  session* dialog, then replaces its shell with
+  `docker --host unix://<socket> exec -it <full id> sh -c '<probe>'`, where
+  the probe starts `bash` when the image has it, `sh` otherwise. tmux runs
+  these arguments with `execvp`: no shell parses them on the host, and they
+  contain nothing from the request. Leaving the shell closes the session; a
+  failed start keeps its message on screen (`remain-on-exit failed`). A
+  session of the same name not opened for this container is never typed
+  into: the next one is `docker-<name>-2`.
+- Polling stops while the page is hidden.
+
+| Variable | Default | Role |
+|---|---|---|
+| `TMUXATLAS_DOCKER` | on | `off` hides the live view (the API answers "désactivée") |
+| `TMUXATLAS_DOCKER_SOCKET` | `/var/run/docker.sock` | Engine API socket, absolute path (`unix://` accepted) |
+
+⚠️ Access to the Docker socket is root on the machine, and the live view
+gives it to every TmuxAtlas admin. On this server the hub account is already
+in the `docker` group, so its admins could already run `docker` from a
+terminal; the view does not widen that, but anyone given an admin account
+gets it too. Only the environment, the obvious secret names and URL
+passwords are masked in *Inspecter*: a secret passed another way (a plain
+command-line argument, for instance) still shows, and the logs are shown as
+the container writes them.
+
+## Who does what (collector and alerts)
 
 ```
  production account (owns Docker)            account running the hub
@@ -15,8 +71,9 @@ refused to `user` accounts by the server, not just hidden in the interface.
                                    files 0640)
 ```
 
-- The hub **never** talks to Docker and never runs anything in the production
-  account. Ideally the account that runs the hub is not in the `docker` group.
+- The alerting part of the hub never talks to Docker and never runs anything
+  in the production account (the live view above does talk to Docker, when
+  the hub's account can open the socket).
 - `docker-snapshot.sh` is the only process that touches the Docker socket. It
   runs a fixed command and reads nothing from TmuxAtlas.
 - The hub only opens the status files read-only. It refuses symlinks,
@@ -59,8 +116,10 @@ groups. The `agents` account only runs a `tmuxatlas agent` peer. So:
 - the hub can read the status directory without any group (step 1 below is
   optional: `install -d -m 0750 /srv/tf-ops` as transcriptflow is enough, or
   use `~/.local/state/tf-ops`);
-- the ops code still never calls Docker, so moving the hub later to an account
-  without Docker (a dedicated `tfmonitor`, for instance) only needs step 1.
+- the alerts never call Docker, so moving the hub later to an account
+  without Docker (a dedicated `tfmonitor`, for instance) only needs step 1;
+  the live view then says that Docker is unreachable, or can be turned off
+  with `TMUXATLAS_DOCKER=off`.
 
 Running the hub in the production account means that a flaw in the hub gives
 Docker, hence root. Moving it is recommended but out of scope here.
@@ -158,7 +217,7 @@ or a new `started_at` each count as a restart.
 
 ## Backups
 
-The **Sauvegardes** panel (same page) shows the date of the last full
+The **Sauvegardes** panel (section *Sauvegardes et alertes* of the same page) shows the date of the last full
 backup, whether the copy on Cloudflare R2 succeeded and was verified, when the
 next one is expected, and the retention: **3 days locally, 14 days on R2**.
 

@@ -372,6 +372,7 @@ func Run(ctx context.Context, opts *Options) error {
 		fileExplorer = files.New()
 	}
 	publicRouter.Use(fileBodyLimit(fileExplorer))
+	dockerUI := newDockerUI(opts, actionRouter)
 	accountPolicy := newAccountPolicy(opts)
 	if actionRouter != nil {
 		accountPolicy.router = actionRouter
@@ -708,6 +709,13 @@ func Run(ctx context.Context, opts *Options) error {
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]any{"channels": alertEngine.Notifiers(), "errors": errs})
 			})
+			// Containers view — live Docker Engine API, admin only (pkg/dockerui).
+			// Like the file explorer, its changes keep the Origin check without auth.
+			dockerMutations := mutations
+			if opts.AccountsAuth == nil && !opts.AuthEnabled {
+				dockerMutations = r.With(originMiddleware)
+			}
+			dockerUI.Register(r, dockerMutations)
 
 			// Stats endpoint — aggregate overview data
 			r.Get("/stats", func(w http.ResponseWriter, r *http.Request) {
