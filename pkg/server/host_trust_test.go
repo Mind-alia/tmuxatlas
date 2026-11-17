@@ -21,10 +21,7 @@ func TestHostTrustListsOnlyHubAndPinnedSudoPeers(t *testing.T) {
 	store := accounts.OpenStore(filepath.Join(t.TempDir(), "users.json"))
 	hash, _ := bcrypt.GenerateFromPassword([]byte("mot de passe"), bcrypt.MinCost)
 	admin, _ := store.Create("admin", string(hash), "admin")
-	alice, _ := store.Create("alice", string(hash), "guest")
-	if _, err := store.SetAccess(alice.ID, []string{"hote-alice", "sudo-admin"}, "", nil); err != nil {
-		t.Fatal(err)
-	}
+	alice, _ := store.Create("alice", string(hash), "user")
 	local, err := identity.Generate("hub")
 	if err != nil {
 		t.Fatal(err)
@@ -57,8 +54,9 @@ func TestHostTrustListsOnlyHubAndPinnedSudoPeers(t *testing.T) {
 	if got, want := get(admin), (hostTrust{Hub: peers.LocalID(), Local: true, Trusted: []string{peers.LocalID(), "sudo-admin", "sudo-autre"}}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("admin: %+v, want %+v", got, want)
 	}
-	// A guest only learns about the hosts it may see; its own host is not trusted.
-	if got, want := get(alice), (hostTrust{Trusted: []string{"sudo-admin"}}); !reflect.DeepEqual(got, want) {
-		t.Fatalf("guest: %+v, want %+v", got, want)
+	// An account that is not an admin learns only that the hub is trusted, not
+	// which peers open sudo terminals.
+	if got, want := get(alice), (hostTrust{Hub: peers.LocalID(), Local: true, Trusted: []string{peers.LocalID()}}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("user: %+v, want %+v", got, want)
 	}
 }

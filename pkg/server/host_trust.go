@@ -47,8 +47,10 @@ func trustedHosts(opts *Options, visible func(string) bool) hostTrust {
 func handleHostTrust(opts *Options, policy *accountPolicy) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		visible := func(string) bool { return true }
-		if identity, ok := auth.AccountFromContext(r.Context()); ok && !identity.User.IsAdmin() {
-			visible = policy.hostFilter(identity.User)
+		// This version has no per-host grants: an account that is not an admin
+		// learns only that the hub is trusted, not which peers open sudo terminals.
+		if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role != "admin" {
+			visible = func(id string) bool { return opts.PeerMgr == nil || id == opts.PeerMgr.LocalID() }
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
