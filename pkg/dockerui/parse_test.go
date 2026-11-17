@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -50,11 +51,12 @@ func TestParseLogStream(t *testing.T) {
 		}
 	})
 
-	t.Run("byte cap", func(t *testing.T) {
-		line := "2026-11-17T08:00:00Z " + strings.Repeat("x", 1000) + "\n"
+	t.Run("byte cap keeps the newest bytes", func(t *testing.T) {
 		var body []byte
+		n := 0
 		for len(body) < MaxLogBytes+50_000 {
-			body = append(body, frame(1, line)...)
+			n++
+			body = append(body, frame(1, fmt.Sprintf("2026-11-17T08:00:00Z %06d %s\n", n, strings.Repeat("x", 1000)))...)
 		}
 		lines, truncated, err := parseLogStream(bytes.NewReader(body), true)
 		if err != nil || !truncated || len(lines) > MaxLogLines {
@@ -62,10 +64,22 @@ func TestParseLogStream(t *testing.T) {
 		}
 		size := 0
 		for _, l := range lines {
-			size += len(l.M)
+			size += len(l.T) + len(l.M)
 		}
-		if size > MaxLogBytes {
-			t.Fatalf("%d bytes kept", size)
+		if size > MaxLogBytes || !strings.HasPrefix(lines[len(lines)-1].M, fmt.Sprintf("%06d ", n)) {
+			t.Fatalf("%d bytes kept, last line %.12q, want line %d", size, lines[len(lines)-1].M, n)
+		}
+	})
+
+	t.Run("read bound", func(t *testing.T) {
+		var body bytes.Buffer
+		line := frame(1, "2026-11-17T08:00:00Z "+strings.Repeat("y", maxLogLineBytes-40)+"\n")
+		for body.Len() < maxLogRead+len(line) {
+			body.Write(line)
+		}
+		lines, truncated, err := parseLogStream(&body, true)
+		if err != nil || !truncated || len(lines) == 0 || body.Len() == 0 {
+			t.Fatalf("lines=%d truncated=%v err=%v unread=%d", len(lines), truncated, err, body.Len())
 		}
 	})
 
@@ -109,10 +123,10 @@ func TestSanitizeInspect(t *testing.T) {
 		"Args": []any{"--db", "postgres://app:hunter2@db:5432/app", "--admin-password", "pa55", "--token=tok3n", "--port", "80"},
 		"Config": map[string]any{
 			"Env":        []any{"DATABASE_URL=postgres://u:p@db/x", "DEBUG=1", "NOVALUE", 42},
-			"Cmd":        []any{"redis-server", "--requirepass", "r3dis"},
+			"Cmd":        []any{"redis-server", "--requirepass", "r3dis", "curl", "-u", "bob:b0bpass"},
 			"Entrypoint": []any{"sh", "-c", "PGPASSWORD=pgs3cret psql -h db"},
 			"Healthcheck": map[string]any{
-				"Test": []any{"CMD-SHELL", "curl -fsS http://admin:adm1n@localhost/health"},
+				"Test": []any{"CMD-SHELL", "curl -fsS http://admin:adm1n@localhost/health && curl -u probe:pr0be http://x && curl --user=u2:s2cret http://y"},
 			},
 			"Labels": map[string]any{
 				"traefik.http.middlewares.auth.basicauth.users": "admin:$apr1$hash",
@@ -133,7 +147,7 @@ func TestSanitizeInspect(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(sanitized)
-	for _, secret := range []string{"hunter2", "pa55", "tok3n", "r3dis", "pgs3cret", "adm1n", "$apr1$hash", "k3y", "spl\"", "leak", "u:p@", "DEBUG=1"} {
+	for _, secret := range []string{"hunter2", "pa55", "tok3n", "r3dis", "pgs3cret", "adm1n", "$apr1$hash", "k3y", "spl\"", "leak", "u:p@", "DEBUG=1", "pr0be", "s2cret", "b0bpass"} {
 		if strings.Contains(text, secret) {
 			t.Errorf("%q survived: %s", secret, text)
 		}
@@ -142,6 +156,7 @@ func TestSanitizeInspect(t *testing.T) {
 		`"DATABASE_URL=••••"`, `"DEBUG=••••"`, `"NOVALUE"`, `"--port","80"`, `"Jane"`, `"web"`, `"https://splunk"`,
 		`postgres://app:••••@db:5432/app`, `"--admin-password","••••"`, `"--token=••••"`, `"--requirepass","••••"`,
 		`PGPASSWORD=•••• psql -h db`, `"Memory":0`, `"Path":"/usr/local/bin/server"`,
+		`curl -u probe:•••• http://x`, `--user=u2:••••`, `"-u","bob:••••"`,
 	} {
 		if !strings.Contains(text, kept) {
 			t.Errorf("missing %s in %s", kept, text)

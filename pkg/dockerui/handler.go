@@ -68,11 +68,13 @@ func (s *Service) handleLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleInspect(w http.ResponseWriter, r *http.Request) {
-	doc, err := s.Inspect(r.Context(), chi.URLParam(r, "id"))
+	doc, name, err := s.Inspect(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
-		s.fail(w, r, "inspect", "", err)
+		s.fail(w, r, "inspect", name, err)
 		return
 	}
+	// Reading the configuration is audited too; log polling is not.
+	s.audit(r, "inspect", name, chi.URLParam(r, "id")).Info("docker container inspected")
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
@@ -119,7 +121,7 @@ func (s *Service) handleTerminal(w http.ResponseWriter, r *http.Request) {
 
 // audit names who did what to which container.
 func (s *Service) audit(r *http.Request, action, name, id string) *logrus.Entry {
-	actor := "passkey"
+	actor := s.cfg.Actor
 	if identity, ok := auth.AccountFromContext(r.Context()); ok {
 		actor = identity.User.Username
 	}

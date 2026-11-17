@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -38,6 +39,8 @@ type fakeDocker struct {
 	logsQuery  []string
 	cpuTotal   uint64
 	system     uint64
+	// hangInspect makes inspect requests hang, as with a stuck containerd.
+	hangInspect atomic.Bool
 }
 
 func newFakeDocker(t *testing.T) *fakeDocker {
@@ -139,9 +142,13 @@ func (f *fakeDocker) mutations() []string {
 }
 
 func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	if f.hangInspect.Load() && strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/json") && path != "/containers/json" {
+		<-r.Context().Done()
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	path := r.URL.Path
 	if r.Method != http.MethodGet {
 		call := r.Method + " " + path
 		if r.URL.RawQuery != "" {

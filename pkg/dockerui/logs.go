@@ -13,9 +13,13 @@ import (
 )
 
 const (
-	// MaxLogLines and MaxLogBytes bound one logs response.
+	// MaxLogLines and MaxLogBytes bound one logs response; the newest lines
+	// are the ones kept.
 	MaxLogLines = 2000
 	MaxLogBytes = 2 << 20
+	// maxLogRead bounds the bytes read from Docker for one response. A tail
+	// of 2000 lines is far below it unless lines average over 4 KiB.
+	maxLogRead = 8 << 20
 	// DefaultLogTail is the number of lines of a first load.
 	DefaultLogTail = 500
 	// maxLogLineBytes cuts pathological lines so one cannot fill a response.
@@ -45,72 +49,94 @@ var sincePattern = regexp.MustCompile(`^[0-9]{1,12}(\.[0-9]{1,9})?$`)
 // ansiPattern matches CSI and OSC escape sequences.
 var ansiPattern = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]|\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)|\x1b[@-Z\\\\-_]")
 
-// parseLogStream reads a logs body. A container without TTY sends a
-// multiplexed stream: frames of an 8-byte header (stream, 0, 0, 0, size as a
-// big-endian uint32) followed by size bytes. Reads stop at MaxLogBytes, and
-// no buffer is ever sized from a header.
+// parseLogStream reads a logs body and keeps its newest MaxLogLines lines
+// and MaxLogBytes bytes. A container without TTY sends a multiplexed stream:
+// frames of an 8-byte header (stream, 0, 0, 0, size as a big-endian uint32)
+// followed by size bytes. At most maxLogRead bytes are read, and no buffer is
+// ever sized from a header.
 func parseLogStream(r io.Reader, multiplexed bool) ([]LogLine, bool, error) {
-	lines := make([]LogLine, 0, 64)
-	budget := MaxLogBytes
-	truncated := false
+	kept := &logWindow{lines: make([]LogLine, 0, 64)}
 	if !multiplexed {
-		data, err := io.ReadAll(io.LimitReader(r, int64(budget)+1))
-		if len(data) > budget {
-			data = data[:budget]
+		data, err := io.ReadAll(io.LimitReader(r, maxLogRead+1))
+		if len(data) > maxLogRead {
 			// Drop the partial last line rather than show half of it.
+			data = data[:maxLogRead]
 			if i := strings.LastIndexByte(string(data), '\n'); i >= 0 {
 				data = data[:i+1]
 			}
-			truncated = true
+			kept.truncated = true
 		}
-		lines, cut := capLinesCount(appendLogLines(lines, data, "out"))
+		kept.add(data, "out")
 		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
-			return lines, true, err
+			return kept.result(), true, err
 		}
-		return lines, truncated || cut, nil
+		return kept.result(), kept.truncated, nil
 	}
 
 	var header [8]byte
 	var payload bytes.Buffer
+	budget := int64(maxLogRead)
 	for {
 		if _, err := io.ReadFull(r, header[:]); err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				break
 			}
-			lines, _ = capLinesCount(lines)
-			return lines, true, err
+			return kept.result(), true, err
 		}
 		size := int64(binary.BigEndian.Uint32(header[4:]))
-		want := min(size, int64(budget))
+		want := min(size, budget)
 		// The buffer grows with the bytes received, never with the header.
 		payload.Reset()
 		n, err := io.CopyN(&payload, r, want)
-		budget -= int(n)
+		budget -= n
 		if n == want && want < size {
-			// The budget ends inside this frame: leave it out rather than
-			// show half a line.
-			truncated = true
+			// The read bound ends inside this frame: leave it out rather
+			// than show half a line. The next poll resumes after the last
+			// line kept.
+			kept.truncated = true
 			break
 		}
-		lines = appendLogLines(lines, payload.Bytes(), streamName(header[0]))
+		kept.add(payload.Bytes(), streamName(header[0]))
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				break
 			}
-			lines, _ = capLinesCount(lines)
-			return lines, true, err
+			return kept.result(), true, err
 		}
 	}
-	lines, cut := capLinesCount(lines)
-	return lines, truncated || cut, nil
+	return kept.result(), kept.truncated, nil
 }
 
-// capLinesCount keeps the newest MaxLogLines lines.
-func capLinesCount(lines []LogLine) ([]LogLine, bool) {
-	if len(lines) <= MaxLogLines {
-		return lines, false
+// logWindow keeps the newest lines within MaxLogLines and MaxLogBytes.
+// Old lines are skipped by moving start, and the slice is compacted once in
+// a while, so each line costs O(1).
+type logWindow struct {
+	lines     []LogLine
+	start     int
+	bytes     int
+	truncated bool
+}
+
+func (w *logWindow) add(payload []byte, stream string) {
+	before := len(w.lines)
+	w.lines = appendLogLines(w.lines, payload, stream)
+	for _, line := range w.lines[before:] {
+		w.bytes += len(line.T) + len(line.M)
 	}
-	return lines[len(lines)-MaxLogLines:], true
+	for len(w.lines)-w.start > MaxLogLines || (w.bytes > MaxLogBytes && w.start < len(w.lines)) {
+		w.bytes -= len(w.lines[w.start].T) + len(w.lines[w.start].M)
+		w.lines[w.start] = LogLine{}
+		w.start++
+		w.truncated = true
+	}
+	if w.start > 4096 && w.start > len(w.lines)/2 {
+		w.lines = append(w.lines[:0], w.lines[w.start:]...)
+		w.start = 0
+	}
+}
+
+func (w *logWindow) result() []LogLine {
+	return w.lines[w.start:]
 }
 
 func streamName(kind byte) string {

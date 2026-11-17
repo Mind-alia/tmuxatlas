@@ -23,6 +23,9 @@ var inlineSecret = regexp.MustCompile(`(?i)([a-z0-9_.-]*(?:password|passwd|secre
 // flagPattern splits --name=value and -name=value arguments.
 var flagPattern = regexp.MustCompile(`^(--?[A-Za-z0-9_.-]+)(?:=(.*))?$`)
 
+// userPassword matches curl's -u user:password and --user user:password.
+var userPassword = regexp.MustCompile(`(^|\s)(-u|--user)(\s+|=)([^\s:'"]+):([^\s'"]+)`)
+
 // sanitizeInspect returns the inspect document without its secrets: every
 // environment value is replaced by Masked (KEY=••••), then values whose key,
 // label or flag name looks secret and URL passwords are masked anywhere in
@@ -77,6 +80,15 @@ func maskArgs(value any) {
 		if !ok {
 			continue
 		}
+		if (text == "-u" || text == "--user") && i+1 < len(args) {
+			if next, ok := args[i+1].(string); ok {
+				if name, _, found := strings.Cut(next, ":"); found {
+					args[i+1] = name + ":" + Masked
+					i++
+					continue
+				}
+			}
+		}
 		if match := flagPattern.FindStringSubmatch(text); match != nil && sensitiveName.MatchString(strings.TrimLeft(match[1], "-")) {
 			if strings.Contains(text, "=") {
 				args[i] = match[1] + "=" + Masked
@@ -124,6 +136,9 @@ func walkMask(value any) any {
 func maskString(text string) string {
 	if strings.Contains(text, "://") {
 		text = urlCredentials.ReplaceAllString(text, "${1}:"+Masked+"@")
+	}
+	if strings.Contains(text, "-u") {
+		text = userPassword.ReplaceAllString(text, "${1}${2}${3}${4}:"+Masked)
 	}
 	if strings.Contains(text, "=") {
 		text = inlineSecret.ReplaceAllString(text, "${1}="+Masked)

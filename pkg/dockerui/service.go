@@ -29,7 +29,7 @@ const DefaultSocket = "/var/run/docker.sock"
 const (
 	listTimeout    = 5 * time.Second
 	inspectTimeout = 5 * time.Second
-	infoTimeout    = 5 * time.Second
+	infoTimeout    = 3 * time.Second
 	startTimeout   = 30 * time.Second
 	removeTimeout  = 30 * time.Second
 	logsTimeout    = 10 * time.Second
@@ -42,7 +42,12 @@ const (
 const (
 	inspectTTL     = 15 * time.Second
 	inspectWorkers = 6
-	infoTTL        = time.Minute
+	// inspectBatch bounds all the inspects of one listing together, so a
+	// daemon that lists but hangs on inspect still answers in seconds.
+	inspectBatch = 3 * time.Second
+	// retryAfter spaces the retries of an inspect or /info that failed.
+	retryAfter = 15 * time.Second
+	infoTTL    = time.Minute
 )
 
 // shellProbe runs inside the container: bash when it exists, sh otherwise.
@@ -56,12 +61,17 @@ const sessionPrefix = "docker-"
 type Config struct {
 	// Enabled is false with TMUXATLAS_DOCKER=off.
 	Enabled bool
+	// Explicit is true when TMUXATLAS_DOCKER asks for the view (on, true, 1, yes).
+	Explicit bool
 	// Socket is the Engine API socket (TMUXATLAS_DOCKER_SOCKET).
 	Socket string
 	// DockerCLI is the absolute path of the docker client used for shells.
 	DockerCLI string
 	// Problem explains a configuration that cannot work.
 	Problem string
+	// Actor names who acts in the logs when no account is signed in:
+	// "passkey", or "sans authentification".
+	Actor string
 }
 
 // Enabled reads TMUXATLAS_DOCKER: the view is on unless explicitly disabled.
@@ -74,6 +84,15 @@ func Enabled(value string) bool {
 	}
 }
 
+func explicitlyOn(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "on", "true", "1", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
 // safePath is the shape required of the socket and docker CLI paths: both
 // become arguments of a tmux command, where for instance a trailing ";"
 // would end the command.
@@ -81,7 +100,8 @@ var safePath = regexp.MustCompile(`^/[A-Za-z0-9._/@+-]+$`)
 
 // ConfigFromEnv reads TMUXATLAS_DOCKER and TMUXATLAS_DOCKER_SOCKET.
 func ConfigFromEnv() Config {
-	cfg := Config{Enabled: Enabled(os.Getenv("TMUXATLAS_DOCKER")), Socket: DefaultSocket}
+	value := os.Getenv("TMUXATLAS_DOCKER")
+	cfg := Config{Enabled: Enabled(value), Explicit: explicitlyOn(value), Socket: DefaultSocket, Actor: "passkey"}
 	if socket := strings.TrimSpace(os.Getenv("TMUXATLAS_DOCKER_SOCKET")); socket != "" {
 		socket = filepath.Clean(strings.TrimPrefix(socket, "unix://"))
 		if !filepath.IsAbs(socket) || !safePath.MatchString(socket) {
@@ -113,9 +133,11 @@ type Service struct {
 	logger *logrus.Entry
 	now    func() time.Time
 
-	infoMu sync.Mutex
-	info   *HostInfo
-	infoAt time.Time
+	infoMu     sync.Mutex
+	info       *HostInfo
+	infoAt     time.Time
+	infoFailed time.Time
+	infoBusy   bool
 
 	inspectMu sync.Mutex
 	inspects  map[string]inspectEntry
@@ -124,15 +146,21 @@ type Service struct {
 }
 
 type inspectEntry struct {
+	// state is the container state when info was read; fetched is zero
+	// until a read succeeded.
 	state   string
 	fetched time.Time
 	info    apiInspect
+	failed  time.Time
 }
 
 // New returns the service. opener may be nil: shells are then unavailable.
 func New(cfg Config, opener TerminalOpener) *Service {
 	if cfg.Socket == "" {
 		cfg.Socket = DefaultSocket
+	}
+	if cfg.Actor == "" {
+		cfg.Actor = "passkey"
 	}
 	return &Service{
 		cfg:      cfg,
@@ -216,16 +244,27 @@ func (s *Service) List(ctx context.Context) ListResponse {
 	return response
 }
 
+// hostInfo returns the cached /info summary. One caller refreshes it while
+// the others get the last value at once, and a failure waits retryAfter.
 func (s *Service) hostInfo(ctx context.Context) *HostInfo {
 	s.infoMu.Lock()
-	defer s.infoMu.Unlock()
-	if s.info != nil && s.now().Sub(s.infoAt) < infoTTL {
-		return s.info
+	info, now := s.info, s.now()
+	due := info == nil || now.Sub(s.infoAt) >= infoTTL
+	if !due || s.infoBusy || now.Sub(s.infoFailed) < retryAfter {
+		s.infoMu.Unlock()
+		return info
 	}
-	infoCtx, cancel := context.WithTimeout(ctx, infoTimeout)
-	defer cancel()
-	raw, err := s.client.info(infoCtx)
+	s.infoBusy = true
+	s.infoMu.Unlock()
+
+	callCtx, cancel := context.WithTimeout(ctx, infoTimeout)
+	raw, err := s.client.info(callCtx)
+	cancel()
+	s.infoMu.Lock()
+	defer s.infoMu.Unlock()
+	s.infoBusy = false
 	if err != nil {
+		s.infoFailed = s.now()
 		return s.info // the last known value, or nil
 	}
 	s.info = &HostInfo{NCPU: raw.NCPU, MemTotal: raw.MemTotal, Version: raw.ServerVersion}
@@ -234,19 +273,23 @@ func (s *Service) hostInfo(ctx context.Context) *HostInfo {
 }
 
 // inspectAll returns the cached inspect summaries, refreshing those whose
-// state changed or that are older than inspectTTL.
+// state changed or that are older than inspectTTL. All the refreshes of one
+// listing share inspectBatch; one that fails keeps the previous summary and
+// waits retryAfter before the next attempt.
 func (s *Service) inspectAll(ctx context.Context, list []apiContainer) map[string]apiInspect {
 	s.inspectMu.Lock()
+	now := s.now()
 	out := make(map[string]apiInspect, len(list))
 	var stale []apiContainer
 	seen := make(map[string]bool, len(list))
 	for _, c := range list {
 		seen[c.ID] = true
 		entry, ok := s.inspects[c.ID]
-		if ok {
+		if ok && !entry.fetched.IsZero() {
 			out[c.ID] = entry.info
 		}
-		if !ok || entry.state != c.State || s.now().Sub(entry.fetched) >= inspectTTL {
+		current := ok && !entry.fetched.IsZero() && entry.state == c.State && now.Sub(entry.fetched) < inspectTTL
+		if !current && (!ok || now.Sub(entry.failed) >= retryAfter) {
 			stale = append(stale, c)
 		}
 	}
@@ -260,9 +303,12 @@ func (s *Service) inspectAll(ctx context.Context, list []apiContainer) map[strin
 		return out
 	}
 
+	batchCtx, cancel := context.WithTimeout(ctx, inspectBatch)
+	defer cancel()
 	type result struct {
 		c    apiContainer
 		info apiInspect
+		err  error
 	}
 	jobs := make(chan apiContainer)
 	results := make(chan result, len(stale))
@@ -272,10 +318,8 @@ func (s *Service) inspectAll(ctx context.Context, list []apiContainer) map[strin
 		go func() {
 			defer workers.Done()
 			for c := range jobs {
-				info, err := s.inspectSummary(ctx, c.ID)
-				if err == nil {
-					results <- result{c: c, info: info}
-				}
+				info, err := s.inspectSummary(batchCtx, c.ID)
+				results <- result{c: c, info: info, err: err}
 			}
 		}()
 	}
@@ -289,8 +333,14 @@ func (s *Service) inspectAll(ctx context.Context, list []apiContainer) map[strin
 	s.inspectMu.Lock()
 	defer s.inspectMu.Unlock()
 	for r := range results {
-		s.inspects[r.c.ID] = inspectEntry{state: r.c.State, fetched: s.now(), info: r.info}
-		out[r.c.ID] = r.info
+		entry := s.inspects[r.c.ID]
+		if r.err != nil {
+			entry.failed = s.now()
+		} else {
+			entry = inspectEntry{state: r.c.State, fetched: s.now(), info: r.info}
+			out[r.c.ID] = r.info
+		}
+		s.inspects[r.c.ID] = entry
 	}
 	return out
 }
@@ -598,19 +648,22 @@ func (s *Service) isMultiplexed(ctx context.Context, id, contentType string) (bo
 	return !info.Config.Tty, nil
 }
 
-// Inspect returns the inspect document with its secrets masked.
-func (s *Service) Inspect(ctx context.Context, id string) (json.RawMessage, error) {
+// Inspect returns the inspect document with its secrets masked, and the
+// container name for the audit log.
+func (s *Service) Inspect(ctx context.Context, id string) (json.RawMessage, string, error) {
 	c, err := s.resolve(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	name := containerName(c.Names, c.ID)
 	callCtx, cancel := context.WithTimeout(ctx, inspectTimeout)
 	defer cancel()
 	raw, err := s.client.inspect(callCtx, c.ID)
 	if err != nil {
-		return nil, err
+		return nil, name, err
 	}
-	return sanitizeInspect(raw)
+	doc, err := sanitizeInspect(raw)
+	return doc, name, err
 }
 
 // Terminal opens a shell in a running container, in a tmux session.

@@ -21,8 +21,8 @@ timeout and every response is read with a size bound.
 
 | Route (under `/api`) | Docker call | Notes |
 |---|---|---|
-| `GET /docker/containers` | `/containers/json?all=1`, `/info`, inspect, `/stats` | inspect cached 15 s (or until the state changes), stats refreshed at most every 3 s and shared by every poll |
-| `GET /docker/containers/{id}/logs?tail=N&since=T` | `/logs` | stdout and stderr with timestamps, demultiplexed without TTY; at most 2000 lines and 2 MiB |
+| `GET /docker/containers` | `/containers/json?all=1`, `/info`, inspect, `/stats` | inspect cached 15 s (or until the state changes), at most 3 s for all of them, retried 15 s after a failure; stats refreshed at most every 3 s and shared by every poll |
+| `GET /docker/containers/{id}/logs?tail=N&since=T` | `/logs` | stdout and stderr with timestamps, demultiplexed without TTY; the newest 2000 lines and 2 MiB, out of at most 8 MiB read |
 | `GET /docker/containers/{id}/inspect` | `/containers/{id}/json` | every environment value replaced by `••••`, plus values of secret-looking keys, flags and URL passwords |
 | `POST /docker/containers/{id}/start`, `stop`, `restart` | same | stop waits for the container's grace period |
 | `DELETE /docker/containers/{id}` | `DELETE /containers/{id}` | refused (409) while running; never `force` nor `v` |
@@ -30,10 +30,15 @@ timeout and every response is read with a size bound.
 
 - `{id}` must be 12 to 64 lowercase hex characters and is resolved against a
   fresh listing; only the full ID returned by Docker is used afterwards.
-- The changes carry the same checks as every other change: session, `Origin`
-  and CSRF token (only the `Origin` check without authentication, like the
-  file explorer). Each one is logged with the account, the container and the
-  result.
+- The routes check the session like the others and, in accounts mode, that
+  the account is an admin; the changes also check `Origin` and the CSRF
+  token. They do not go through the account policy, whose lock is held for
+  the whole of every request: a stop lasts the container's grace period and
+  would freeze every account meanwhile. Each change, and each inspect, is
+  logged with the account, the container and the result.
+- Without authentication (`--no-auth`), the view stays off unless
+  `TMUXATLAS_DOCKER=on`: every local account could otherwise drive Docker.
+  When on, its changes still check `Origin`, like the file explorer.
 - **Terminal.** The hub creates (or reuses) the tmux session
   `docker-<container name>` with the same `new` action as the *Nouvelle
   session* dialog, then replaces its shell with
@@ -41,14 +46,19 @@ timeout and every response is read with a size bound.
   the probe starts `bash` when the image has it, `sh` otherwise. tmux runs
   these arguments with `execvp`: no shell parses them on the host, and they
   contain nothing from the request. Leaving the shell closes the session; a
-  failed start keeps its message on screen (`remain-on-exit failed`). A
-  session of the same name not opened for this container is never typed
-  into: the next one is `docker-<name>-2`.
+  failed start keeps its message on screen (`remain-on-exit failed`), and the
+  next click starts it again. A live session of the same name not opened for
+  this container is never typed into: the next one is `docker-<name>-2`; the
+  dead shell of a container that was recreated gives its name back.
+- The shell session is an ordinary Atlas session. In accounts mode the usual
+  session rules apply to it: every account can open every session, so a
+  `user` account can open a container shell an admin started (today all
+  accounts share the hub's Unix account, which is in the `docker` group).
 - Polling stops while the page is hidden.
 
 | Variable | Default | Role |
 |---|---|---|
-| `TMUXATLAS_DOCKER` | on | `off` hides the live view (the API answers "désactivée") |
+| `TMUXATLAS_DOCKER` | on with authentication, off without | `off` turns the live view off; `on` forces it on without authentication |
 | `TMUXATLAS_DOCKER_SOCKET` | `/var/run/docker.sock` | Engine API socket, absolute path (`unix://` accepted) |
 
 ⚠️ Access to the Docker socket is root on the machine, and the live view

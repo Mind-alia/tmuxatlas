@@ -123,6 +123,27 @@ func TestListCachesInspectAndReusesSamples(t *testing.T) {
 	}
 }
 
+func TestListStaysQuickWhenInspectHangs(t *testing.T) {
+	f := newFakeDocker(t)
+	f.hangInspect.Store(true)
+	s := newTestService(t, f, nil)
+	start := time.Now()
+	got := s.List(context.Background())
+	if elapsed := time.Since(start); elapsed > inspectBatch+2*time.Second {
+		t.Fatalf("a hung inspect held the listing %s", elapsed)
+	}
+	if !got.Available || len(got.Containers) != 4 || byName(got.Containers)["web"].StartedAt != "" {
+		t.Fatalf("listing without inspect: %+v", got)
+	}
+	start = time.Now()
+	if got := s.List(context.Background()); !got.Available {
+		t.Fatalf("second listing: %+v", got)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("failed inspects must wait before a retry, the listing took %s", elapsed)
+	}
+}
+
 func TestUnavailableAndDisabled(t *testing.T) {
 	missing := New(Config{Enabled: true, Socket: filepath.Join(t.TempDir(), "absent.sock")}, nil)
 	got := missing.List(context.Background())
@@ -150,8 +171,12 @@ func TestUnavailableAndDisabled(t *testing.T) {
 func TestConfigFromEnv(t *testing.T) {
 	t.Setenv("TMUXATLAS_DOCKER", "")
 	t.Setenv("TMUXATLAS_DOCKER_SOCKET", "unix:///run/user/1000/docker.sock")
-	if cfg := ConfigFromEnv(); !cfg.Enabled || cfg.Socket != "/run/user/1000/docker.sock" || cfg.Problem != "" {
+	if cfg := ConfigFromEnv(); !cfg.Enabled || cfg.Explicit || cfg.Socket != "/run/user/1000/docker.sock" || cfg.Problem != "" || cfg.Actor != "passkey" {
 		t.Fatalf("socket override: %+v", cfg)
+	}
+	t.Setenv("TMUXATLAS_DOCKER", "on")
+	if cfg := ConfigFromEnv(); !cfg.Enabled || !cfg.Explicit {
+		t.Fatalf("TMUXATLAS_DOCKER=on: %+v", cfg)
 	}
 	for _, socket := range []string{"docker.sock", "/run/docker.sock;kill-server", "/run/my docker.sock", "/run/\"x"} {
 		t.Setenv("TMUXATLAS_DOCKER_SOCKET", socket)

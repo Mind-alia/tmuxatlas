@@ -79,6 +79,11 @@ export function ContainerDetail({
               {c.state === 'running' && started ? ` depuis ${formatRelative(started).replace(/^il y a /, '')}` : ''}
             </span>
             <HealthBadge health={c.health} />
+            {c.restart_count > 0 && (
+              <span title="Redémarrages faits par la politique de redémarrage de Docker">
+                relancé {c.restart_count} fois par Docker
+              </span>
+            )}
             {c.compose_project && (
               <span>
                 Compose : {c.compose_project}

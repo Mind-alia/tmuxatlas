@@ -10,8 +10,9 @@ import (
 const (
 	// statsTTL lets the 3 s polling of several tabs share one refresh.
 	statsTTL = 3 * time.Second
-	// statsWait bounds how long a list request waits for a refresh.
-	statsWait = 2500 * time.Millisecond
+	// statsWait bounds how long a list request waits for the refresh it
+	// started; one-shot reads normally take well under 100 ms.
+	statsWait = 1500 * time.Millisecond
 	// statsMaxAge drops samples too old to describe the present.
 	statsMaxAge = 30 * time.Second
 	// statsRefreshTimeout bounds a whole refresh, every container included.
@@ -51,21 +52,25 @@ func (c *statsCache) forget(id string) {
 
 // containerStats returns the latest samples of the running containers,
 // refreshing them at most every statsTTL. Concurrent callers share one
-// refresh, and none waits longer than statsWait: a slow daemon only delays
-// the numbers, never the list.
+// refresh. Only the caller that starts a refresh waits for it, at most
+// statsWait (or a caller with no sample at all yet): a slow daemon delays
+// the numbers, not the list.
 func (s *Service) containerStats(ctx context.Context, running []string, fallbackCPUs int) map[string]Stats {
 	c := &s.stats
 	c.mu.Lock()
+	var wait chan struct{}
 	if c.inflight == nil && len(running) > 0 && s.now().Sub(c.fresh) >= statsTTL {
 		done := make(chan struct{})
 		c.inflight = done
+		wait = done
 		previous := make(map[string]statsEntry, len(c.entries))
 		for id, entry := range c.entries {
 			previous[id] = entry
 		}
 		go s.refreshStats(append([]string(nil), running...), previous, fallbackCPUs, done)
+	} else if c.inflight != nil && len(c.entries) == 0 {
+		wait = c.inflight
 	}
-	wait := c.inflight
 	c.mu.Unlock()
 	if wait != nil {
 		timer := time.NewTimer(statsWait)

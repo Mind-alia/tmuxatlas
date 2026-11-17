@@ -29,8 +29,8 @@ import (
 const dockerTestID = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 
 // startFakeDocker serves a running container "web.1" on a unix socket and
-// records every state change it receives.
-func startFakeDocker(t *testing.T, dir string) (string, func() []string) {
+// records every state change it receives. A stop takes stopDelay.
+func startFakeDocker(t *testing.T, dir string, stopDelay time.Duration) (string, func() []string) {
 	t.Helper()
 	socket := filepath.Join(dir, "docker.sock")
 	listener, err := net.Listen("unix", socket)
@@ -40,10 +40,10 @@ func startFakeDocker(t *testing.T, dir string) (string, func() []string) {
 	var mu sync.Mutex
 	var calls []string
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
 		if r.Method != http.MethodGet {
+			mu.Lock()
 			calls = append(calls, r.Method+" "+r.URL.Path)
+			mu.Unlock()
 		}
 		switch r.URL.Path {
 		case "/containers/json":
@@ -55,6 +55,10 @@ func startFakeDocker(t *testing.T, dir string) (string, func() []string) {
 		case "/containers/" + dockerTestID + "/stats":
 			fmt.Fprint(w, `{"cpu_stats":{},"memory_stats":{"usage":10}}`)
 		case "/containers/" + dockerTestID + "/stop":
+			select {
+			case <-time.After(stopDelay):
+			case <-r.Context().Done():
+			}
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -124,7 +128,7 @@ func TestDockerRoutesKeepTheServerGuards(t *testing.T) {
 	t.Setenv("TMUX_TMPDIR", dir)
 	t.Setenv("TMUXATLAS_MONITOR", "off")
 	t.Setenv("TMUXATLAS_DOCKER", "")
-	socket, dockerCalls := startFakeDocker(t, dir)
+	socket, dockerCalls := startFakeDocker(t, dir, 1500*time.Millisecond)
 	t.Setenv("TMUXATLAS_DOCKER_SOCKET", socket)
 	// A fake docker CLI records the arguments tmux starts it with.
 	bin := filepath.Join(dir, "bin")
@@ -260,8 +264,23 @@ func TestDockerRoutesKeepTheServerGuards(t *testing.T) {
 		strings.Contains(body, "SECRET=x") || !strings.Contains(body, "SECRET=••••") {
 		t.Fatalf("inspect admin : %d %s", code, body)
 	}
-	if code, body := call(http.MethodPost, stop, base, admin, true); code != http.StatusOK {
-		t.Fatalf("arrêt admin : %d %s", code, body)
+	// A slow stop (1.5 s here, a grace period in real life) must not hold
+	// the account policy's lock, which every other request takes.
+	stopped := make(chan int, 1)
+	go func() {
+		code, _ := call(http.MethodPost, stop, base, admin, true)
+		stopped <- code
+	}()
+	time.Sleep(300 * time.Millisecond)
+	started := time.Now()
+	if code, body := call(http.MethodGet, "/api/sessions", base, admin, false); code != http.StatusOK {
+		t.Fatalf("sessions pendant un arrêt : %d %s", code, body)
+	}
+	if elapsed := time.Since(started); elapsed > 700*time.Millisecond {
+		t.Fatalf("un arrêt en cours a bloqué les autres requêtes %s", elapsed)
+	}
+	if code := <-stopped; code != http.StatusOK {
+		t.Fatalf("arrêt admin : %d", code)
 	}
 	if calls := dockerCalls(); len(calls) != 1 || calls[0] != "POST /containers/"+dockerTestID+"/stop" {
 		t.Fatalf("appels Docker : %v", calls)
@@ -315,19 +334,92 @@ func TestDockerRoutesKeepTheServerGuards(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(body, `"session":"docker-web-1-2"`) {
 		t.Fatalf("session homonyme : %d %s", code, body)
 	}
+	// The dead shell of a container recreated under another ID frees its name.
+	if err := client.KillSession("docker-web-1-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.KillSession("docker-web-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.NewSession("docker-web-1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"set-option", "-q", "-t", "=docker-web-1:", dockerSessionOption, strings.Repeat("0", 64)},
+		{"set-option", "-w", "-q", "-t", "=docker-web-1:", "remain-on-exit", "failed"},
+		{"respawn-pane", "-k", "-t", "=docker-web-1:", "--", "sh", "-c", "exit 3"},
+	} {
+		if _, err := client.Exec(args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for deadline := time.Now().Add(3 * time.Second); ; {
+		dead, _ := client.Exec("display-message", "-p", "-t", "=docker-web-1:", "#{pane_dead}")
+		if strings.TrimSpace(dead) == "1" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("le shell de test ne s’est pas arrêté")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	code, body = call(http.MethodPost, terminal, base, admin, true)
+	if code != http.StatusOK || !strings.Contains(body, `"session":"docker-web-1"`) {
+		t.Fatalf("reprise d’une session morte : %d %s", code, body)
+	}
+	marker, _ = client.Exec("show-options", "-qv", "-t", tmux.ExactWindow("docker-web-1", ""), dockerSessionOption)
+	alive, _ := client.Exec("display-message", "-p", "-t", "=docker-web-1:", "#{pane_dead}")
+	if strings.TrimSpace(marker) != dockerTestID || strings.TrimSpace(alive) != "0" {
+		t.Fatalf("session reprise : marqueur %q, pane morte %q", marker, alive)
+	}
 }
 
-func TestDockerMutationsCheckOriginWithoutAuth(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("TMUXATLAS_MONITOR", "off")
-	socket, dockerCalls := startFakeDocker(t, dir)
-	t.Setenv("TMUXATLAS_DOCKER_SOCKET", socket)
+func startWithoutAuth(t *testing.T, dir string) string {
+	t.Helper()
 	address := freeAddress(t)
 	base := "http://" + address
 	tmuxClient := &tmux.Client{}
 	runServer(t, &Options{ListenAddress: address, PublicURL: base, SocketPath: filepath.Join(dir, "server.sock"),
 		Client: tmuxClient, StateMgr: state.NewManager(tmuxClient), Tracker: toolevents.NewTracker(),
 		ActivityTracker: activity.NewTracker()})
+	return base
+}
+
+func TestDockerViewIsOffWithoutAuthUnlessAsked(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TMUXATLAS_MONITOR", "off")
+	t.Setenv("TMUXATLAS_DOCKER", "")
+	socket, dockerCalls := startFakeDocker(t, dir, 0)
+	t.Setenv("TMUXATLAS_DOCKER_SOCKET", socket)
+	base := startWithoutAuth(t, dir)
+	response, err := http.Get(base + "/api/docker/containers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if !strings.Contains(string(data), `"available":false`) || !strings.Contains(string(data), "sans authentification") {
+		t.Fatalf("liste sans authentification : %s", data)
+	}
+	request, _ := http.NewRequest(http.MethodPost, base+"/api/docker/containers/"+dockerTestID+"/stop", nil)
+	request.Header.Set("Origin", base)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable || len(dockerCalls()) != 0 {
+		t.Fatalf("arrêt sans authentification : %d %v", response.StatusCode, dockerCalls())
+	}
+}
+
+func TestDockerMutationsCheckOriginWithoutAuth(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TMUXATLAS_MONITOR", "off")
+	t.Setenv("TMUXATLAS_DOCKER", "on")
+	socket, dockerCalls := startFakeDocker(t, dir, 0)
+	t.Setenv("TMUXATLAS_DOCKER_SOCKET", socket)
+	base := startWithoutAuth(t, dir)
 	post := func(origin string) int {
 		request, _ := http.NewRequest(http.MethodPost, base+"/api/docker/containers/"+dockerTestID+"/stop", nil)
 		if origin != "" {
@@ -351,5 +443,73 @@ func TestDockerMutationsCheckOriginWithoutAuth(t *testing.T) {
 	}
 	if code := post(base); code != http.StatusOK {
 		t.Fatalf("même origine : %d", code)
+	}
+}
+
+func TestDockerRoutesWithPasskeySessions(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TMUXATLAS_MONITOR", "off")
+	t.Setenv("TMUXATLAS_DOCKER", "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data"))
+	socket, dockerCalls := startFakeDocker(t, dir, 0)
+	t.Setenv("TMUXATLAS_DOCKER_SOCKET", socket)
+	address := freeAddress(t)
+	base := "http://" + address
+	sessions := auth.NewSessionManager(time.Hour)
+	passkeys, err := auth.NewPasskeyManager(base, sessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmuxClient := &tmux.Client{}
+	runServer(t, &Options{ListenAddress: address, PublicURL: base, SocketPath: filepath.Join(dir, "server.sock"),
+		Client: tmuxClient, StateMgr: state.NewManager(tmuxClient), Tracker: toolevents.NewTracker(),
+		ActivityTracker: activity.NewTracker(), AuthEnabled: true, SessionMgr: sessions, PasskeyManager: passkeys})
+	token, err := sessions.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrf, _ := sessions.CSRF(token)
+	call := func(method, path string, cookie, withCSRF bool) int {
+		t.Helper()
+		request, _ := http.NewRequest(method, base+path, nil)
+		request.Header.Set("Origin", base)
+		if cookie {
+			request.AddCookie(&http.Cookie{Name: "tmuxatlas_session", Value: token})
+		}
+		if withCSRF {
+			request.Header.Set(auth.CSRFHeader, csrf)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		return response.StatusCode
+	}
+	stop := "/api/docker/containers/" + dockerTestID + "/stop"
+	for _, check := range []struct {
+		name         string
+		method, path string
+		cookie, csrf bool
+		want         int
+	}{
+		{"liste sans session", http.MethodGet, "/api/docker/containers", false, false, http.StatusUnauthorized},
+		{"liste avec session", http.MethodGet, "/api/docker/containers", true, false, http.StatusOK},
+		{"arrêt sans session", http.MethodPost, stop, false, false, http.StatusUnauthorized},
+		{"arrêt sans jeton CSRF", http.MethodPost, stop, true, false, http.StatusForbidden},
+	} {
+		if code := call(check.method, check.path, check.cookie, check.csrf); code != check.want {
+			t.Fatalf("%s : %d, attendu %d", check.name, code, check.want)
+		}
+	}
+	if calls := dockerCalls(); len(calls) != 0 {
+		t.Fatalf("Docker atteint : %v", calls)
+	}
+	if code := call(http.MethodPost, stop, true, true); code != http.StatusOK {
+		t.Fatalf("arrêt avec session et jeton : %d", code)
+	}
+	if calls := dockerCalls(); len(calls) != 1 {
+		t.Fatalf("appels Docker : %v", calls)
 	}
 }
