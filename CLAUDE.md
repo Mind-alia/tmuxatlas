@@ -56,6 +56,7 @@ pkg/
   stats/                 # System statistics
   webpush/               # Browser push notifications
   files/                 # File explorer: list, edit, preview, upload, zip download (`/api/files/*`, every account, disable with TMUXATLAS_FILES=off)
+  loops/                 # Improvement loops & quick chats (claude, codex, agy) (`/api/loops/*`, disable with TMUXATLAS_LOOPS=off)
   voice/                 # Browser microphone to PulseAudio virtual mic (`/ws/mic`, enable with TMUXATLAS_VOICE=on)
 web/
   src/

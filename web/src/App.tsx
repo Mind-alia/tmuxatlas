@@ -63,13 +63,26 @@ function errorMessage(err: unknown): string {
   return 'L’action sur la session a échoué.'
 }
 
-type View = 'overview' | 'session' | 'settings' | 'setup' | 'monitoring' | 'wall' | 'admin' | 'files' | 'ops'
+type View =
+  | 'overview'
+  | 'session'
+  | 'settings'
+  | 'setup'
+  | 'monitoring'
+  | 'wall'
+  | 'admin'
+  | 'files'
+  | 'ops'
+  | 'loops'
 
 const AdminPage = lazy(() => import('./components/AdminPage').then(module => ({ default: module.AdminPage })))
 const MonitoringPage = lazy(() =>
   import('./components/monitoring/MonitoringPage').then(module => ({ default: module.MonitoringPage })),
 )
 const FilesPage = lazy(() => import('./components/files/FilesPage').then(module => ({ default: module.FilesPage })))
+const LoopsPage = lazy(() =>
+  import('./components/loops/LoopsPage').then(module => ({ default: module.LoopsPage })),
+)
 const SessionFiles = lazy(() =>
   import('./components/files/SessionFiles').then(module => ({ default: module.SessionFiles })),
 )
@@ -92,6 +105,7 @@ function getViewFromPath(): { view: View; sessionKey: string | null } {
   if (window.location.pathname === '/monitoring') return { view: 'monitoring', sessionKey: null }
   if (window.location.pathname === '/ops') return { view: 'ops', sessionKey: null }
   if (window.location.pathname === '/wall') return { view: 'wall', sessionKey: null }
+  if (window.location.pathname === '/loops') return { view: 'loops', sessionKey: null }
   if (window.location.pathname === '/files') return { view: 'files', sessionKey: null }
   if (window.location.pathname === '/settings') {
     return { view: 'settings', sessionKey: null }
@@ -371,7 +385,14 @@ function AppInner({
   const navigateTo = useCallback(
     (sessKey: string | null, view?: View) => {
       let path: string
-      if (view === 'monitoring' || view === 'wall' || view === 'admin' || view === 'files' || view === 'ops') {
+      if (
+        view === 'monitoring' ||
+        view === 'wall' ||
+        view === 'admin' ||
+        view === 'files' ||
+        view === 'ops' ||
+        view === 'loops'
+      ) {
         path = `/${view}`
       } else if (view === 'settings') {
         path = '/settings'
@@ -652,6 +673,7 @@ function AppInner({
         navigateTo(null, 'monitoring')
       },
       'navigation.wall': () => navigateTo(null, 'wall'),
+      'navigation.loops': () => navigateTo(null, 'loops'),
       'navigation.files': () => navigateTo(null, 'files'),
       ...(role === 'admin' ? { 'navigation.admin': () => navigateTo(null, 'admin') } : {}),
       'session.next': () => moveSession(1),
@@ -762,6 +784,8 @@ function AppInner({
       document.title = 'Fichiers — Atlas'
     } else if (currentView === 'ops') {
       document.title = 'Conteneurs — Atlas'
+    } else if (currentView === 'loops') {
+      document.title = 'Boucles — Atlas'
     } else {
       document.title =
         currentView === 'monitoring' ? 'Monitoring — Atlas' : currentView === 'wall' ? 'Mur — Atlas' : 'Atlas'
@@ -777,6 +801,19 @@ function AppInner({
       setZenMode(false)
     }
   }, [currentView])
+
+  const openSessionFromView = useCallback(
+    (key: string) => {
+      workspacePreferences.recordRecent(key)
+      pendingSessionRef.current = key
+      navigateTo(key)
+      window.setTimeout(() => {
+        if (pendingSessionRef.current === key) pendingSessionRef.current = null
+      }, 10_000)
+      setTimeout(() => refocusTerminal(), 300)
+    },
+    [navigateTo, refocusTerminal, workspacePreferences],
+  )
 
   if (
     applicationState.instanceId === null &&
@@ -849,6 +886,7 @@ function AppInner({
             onOverview={() => navigateTo(null)}
             onMonitoring={() => navigateTo(null, 'monitoring')}
             onWall={() => navigateTo(null, 'wall')}
+            onLoops={() => navigateTo(null, 'loops')}
             onFiles={() => navigateTo(null, 'files')}
             onOps={role !== 'user' ? () => navigateTo(null, 'ops') : undefined}
             onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}
@@ -926,11 +964,18 @@ function AppInner({
                 pwaInstall={pwaInstall}
               />
             ) : currentView === 'monitoring' ? (
-              <MonitoringPage hosts={hosts} />
+              <MonitoringPage hosts={hosts} onOpenSession={openSessionFromView} />
             ) : currentView === 'files' ? (
               <FilesPage hosts={hosts} />
             ) : currentView === 'ops' && role !== 'user' ? (
               <OpsPage onOpenSession={key => void openCreatedSession(key)} />
+            ) : currentView === 'loops' ? (
+              <LoopsPage
+                currentUsername={username}
+                sessions={sessions}
+                onRefreshSessions={refresh}
+                onOpenSession={openSessionFromView}
+              />
             ) : currentView === 'wall' ? (
               wallReady && (
                 <WallView
@@ -1059,6 +1104,7 @@ function AppInner({
           onSessions={() => setMobileSidebarOpen(true)}
           onMonitoring={() => navigateTo(null, 'monitoring')}
           onWall={() => navigateTo(null, 'wall')}
+          onLoops={() => navigateTo(null, 'loops')}
           onFiles={() => navigateTo(null, 'files')}
           onOps={role !== 'user' ? () => navigateTo(null, 'ops') : undefined}
           onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}

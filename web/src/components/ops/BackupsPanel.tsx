@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { StatusBadge, toneColor } from '../monitoring/Monitoring'
+import { StatusBadge, toneColor } from '../monitoring/primitives'
 import { formatBytes, formatRelative } from '../monitoring/format'
 import type { OpsBackups, OpsBackupState } from './types'
 

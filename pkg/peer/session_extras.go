@@ -25,7 +25,7 @@ const (
 var (
 	paneIDPattern = regexp.MustCompile(`^%\d{1,9}$`)
 	// Strict allow-list of agent commands that may be launched in a new session.
-	allowedAgents = map[string]struct{}{"claude": {}, "codex": {}, "opencode": {}, "copilot": {}}
+	allowedAgents = map[string]struct{}{"claude": {}, "codex": {}, "agy": {}, "opencode": {}, "copilot": {}}
 )
 
 // requiresSessionExtras reports whether an operation needs CapabilitySessionExtras.
@@ -51,7 +51,7 @@ func invalid(message string) error {
 // ValidateAgent checks the agent allow-list.
 func ValidateAgent(agent string) error {
 	if _, ok := allowedAgents[agent]; !ok {
-		return invalid("agent must be one of claude, codex, opencode, copilot")
+		return invalid("agent must be one of claude, codex, agy, opencode, copilot")
 	}
 	return nil
 }

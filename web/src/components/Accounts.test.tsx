@@ -164,7 +164,13 @@ describe('Tableau de bord /admin', () => {
     },
   ]
 
+  let cliAssignments: { person: string; owner: string | null; profiles: { cli: string; name: string; connected: boolean }[] }[] = []
+
   beforeEach(() => {
+    cliAssignments = [
+      { person: 'Aris', owner: null, profiles: [{ cli: 'claude', name: 'Aris Claude', connected: true }] },
+      { person: 'Aris2', owner: null, profiles: [{ cli: 'claude', name: 'Aris2 Claude', connected: true }] },
+    ]
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -175,6 +181,15 @@ describe('Tableau de bord /admin', () => {
         }
         if (url.endsWith('/api/admin/sessions') && method === 'GET') {
           return new Response(JSON.stringify(adminSessions), { status: 200 })
+        }
+        if (url.endsWith('/api/admin/cli-assignments')) {
+          if (method === 'PUT') {
+            const body = JSON.parse(String(init?.body)) as { person: string; owner: string }
+            cliAssignments = cliAssignments.map(entry =>
+              entry.person === body.person ? { ...entry, owner: body.owner || null } : entry,
+            )
+          }
+          return new Response(JSON.stringify({ persons: cliAssignments }), { status: 200 })
         }
         if (url.endsWith('/api/admin/users') && method === 'POST') {
           return new Response(
@@ -239,6 +254,23 @@ describe('Tableau de bord /admin', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmer la suppression' }))
     await waitFor(() => {
       expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    })
+  })
+
+  it('assigne une session CLI à un compte TmuxAtlas', async () => {
+    render(<AdminPage currentUsername="admin" />)
+    const row = await screen.findByTestId('admin-cli-row-Aris2')
+    expect(within(row).getByText('Non assignée', { selector: 'span' })).toBeInTheDocument()
+    await screen.findByTestId('admin-user-row-alice')
+    const select = within(row).getByLabelText('Assigner la session CLI Aris2 à un compte')
+    fireEvent.change(select, { target: { value: 'bbbbbbbb22222222bbbbbbbb22222222' } })
+    await waitFor(() => {
+      expect(within(screen.getByTestId('admin-cli-row-Aris2')).getByText('alice')).toBeInTheDocument()
+    })
+    const put = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'PUT')
+    expect(JSON.parse(String(put?.[1]?.body))).toEqual({
+      person: 'Aris2',
+      owner: 'bbbbbbbb22222222bbbbbbbb22222222',
     })
   })
 })

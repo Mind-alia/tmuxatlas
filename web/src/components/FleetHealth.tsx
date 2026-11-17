@@ -49,7 +49,7 @@ function formatSync(value?: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }
 
-export function FleetHealth() {
+export function FleetHealth({ compact = false }: { compact?: boolean }) {
   const { state } = useApplicationState()
   const records = useMemo(
     () =>
@@ -59,10 +59,10 @@ export function FleetHealth() {
         .sort((left, right) => left.facts.host_id.localeCompare(right.facts.host_id)),
     [state.projection.health],
   )
-  return <FleetHealthView records={records} />
+  return <FleetHealthView records={records} compact={compact} />
 }
 
-export function FleetHealthView({ records }: { records: FleetRecord[] }) {
+export function FleetHealthView({ records, compact = false }: { records: FleetRecord[]; compact?: boolean }) {
   const [copied, setCopied] = useState<string | null>(null)
   const hostLabel = useHostLabel()
   if (records.length === 0) return null
@@ -77,11 +77,11 @@ export function FleetHealthView({ records }: { records: FleetRecord[] }) {
   }
 
   return (
-    <section aria-labelledby="fleet-health-title" className="mb-6">
+    <section aria-labelledby="fleet-health-title" className={compact ? 'min-w-0' : 'mb-6'}>
       <h2 id="fleet-health-title" className="mb-2.5 text-sm font-semibold text-foreground">
         Santé des hôtes
       </h2>
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div className={compact ? 'grid gap-3 grid-cols-1' : 'grid gap-3 md:grid-cols-2 xl:grid-cols-3'}>
         {records.map(record => (
           <article
             key={record.facts.host_id}

@@ -11,7 +11,7 @@ import (
 func isSPARoute(requestPath string) bool {
 	cleaned := path.Clean("/" + strings.TrimPrefix(requestPath, "/"))
 	switch cleaned {
-	case "/", "/settings", "/setup", "/monitoring", "/wall", "/files":
+	case "/", "/settings", "/setup", "/monitoring", "/wall", "/files", "/loops":
 		return true
 	}
 	if strings.HasPrefix(cleaned, "/session/") {
@@ -43,6 +43,8 @@ func frontendHandler(frontend fs.FS) http.Handler {
 			if err == nil {
 				file.Close()
 				switch resourcePath {
+				case "index.html":
+					w.Header().Set("Cache-Control", "no-cache")
 				case "manifest.json":
 					w.Header().Set("Content-Type", "application/manifest+json")
 					w.Header().Set("Cache-Control", "no-cache")
@@ -64,6 +66,7 @@ func frontendHandler(frontend fs.FS) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+		w.Header().Set("Cache-Control", "no-cache")
 		serveFrontendPath(fileServer, "/", w, r)
 	})
 }

@@ -15,6 +15,7 @@ import {
 } from '../lib/accountsApi'
 import { useHostLabel } from '../lib/hostLabel'
 import { Button, Dialog } from './ui'
+import { CLIAssignmentsSection } from './CLIAssignmentsSection'
 
 interface AdminPageProps {
   currentUsername?: string | null
@@ -536,6 +537,8 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
             </div>
           )}
         </section>
+
+        <CLIAssignmentsSection users={users} />
       </div>
 
       {/* Dialog: Réinitialiser le mot de passe */}

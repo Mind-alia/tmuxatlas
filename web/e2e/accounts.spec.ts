@@ -79,6 +79,70 @@ test.afterAll(async () => {
   if (tmuxTmpDir) await rm(tmuxTmpDir, { recursive: true, force: true })
 })
 
+test('mode accounts : le chargement initial affiche le tableau de bord sans erreur React, y compris après actualisation', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  let sendSnapshot: (() => void) | undefined
+  await page.routeWebSocket('**/ws/events?schema=1', socket => {
+    sendSnapshot = () => socket.send(JSON.stringify({
+      type: 'snapshot',
+      schema_version: 1,
+      instance_id: 'accounts-loading-regression',
+      revision: 1,
+      state: { hosts: {}, sessions: {}, windows: {}, panes: {}, tool_events: {}, activity: {}, health: {} },
+    }))
+  })
+
+  await page.goto(baseURL)
+  await page.getByLabel('Nom d’utilisateur').fill('admin')
+  await page.getByLabel('Mot de passe').fill('admin-password-123')
+  await page.getByRole('button', { name: 'Se connecter' }).click()
+
+  for (let load = 0; load < 2; load++) {
+    await expect(page.getByRole('status', { name: 'Chargement de l’espace de travail' })).toBeVisible()
+    await expect.poll(() => Boolean(sendSnapshot)).toBe(true)
+    sendSnapshot!()
+    await expect(page.getByRole('button', { name: 'Nouvelle session', exact: true }).first()).toBeVisible()
+    expect(errors).toEqual([])
+    if (load === 0) {
+      sendSnapshot = undefined
+      await page.reload()
+    }
+  }
+})
+
+for (const persistent of [false, true]) {
+  test(`mode accounts : récupère un module indisponible sans écran gris (${persistent ? 'coupure persistante' : 'coupure temporaire'})`, async ({ page }) => {
+    let failures = 0
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    await page.route('**/assets/MonitoringPage-*.js', async route => {
+      if (persistent || failures === 0) {
+        failures++
+        await route.fulfill({ status: 502, contentType: 'text/plain', body: 'Bad Gateway' })
+      } else {
+        await route.continue()
+      }
+    })
+
+    await page.goto(baseURL)
+    await page.getByLabel('Nom d’utilisateur').fill('admin')
+    await page.getByLabel('Mot de passe').fill('admin-password-123')
+    await page.getByRole('button', { name: 'Se connecter' }).click()
+    await page.getByRole('button', { name: 'Monitoring', exact: true }).first().click()
+
+    if (persistent) {
+      await expect(page.getByRole('alert')).toContainText('Atlas n’a pas pu afficher cette page')
+      expect(failures).toBe(2)
+      await page.unroute('**/assets/MonitoringPage-*.js')
+      await page.getByRole('button', { name: 'Recharger la page' }).click()
+    }
+    await expect(page.getByRole('heading', { name: 'Monitoring', exact: true })).toBeVisible()
+    expect(failures).toBe(persistent ? 2 : 1)
+    expect(errors).toEqual([])
+  })
+}
+
 test('mode accounts : parcours complet admin, alice et bob, isolation, attribution, révocation et accessibilité axe', async ({
   page,
   browser,

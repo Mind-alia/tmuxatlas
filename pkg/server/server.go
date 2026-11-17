@@ -33,6 +33,7 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/httpguard"
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
 	"github.com/LosFurina/tmuxatlas/pkg/ingress"
+	"github.com/LosFurina/tmuxatlas/pkg/loops"
 	"github.com/LosFurina/tmuxatlas/pkg/monitor"
 	"github.com/LosFurina/tmuxatlas/pkg/ops"
 	"github.com/LosFurina/tmuxatlas/pkg/paths"
@@ -377,6 +378,28 @@ func Run(ctx context.Context, opts *Options) error {
 	if files.Enabled(os.Getenv("TMUXATLAS_FILES")) {
 		fileExplorer = files.New()
 	}
+	var loopsMgr *loops.Manager
+	var loopsHandler *loops.Handler
+	if loops.Enabled(os.Getenv("TMUXATLAS_LOOPS")) {
+		if dataDir, dirErr := paths.DataDir(); dirErr == nil {
+			localHostID := ""
+			if opts.PeerMgr != nil {
+				localHostID = opts.PeerMgr.LocalID()
+			}
+			if mgr, mgrErr := loops.NewManager(filepath.Join(dataDir, "loops"), opts.Client, loops.Options{
+				LocalHostID: localHostID,
+				OnSessionCreated: func() {
+					refreshLocalSessionState(opts, localHostID)
+				},
+			}); mgrErr != nil {
+				logrus.WithError(mgrErr).Warn("loops unavailable")
+			} else {
+				loopsMgr = mgr
+				loopsHandler = loops.NewHandler(mgr)
+				defer loopsMgr.Shutdown()
+			}
+		}
+	}
 	publicRouter.Use(fileBodyLimit(fileExplorer))
 	dockerUI := newDockerUI(opts, actionRouter)
 	accountPolicy := newAccountPolicy(opts)
@@ -462,6 +485,12 @@ func Run(ctx context.Context, opts *Options) error {
 				})
 				mutations.With(accountAdminOnly).Delete("/admin/users/{id}", func(w http.ResponseWriter, r *http.Request) {
 					handleAdminUserDelete(w, r, opts, actionRouter)
+				})
+				r.With(accountAdminOnly).Get("/admin/cli-assignments", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminCLIAssignments(w, r, opts)
+				})
+				mutations.With(accountAdminOnly, httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Put("/admin/cli-assignments", func(w http.ResponseWriter, r *http.Request) {
+					handleAdminCLIAssignments(w, r, opts)
 				})
 				r.With(accountAdminOnly).Get("/admin/sessions", func(w http.ResponseWriter, r *http.Request) {
 					snapshot, err := coordinator.Snapshot(r.Context())
@@ -661,6 +690,29 @@ func Run(ctx context.Context, opts *Options) error {
 				smallFileJSON.Post("/files/delete", fileExplorer.Delete)
 			}
 
+			// Improvement loops & quick chats (claude, codex, agy)
+			if loopsHandler != nil {
+				loopMutations := mutations
+				if opts.AccountsAuth == nil && !opts.AuthEnabled {
+					loopMutations = r.With(originMiddleware)
+				}
+				r.Get("/loops", loopsHandler.List)
+				r.Get("/loops/meta", loopsHandler.Meta)
+				r.Get("/loops/logs", loopsHandler.Logs)
+				loopJSON := loopMutations.With(httpguard.BodyReadDeadline(15*time.Second), httpguard.JSONBody(64<<10))
+				loopJSON.Post("/loops/create", loopsHandler.Create)
+				loopJSON.Post("/loops/update", loopsHandler.Update)
+				loopJSON.Post("/loops/instruction", loopsHandler.Instruction)
+				loopJSON.Post("/loops/review", loopsHandler.Review)
+				loopJSON.Post("/loops/plan", loopsHandler.Plan)
+				loopJSON.Post("/loops/delete", loopsHandler.Delete)
+				loopJSON.Post("/loops/start", loopsHandler.Start)
+				loopJSON.Post("/loops/pause", loopsHandler.Pause)
+				loopJSON.Post("/loops/stop", loopsHandler.Stop)
+				loopJSON.Post("/loops/worker", loopsHandler.WorkerAction)
+				loopJSON.Post("/loops/chat", loopsHandler.Chat)
+			}
+
 			// Voice status — whether the browser microphone can be used on this host
 			r.Get("/voice", func(w http.ResponseWriter, r *http.Request) {
 				status := voice.Status{}
@@ -678,11 +730,16 @@ func Run(ctx context.Context, opts *Options) error {
 					http.Error(w, "monitoring unavailable on this role", http.StatusNotFound)
 					return
 				}
+				if r.URL.Query().Get("refresh") == "1" {
+					hostMonitor.TriggerRefresh(r.Context())
+				}
 				rangeSec := monitorRange(r.URL.Query().Get("range"))
 				after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Cache-Control", "no-store")
-				json.NewEncoder(w).Encode(hostMonitor.Snapshot(rangeSec, after))
+				snapshot := hostMonitor.Snapshot(rangeSec, after)
+				annotateCLIOwners(&snapshot, opts)
+				json.NewEncoder(w).Encode(snapshot)
 			})
 
 			// Ops endpoint — containers and backups, admin only. The account

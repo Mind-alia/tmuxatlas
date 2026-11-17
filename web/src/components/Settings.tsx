@@ -6,6 +6,7 @@ import { changeOwnPassword } from '../lib/accountsApi'
 import { cssColorToHex, themePresets, applyTheme } from '../theme'
 import { cn } from '../lib/utils'
 import { AgentStatusList, normalizeAgentStatus, SetupCommandBox, type StatusResult } from './Setup'
+import { CLIAssignmentsSection } from './CLIAssignmentsSection'
 import { PasskeySettings } from './PasskeySettings'
 import type { PWAInstallState } from '../hooks/usePWAInstall'
 import { Button, ToastProvider, useToast } from './ui'
@@ -56,7 +57,7 @@ const customizableVars = [
   { key: '--destructive', label: 'Destruction' },
 ]
 
-const sectionIds = ['appearance', 'terminal', 'interface', 'notifications', 'hosts', 'agents', 'security'] as const
+const sectionIds = ['appearance', 'terminal', 'interface', 'notifications', 'hosts', 'agents', 'cli', 'security'] as const
 
 function Section({
   id,
@@ -204,6 +205,7 @@ const sectionLabels: Record<(typeof sectionIds)[number], string> = {
   notifications: 'Notifications',
   hosts: 'Hôtes',
   agents: 'Agents',
+  cli: 'Sessions CLI',
   security: 'Sécurité',
 }
 
@@ -352,6 +354,7 @@ function SettingsContent({
   const showSecurity = Boolean(onLogout || isAccountsMode)
   const visibleSections = sectionIds.filter(id => {
     if (id === 'security') return showSecurity
+    if (id === 'cli') return role === 'admin'
     if (isNonAdminUser && (id === 'notifications' || id === 'hosts' || id === 'agents')) return false
     return true
   })
@@ -744,6 +747,9 @@ function SettingsContent({
               )}
             </Section>
           )}
+
+          {/* ── Sessions CLI (admin uniquement) ── */}
+          {role === 'admin' && <CLIAssignmentsSection />}
 
           {/* ── Sécurité ── */}
           {showSecurity && (

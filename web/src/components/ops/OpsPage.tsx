@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Alerts, toneColor } from '../monitoring/Monitoring'
+import { Alerts } from '../monitoring/Monitoring'
+import { toneColor } from '../monitoring/primitives'
 import { formatRelative } from '../monitoring/format'
 import { BackupsPanel } from './BackupsPanel'
 import { DockerPage } from './docker/DockerPage'

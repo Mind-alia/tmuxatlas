@@ -168,6 +168,44 @@ export async function fetchAdminSessions(): Promise<AdminSession[]> {
   return data ?? []
 }
 
+export interface CLIPersonProfile {
+  cli: 'claude' | 'codex' | 'agy' | string
+  name: string
+  account?: string
+  connected: boolean
+}
+
+/** An ai-accounts CLI person (Aris, Aris2…) and the TmuxAtlas account owning it. */
+export interface CLIPersonAssignment {
+  person: string
+  owner: string | null
+  profiles: CLIPersonProfile[]
+  missing?: boolean
+}
+
+async function readCLIAssignments(res: Response, fallback: string): Promise<CLIPersonAssignment[]> {
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res, fallback))
+  }
+  const data = (await res.json()) as { persons?: CLIPersonAssignment[] | null }
+  return data?.persons ?? []
+}
+
+export async function fetchCLIAssignments(): Promise<CLIPersonAssignment[]> {
+  const res = await apiFetch('/api/admin/cli-assignments')
+  return readCLIAssignments(res, 'Impossible de charger les sessions CLI.')
+}
+
+/** Assigns a CLI person to an account; an empty owner removes the assignment. */
+export async function setCLIAssignment(person: string, owner: string): Promise<CLIPersonAssignment[]> {
+  const res = await apiFetch('/api/admin/cli-assignments', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ person, owner }),
+  })
+  return readCLIAssignments(res, 'Impossible d’assigner la session CLI.')
+}
+
 export async function claimSession(hostId: string, session: string, owner?: string): Promise<void> {
   const payload: Record<string, unknown> = { host_id: hostId, session }
   if (owner !== undefined) {

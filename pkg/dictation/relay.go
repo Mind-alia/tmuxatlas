@@ -153,8 +153,13 @@ func (r *Relay) Prune(ctx context.Context) {
 func (r *Relay) Start(ctx context.Context, session, micID string, partial func(string)) (*Take, error) {
 	person := r.Person
 	if person == "" {
-		person, _ = r.tmuxRun(ctx, "show-options", "-t", "="+session+":", "-qv", "@ai-person")
-		person = strings.TrimSpace(person)
+		for _, opt := range []string{"@ai-person", "@ai-person-claude", "@ai-person-codex", "@ai-person-agy"} {
+			val, _ := r.tmuxRun(ctx, "show-options", "-t", "="+session+":", "-qv", opt)
+			if val = strings.TrimSpace(val); val != "" {
+				person = val
+				break
+			}
+		}
 	}
 	inst := r.instance(sessionName(person))
 	if !inst.busy.TryLock() {

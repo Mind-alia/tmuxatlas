@@ -9,6 +9,7 @@ import {
   LogOut,
   Menu as MenuIcon,
   Plus,
+  RefreshCw,
   Settings,
   Shield,
   type LucideIcon,
@@ -31,6 +32,7 @@ export function MobileNav({
   onSessions,
   onMonitoring,
   onWall,
+  onLoops,
   onFiles,
   onOps,
   onAdmin,
@@ -45,6 +47,7 @@ export function MobileNav({
   onSessions: () => void
   onMonitoring: () => void
   onWall?: () => void
+  onLoops?: () => void
   onFiles?: () => void
   onOps?: () => void
   onAdmin?: () => void
@@ -56,6 +59,7 @@ export function MobileNav({
   const primary: Destination[] = [
     { label: 'À traiter', icon: Inbox, action: onOverview, active: currentView === 'overview' },
     { label: 'Sessions', icon: List, action: onSessions },
+    ...(onLoops ? [{ label: 'Boucles', icon: RefreshCw, action: onLoops, active: currentView === 'loops' }] : []),
     ...(onFiles ? [{ label: 'Fichiers', icon: FolderOpen, action: onFiles, active: currentView === 'files' }] : []),
     { label: 'Monitoring', icon: Activity, action: onMonitoring, active: currentView === 'monitoring' },
   ]

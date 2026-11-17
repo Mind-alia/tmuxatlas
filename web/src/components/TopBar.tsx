@@ -19,6 +19,7 @@ interface TopBarProps {
   onOverview: () => void
   onMonitoring: () => void
   onWall: () => void
+  onLoops?: () => void
   onFiles?: () => void
   /** Containers and backups; only passed to accounts allowed to see them. */
   onOps?: () => void
@@ -57,6 +58,7 @@ export function TopBar({
   onOverview,
   onMonitoring,
   onWall,
+  onLoops,
   onFiles,
   onOps,
   onAdmin,
@@ -109,6 +111,7 @@ export function TopBar({
   const navigation: Array<readonly [string, string, () => void]> = [
     ['overview', 'Vue d’ensemble', onOverview],
     ['wall', 'Mur', onWall],
+    ...(onLoops ? ([['loops', 'Boucles', onLoops]] as const) : []),
     ['monitoring', 'Monitoring', onMonitoring] as const,
     ...(onFiles ? ([['files', 'Fichiers', onFiles]] as const) : []),
     ...(onOps ? ([['ops', 'Conteneurs', onOps]] as const) : []),

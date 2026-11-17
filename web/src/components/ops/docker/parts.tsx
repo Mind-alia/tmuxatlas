@@ -1,7 +1,7 @@
 import { HeartPulse, Loader2, MoreVertical, Play, RotateCw, Square, SquareTerminal, Trash2 } from 'lucide-react'
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 import { Button, Dialog, IconButton, Menu, MenuItem } from '../../ui'
-import { toneColor } from '../../monitoring/Monitoring'
+import { toneColor } from '../../monitoring/primitives'
 import { canDelete, canStop, healthLabel, type DotTone } from './model'
 import type { DockerAction, DockerContainer, DockerHealth } from './types'
 

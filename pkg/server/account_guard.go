@@ -31,6 +31,11 @@ var accountUserRoutes = map[string]bool{
 	"GET /api/files/archive": true, "GET /api/files/pane-dir": true, "PUT /api/files/content": true,
 	"POST /api/files/upload": true, "POST /api/files/mkdir": true, "POST /api/files/create": true,
 	"POST /api/files/rename": true, "POST /api/files/delete": true,
+	// Improvement loops & quick chats (claude, codex, agy)
+	"GET /api/loops": true, "GET /api/loops/meta": true, "GET /api/loops/logs": true,
+	"POST /api/loops/plan": true, "POST /api/loops/review": true, "POST /api/loops/instruction": true, "POST /api/loops/create": true, "POST /api/loops/update": true, "POST /api/loops/delete": true,
+	"POST /api/loops/start": true, "POST /api/loops/pause": true, "POST /api/loops/stop": true,
+	"POST /api/loops/worker": true, "POST /api/loops/chat": true,
 }
 
 // Routes outside the user allow-list are recorded explicitly so a router walk
@@ -41,6 +46,7 @@ var accountOtherRoutes = map[string]string{
 	"GET /api/admin/users": "admin", "POST /api/admin/users": "admin",
 	"PATCH /api/admin/users/{id}": "admin", "DELETE /api/admin/users/{id}": "admin",
 	"GET /api/admin/sessions": "admin", "GET /api/ops": "admin", "POST /api/ops/notifications/test": "admin", "GET /api/peers": "admin",
+	"GET /api/admin/cli-assignments": "admin", "PUT /api/admin/cli-assignments": "admin",
 	"GET /api/agent-status": "admin", "DELETE /api/tool-events": "admin",
 	"GET /api/push/vapid-key": "admin", "POST /api/push/subscribe": "admin",
 	"POST /api/push/unsubscribe": "admin", "PUT /api/preferences": "admin", "POST /api/pair": "admin",

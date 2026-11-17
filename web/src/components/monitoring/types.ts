@@ -179,6 +179,87 @@ export interface MonitorSSHReport {
   config?: Record<string, string>
 }
 
+export interface MonitorTokenCounts {
+  input: number
+  cache_read: number
+  cache_write?: number
+  output: number
+  reasoning?: number
+  total: number
+  requests?: number
+}
+
+export interface MonitorQuotaWindow {
+  label: string
+  used_percent: number
+  window_minutes?: number
+  resets_at?: number
+  expired?: boolean
+}
+
+export interface MonitorExtraUsage {
+  enabled: boolean
+  used?: number
+  limit?: number
+  used_percent?: number
+  currency?: string
+  limit_reached?: boolean
+  disabled_reason?: string
+  balance?: string
+  unlimited?: boolean
+}
+
+export interface MonitorCLILiveSession {
+  session: string
+  command?: string
+  path?: string
+  attached?: boolean
+}
+
+export interface MonitorCLISessionActivity {
+  id: string
+  project?: string
+  title?: string
+  branch?: string
+  model?: string
+  tokens: number
+  requests: number
+  last_activity: number
+  active?: boolean
+}
+
+export interface MonitorCLIAccount {
+  id: string
+  cli: 'claude' | 'codex' | 'agy' | string
+  name: string
+  person?: string
+  /** TmuxAtlas account ID this CLI person is assigned to (admin settings). */
+  owner?: string
+  owner_name?: string
+  account?: string
+  plan?: string
+  connected: boolean
+  quota_source: 'provider_cache' | 'session_events' | 'local_logs_only' | string
+  quota_at?: number
+  last_activity?: number
+  last_model?: string
+  context_window?: number
+  last_turn?: MonitorTokenCounts
+  windows?: MonitorQuotaWindow[]
+  extra?: MonitorExtraUsage
+  tokens_5h: MonitorTokenCounts
+  tokens_24h: MonitorTokenCounts
+  tokens_7d: MonitorTokenCounts
+  models_7d?: string[]
+  live_sessions?: MonitorCLILiveSession[]
+  recent_sessions?: MonitorCLISessionActivity[]
+}
+
+export interface MonitorCLIUser {
+  id: string
+  username: string
+}
+
 export interface MonitorResponse {
   supported: boolean
   interval: number
@@ -195,6 +276,9 @@ export interface MonitorResponse {
   timers: MonitorTimer[] | null
   endpoints: MonitorEndpoint[] | null
   logs: MonitorLogs
+  cli_accounts?: MonitorCLIAccount[] | null
+  cli_users?: MonitorCLIUser[] | null
+  quota_refreshing?: boolean
   alerts: MonitorAlert[] | null
 }
 

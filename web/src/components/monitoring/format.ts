@@ -1,4 +1,5 @@
 const nf1 = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 1 })
+const nf2 = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 })
 const nf0 = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 })
 
 const units = ['o', 'Ko', 'Mo', 'Go', 'To']
@@ -60,4 +61,29 @@ export function formatCpuTime(nanos: number | undefined): string {
 
 export function hostOf(url: string): string {
   return url.replace(/^https?:\/\//, '').replace(/\/$/, '')
+}
+
+export function formatTokens(n: number | undefined): string {
+  if (!n || n <= 0) return '0'
+  if (n >= 1_000_000_000) {
+    const v = n / 1_000_000_000
+    return `${(v >= 100 ? nf0 : nf2).format(v)} Md`
+  }
+  if (n >= 1_000_000) {
+    const v = n / 1_000_000
+    return `${(v >= 100 ? nf0 : nf1).format(v)} M`
+  }
+  if (n >= 1_000) {
+    const v = n / 1_000
+    return `${(v >= 100 ? nf0 : nf1).format(v)} k`
+  }
+  return nf0.format(n)
+}
+
+export function formatMoney(amount: number, currency?: string): string {
+  const num = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount)
+  if (!currency) return num
+  if (currency.toUpperCase() === 'USD') return `${num} $`
+  if (currency.toUpperCase() === 'EUR') return `${num} €`
+  return `${num} ${currency}`
 }

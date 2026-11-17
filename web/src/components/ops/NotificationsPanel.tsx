@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { apiFetch } from '../../lib/api'
-import { StatusBadge } from '../monitoring/Monitoring'
+import { StatusBadge } from '../monitoring/primitives'
 import { formatRelative } from '../monitoring/format'
 import type { OpsAlertState, OpsNotifications } from './types'
 
