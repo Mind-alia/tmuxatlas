@@ -76,12 +76,20 @@ timeout and every response is read with a size bound.
 - This is a rule of Atlas, not of the system: every account still shares the
   hub's Unix account, which is in the `docker` group, so a `user` account
   can still run `docker` or `tmux attach` from a shell in one of its own
-  sessions.
+  sessions. That is root on the machine, with or without this view.
+- For that reason the view is refused (503, with the reason on the page)
+  while an account other than an admin is active in accounts mode: reserving
+  it to admins would promise a separation the system does not have. Disabling
+  or deleting those accounts brings it back at once. `TMUXATLAS_DOCKER=on`
+  keeps it on anyway, for an operator who accepts that every account is
+  trusted with Docker. Refusing the view does not protect the socket: only
+  separate Unix accounts do (sessions of `user` accounts on a peer whose
+  account is not in the `docker` group), which Atlas does not set up.
 - Polling stops while the page is hidden.
 
 | Variable | Default | Role |
 |---|---|---|
-| `TMUXATLAS_DOCKER` | on with authentication, off without | `off` turns the live view off; `on` forces it on without authentication |
+| `TMUXATLAS_DOCKER` | on with authentication, off without; off in accounts mode while a `user` account is active | `off` turns the live view off; `on` forces it on without authentication, or with active `user` accounts |
 | `TMUXATLAS_DOCKER_SOCKET` | `/var/run/docker.sock` | Engine API socket, absolute path (`unix://` accepted) |
 
 ⚠️ Access to the Docker socket is root on the machine, and the live view

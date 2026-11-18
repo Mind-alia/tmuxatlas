@@ -69,6 +69,10 @@ type Config struct {
 	DockerCLI string
 	// Problem explains a configuration that cannot work.
 	Problem string
+	// Gate, when set, is asked on every request: a non-empty answer refuses
+	// the view with that message. It carries the rules that depend on the
+	// state of the server rather than on its configuration.
+	Gate func() string
 	// Actor names who acts in the logs when no account is signed in:
 	// "passkey", or "sans authentification".
 	Actor string
@@ -180,6 +184,11 @@ func (s *Service) usable() error {
 	}
 	if s.cfg.Problem != "" {
 		return &requestError{status: http.StatusServiceUnavailable, message: s.cfg.Problem}
+	}
+	if s.cfg.Gate != nil {
+		if problem := s.cfg.Gate(); problem != "" {
+			return &requestError{status: http.StatusServiceUnavailable, message: problem}
+		}
 	}
 	return nil
 }

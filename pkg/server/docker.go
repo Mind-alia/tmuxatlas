@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/LosFurina/tmuxatlas/pkg/accounts"
 	"github.com/LosFurina/tmuxatlas/pkg/auth"
 	"github.com/LosFurina/tmuxatlas/pkg/dockerui"
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
@@ -51,6 +52,9 @@ func newDockerUI(opts *Options, router *peer.ActionRouter, policy *accountPolicy
 			cfg.Problem = "vue Docker désactivée : ce serveur tourne sans authentification (TMUXATLAS_DOCKER=on pour l’activer quand même)"
 		}
 	}
+	if opts.AccountsAuth != nil && !cfg.Explicit {
+		cfg.Gate = func() string { return sharedDockerAccountProblem(opts.AccountsAuth.Store) }
+	}
 	terminals := &dockerTerminals{opts: opts}
 	if router != nil {
 		terminals.router = router
@@ -59,6 +63,29 @@ func newDockerUI(opts *Options, router *peer.ActionRouter, policy *accountPolicy
 		terminals.closeTerminals = policy.closeReservedTerminals
 	}
 	return dockerui.New(cfg, terminals)
+}
+
+// sharedDockerAccountProblem refuses the Containers view while an account
+// other than an admin can sign in. Every account's shells run under the
+// hub's Unix account, the one that reaches the Docker socket: such an
+// account can run docker from its own session, so reserving the view to
+// admins would promise a separation the system does not have. The operator
+// who accepts that asks for the view with TMUXATLAS_DOCKER=on. A store that
+// cannot be read refuses too.
+func sharedDockerAccountProblem(store *accounts.Store) string {
+	if store == nil {
+		return ""
+	}
+	users, err := store.List()
+	if err != nil {
+		return "vue Docker désactivée : la liste des comptes est illisible"
+	}
+	for _, user := range users {
+		if user.Role != "admin" && !user.Disabled {
+			return "vue Docker désactivée : un compte non administrateur est actif, et ses terminaux tournent sous le compte Unix du hub, qui a accès à Docker (TMUXATLAS_DOCKER=on pour l’activer quand même)"
+		}
+	}
+	return ""
 }
 
 // accountSessions keeps, from a listing of the local tmux server, the

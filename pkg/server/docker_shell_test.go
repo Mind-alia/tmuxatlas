@@ -56,7 +56,7 @@ func TestUserAccountCannotJoinAdminContainerShell(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("TMUXATLAS_MONITOR", "off")
-	t.Setenv("TMUXATLAS_DOCKER", "")
+	t.Setenv("TMUXATLAS_DOCKER", "on")
 	socket, _ := startFakeDocker(t, dir, 0)
 	t.Setenv("TMUXATLAS_DOCKER_SOCKET", socket)
 	argsFile := fakeDockerCLI(t, dir)

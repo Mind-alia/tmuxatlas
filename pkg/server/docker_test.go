@@ -127,7 +127,7 @@ func TestDockerRoutesKeepTheServerGuards(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	t.Setenv("TMUX_TMPDIR", dir)
 	t.Setenv("TMUXATLAS_MONITOR", "off")
-	t.Setenv("TMUXATLAS_DOCKER", "")
+	t.Setenv("TMUXATLAS_DOCKER", "on")
 	socket, dockerCalls := startFakeDocker(t, dir, 1500*time.Millisecond)
 	t.Setenv("TMUXATLAS_DOCKER_SOCKET", socket)
 	// A fake docker CLI records the arguments tmux starts it with.
@@ -511,5 +511,114 @@ func TestDockerRoutesWithPasskeySessions(t *testing.T) {
 	}
 	if calls := dockerCalls(); len(calls) != 1 {
 		t.Fatalf("appels Docker : %v", calls)
+	}
+}
+
+// Every account's shells run under the hub's Unix account, which reaches the
+// Docker socket: while an account other than an admin can sign in, the view
+// is refused unless the operator asked for it with TMUXATLAS_DOCKER=on.
+func TestDockerViewIsOffWhileAUserAccountIsActive(t *testing.T) {
+	for _, mode := range []struct {
+		name, env string
+		refused   bool
+	}{{"default", "", true}, {"asked", "on", false}} {
+		t.Run(mode.name, func(t *testing.T) {
+			// The socket path must be made of plain characters.
+			dir, err := os.MkdirTemp("/tmp", "atlas-docker-gate-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.RemoveAll(dir) })
+			t.Setenv("TMUXATLAS_MONITOR", "off")
+			t.Setenv("TMUXATLAS_DOCKER", mode.env)
+			socket, dockerCalls := startFakeDocker(t, dir, 0)
+			t.Setenv("TMUXATLAS_DOCKER_SOCKET", socket)
+			store := accounts.OpenStore(filepath.Join(dir, "users.json"))
+			hash, err := bcrypt.GenerateFromPassword([]byte("mot de passe"), bcrypt.MinCost)
+			if err != nil {
+				t.Fatal(err)
+			}
+			admin, err := store.Create("admin", string(hash), "admin")
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessions := auth.NewSessionManager(time.Hour)
+			a, err := auth.NewAccountsAuth(store, sessions)
+			if err != nil {
+				t.Fatal(err)
+			}
+			address := freeAddress(t)
+			base := "http://" + address
+			tmuxClient := &tmux.Client{}
+			runServer(t, &Options{ListenAddress: address, PublicURL: base, SocketPath: filepath.Join(dir, "server.sock"),
+				Client: tmuxClient, StateMgr: state.NewManager(tmuxClient), Tracker: toolevents.NewTracker(),
+				ActivityTracker: activity.NewTracker(), AuthEnabled: true, AccountsAuth: a, SessionMgr: sessions})
+
+			request, _ := http.NewRequest(http.MethodPost, base+"/api/auth/login", strings.NewReader(`{"username":"admin","password":"mot de passe"}`))
+			request.Header.Set("Origin", base)
+			request.Header.Set("Content-Type", "application/json")
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var token struct {
+				CSRF string `json:"csrf_token"`
+			}
+			if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&token) != nil || len(response.Cookies()) == 0 {
+				t.Fatalf("connexion : %s", response.Status)
+			}
+			response.Body.Close()
+			cookie := response.Cookies()[0]
+			call := func(method, path string) (int, string) {
+				t.Helper()
+				request, _ := http.NewRequest(method, base+path, nil)
+				request.Header.Set("Origin", base)
+				request.Header.Set(auth.CSRFHeader, token.CSRF)
+				request.AddCookie(cookie)
+				response, err := http.DefaultClient.Do(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer response.Body.Close()
+				data, _ := io.ReadAll(response.Body)
+				return response.StatusCode, string(data)
+			}
+			list := func() string {
+				t.Helper()
+				code, body := call(http.MethodGet, "/api/docker/containers")
+				if code != http.StatusOK {
+					t.Fatalf("liste : %d %s", code, body)
+				}
+				return body
+			}
+			stop := "/api/docker/containers/" + dockerTestID + "/stop"
+
+			if body := list(); !strings.Contains(body, `"available":true`) {
+				t.Fatalf("admins seuls : %s", body)
+			}
+			alice, err := store.Create("alice", string(hash), "user")
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := list()
+			code, _ := call(http.MethodPost, stop)
+			if mode.refused {
+				if !strings.Contains(body, `"available":false`) || !strings.Contains(body, "compte non administrateur") {
+					t.Fatalf("liste avec un compte user : %s", body)
+				}
+				if code != http.StatusServiceUnavailable || len(dockerCalls()) != 0 {
+					t.Fatalf("arrêt avec un compte user : %d %v", code, dockerCalls())
+				}
+			} else if !strings.Contains(body, `"available":true`) || code != http.StatusOK {
+				t.Fatalf("vue demandée avec un compte user : %d %s", code, body)
+			}
+			disabled := true
+			if _, err := store.Update(alice.ID, admin.ID, "", &disabled); err != nil {
+				t.Fatal(err)
+			}
+			if body := list(); !strings.Contains(body, `"available":true`) {
+				t.Fatalf("compte user désactivé : %s", body)
+			}
+		})
 	}
 }
