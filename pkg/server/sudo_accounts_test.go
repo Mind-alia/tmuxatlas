@@ -2,7 +2,9 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/accounts"
 	"github.com/LosFurina/tmuxatlas/pkg/auth"
 	"github.com/LosFurina/tmuxatlas/pkg/sudo"
+	"github.com/LosFurina/tmuxatlas/pkg/sudoterm"
 )
 
 // TestSudoTerminalDoesNotHoldAccountPolicy opens a sudo terminal in accounts
@@ -109,6 +112,14 @@ func TestSudoTerminalDoesNotHoldAccountPolicy(t *testing.T) {
 	first := rig.request(t, "echo premier")
 	browser := rig.open(t, first.ID, admin, http.Header{"Cookie": []string{adminCookie}})
 	waitShown(browser, "sudo echo premier")
+	// Make this shell ignore SIGHUP: it then outlives the decision until the
+	// sudo peer kills it 2 s later, so reopening at once would find the peer
+	// busy. Ctrl-U clears the proposed line first; 40+2 is only on screen
+	// once the line ran.
+	if err := browser.WriteMessage(websocket.BinaryMessage, []byte("\x15trap '' HUP; echo $((40+2))\r")); err != nil {
+		t.Fatal(err)
+	}
+	waitShown(browser, "42")
 
 	if status := call(http.MethodGet, "/api/sessions", userCookie, ""); status != http.StatusNoContent {
 		t.Fatalf("GET /api/sessions = %d", status)
@@ -123,6 +134,12 @@ func TestSudoTerminalDoesNotHoldAccountPolicy(t *testing.T) {
 		t.Fatalf("request after the decision = %+v", request)
 	}
 	waitClosed(browser, "the decision")
+	// The decision closes the browser at once; the sudo peer then ends the
+	// shell, frees its runner and only then logs "closed". Opening the next
+	// terminal before that would find the peer still busy with this one.
+	eventually(t, "the first terminal to end on the sudo peer", func() bool {
+		return auditRecorded(rig.auditPath, first.ID, "closed")
+	})
 
 	// Revoking the administrator's session closes a terminal it opened.
 	second := rig.request(t, "echo second")
@@ -133,4 +150,20 @@ func TestSudoTerminalDoesNotHoldAccountPolicy(t *testing.T) {
 	if status := call(http.MethodGet, "/ws/sudo", adminCookie, ""); status != http.StatusUnauthorized {
 		t.Fatalf("a revoked session reached /ws/sudo: %d", status)
 	}
+}
+
+// auditRecorded reports whether the sudo peer's audit log holds event for
+// the request.
+func auditRecorded(path, requestID, event string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		var entry sudoterm.AuditEntry
+		if json.Unmarshal([]byte(line), &entry) == nil && entry.RequestID == requestID && entry.Event == event {
+			return true
+		}
+	}
+	return false
 }
