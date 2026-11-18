@@ -205,7 +205,9 @@ func (e *Engine) step(signals []Signal) []outgoing {
 				st.setDue("firing")
 			}
 		case PhaseResolving:
-			st.Phase = PhaseFiring // flapping back: no new notification
+			// Flapping back: no new notification. A firing notification not
+			// delivered yet goes on with its retry count and delay.
+			st.Phase = PhaseFiring
 			if st.Due == "resolved" {
 				st.setDue("")
 			}
@@ -232,8 +234,12 @@ func (e *Engine) step(signals []Signal) []outgoing {
 			continue
 		case PhaseFiring:
 			st.Phase, st.OKCount = PhaseResolving, 0
-			if st.Due == "firing" || st.Due == "reminder" {
-				st.setDue("") // never announced, or no need to remind
+			// No need to remind of a problem that looks gone. A firing
+			// notification not delivered yet stays due but waits: it goes
+			// out if the problem comes back before the recovery is
+			// confirmed, and is dropped with the state otherwise.
+			if st.Due == "reminder" {
+				st.setDue("")
 			}
 		}
 		if st.Phase == PhaseResolving && st.Due != "resolved" {
@@ -256,6 +262,9 @@ func (e *Engine) step(signals []Signal) []outgoing {
 	}
 	var due []*AlertState
 	for _, st := range e.states {
+		if st.Phase == PhaseResolving && st.Due != "resolved" {
+			continue // waiting for the recovery to be confirmed or the problem to come back
+		}
 		last := st.LastSent
 		if at, ok := e.lastByKey[st.Key]; ok && at.After(last) {
 			last = at

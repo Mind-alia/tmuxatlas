@@ -348,6 +348,10 @@ hub request internal addresses (SSRF).
   that a problem still there is announced again 6 h later, and an undelivered
   recovery is dropped. With several channels, one success is enough: the
   failing one is only logged.
+- A problem notification not delivered yet waits while the problem looks
+  gone, with its attempts and delay. It goes out if the problem comes back
+  before the recovery is confirmed, and is dropped if the recovery is
+  confirmed first: a problem never announced has no recovery to announce.
 - States are kept in `alerts.json` (data directory), so a restart of the
   hub does not notify again.
 

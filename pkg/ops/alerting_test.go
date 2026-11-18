@@ -241,6 +241,83 @@ func TestEngineRetriesUndeliveredNotification(t *testing.T) {
 	}
 }
 
+// The review case: the first delivery fails, a single clear evaluation
+// follows, then the channel and the problem come back before the recovery is
+// confirmed. The pending notification must keep its retry delay and count,
+// go out exactly once, and no recovery may be announced meanwhile.
+func TestEngineDeliversAlertThatReturnsBeforeRecoveryIsConfirmed(t *testing.T) {
+	e, channel, c := newFlakyEngine()
+	ctx := context.Background()
+	failed := Signal{Key: "ops:backup:failed", Severity: "critical", Title: "Sauvegarde en échec"}
+	e.Evaluate(ctx, []Signal{failed}) // T+0: refused, next attempt at T+1 min
+	if channel.attempts != 1 {
+		t.Fatalf("%d essais au premier tour", channel.attempts)
+	}
+	c.advance(30 * time.Second)
+	e.Evaluate(ctx, nil) // T+30 s: one clear evaluation, two are needed to confirm
+	if v := e.View(); channel.attempts != 1 || len(v.Alerts) != 1 || v.Alerts[0].Due != "firing" || v.Alerts[0].Attempts != 1 {
+		t.Fatalf("l'envoi en attente doit rester dû, avec son compte d'essais : %d essais, %+v", channel.attempts, v.Alerts)
+	}
+	channel.down = false
+	c.advance(15 * time.Second)
+	e.Evaluate(ctx, []Signal{failed}) // T+45 s: back, but the retry delay holds
+	if channel.attempts != 1 {
+		t.Fatalf("nouvel essai avant le délai : %d essais", channel.attempts)
+	}
+	c.advance(15 * time.Second)
+	e.Evaluate(ctx, []Signal{failed}) // T+1 min: retry due
+	// 24 h with the problem still there
+	for i := 0; i < 2*24*60; i++ {
+		c.advance(30 * time.Second)
+		e.Evaluate(ctx, []Signal{failed})
+	}
+	sent := channel.take()
+	if len(sent) == 0 || sent[0].Kind != "firing" {
+		t.Fatalf("l'alerte initiale doit être livrée : %q", kinds(sent))
+	}
+	firing := 0
+	for _, n := range sent {
+		switch n.Kind {
+		case "firing":
+			firing++
+		case "resolved":
+			t.Fatalf("rétablissement annoncé alors que la panne est toujours là : %q", kinds(sent))
+		}
+	}
+	if firing != 1 {
+		t.Fatalf("l'alerte initiale doit partir une seule fois : %q", kinds(sent))
+	}
+	v := e.View()
+	if !v.Alerts[0].Notified || v.Alerts[0].Phase != PhaseFiring {
+		t.Fatalf("état après livraison : %+v", v.Alerts[0])
+	}
+	for _, n := range v.Recent {
+		if n.Kind == "resolved" {
+			t.Fatalf("l'historique contient un rétablissement prématuré : %+v", v.Recent)
+		}
+	}
+}
+
+// Still dropped when the recovery is confirmed before any delivery: a
+// problem that was never announced has no recovery to announce.
+func TestEngineDropsUndeliveredAlertOnceRecoveryIsConfirmed(t *testing.T) {
+	e, channel, c := newFlakyEngine()
+	ctx := context.Background()
+	failed := Signal{Key: "ops:backup:failed", Severity: "critical", Title: "Sauvegarde en échec"}
+	e.Evaluate(ctx, []Signal{failed})
+	channel.down = false
+	for i := 0; i < 20; i++ {
+		c.advance(30 * time.Second)
+		e.Evaluate(ctx, nil)
+	}
+	if got := kinds(channel.take()); got != "" {
+		t.Fatalf("rien ne doit partir pour une panne finie avant d'être annoncée : %q", got)
+	}
+	if v := e.View(); len(v.Alerts) != 0 {
+		t.Fatalf("l'état doit disparaître : %+v", v.Alerts)
+	}
+}
+
 func TestEngineGivesUpAfterBoundedRetries(t *testing.T) {
 	e, channel, c := newFlakyEngine()
 	ctx := context.Background()
