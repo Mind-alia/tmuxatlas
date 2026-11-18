@@ -412,3 +412,22 @@ func TestDispatcherAndLocalRouterPreserveTypedErrors(t *testing.T) {
 		t.Fatalf("local router err=%v", err)
 	}
 }
+
+// The hub lets only admins use a container shell: the agent says which
+// sessions are, and older hubs still read the owner.
+func TestOwnerActionReportsContainerShells(t *testing.T) {
+	client := isolatedTmux(t)
+	if err := client.NewOwnedSession("shell", "", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Exec("set-option", "-t", tmux.ExactWindow("shell", ""), tmux.DockerSessionOption, strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := runExec(t, client, "owner", "shell", map[string]any{})
+	if err != nil || string(result) != `{"admin_only":true,"owner":"admin"}` {
+		t.Fatalf("shell de conteneur : %s %v", result, err)
+	}
+	if _, err := runExec(t, client, "owner", "absente", map[string]any{}); err == nil {
+		t.Fatal("session absente acceptée")
+	}
+}

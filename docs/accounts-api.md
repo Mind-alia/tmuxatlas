@@ -67,6 +67,10 @@ Le rôle `user` peut aussi lire `/api/sessions`, `/api/hosts`,
 `/api/tool-events`, `/api/activity`, `/api/preferences` et son statut, se
 déconnecter et changer son mot de passe. Le propriétaire d’une session est une
 simple étiquette : tout compte connecté voit et utilise toutes les sessions,
-et peut en changer le propriétaire ou les libérer. Les autres routes protégées sont
+et peut en changer le propriétaire ou les libérer. Seule exception, le shell
+d’un conteneur ouvert depuis l’onglet Conteneurs (option tmux `@atlas-docker`)
+est réservé aux admins : un compte `user` ne le voit pas, et ne peut ni
+l’ouvrir, ni le lire, ni y écrire, ni le renommer, le fermer, le prendre ou le
+libérer, même avec son nom exact. Les autres routes protégées sont
 refusées par défaut, notamment administration, surveillance, statistiques,
 peers, voix, push et écriture des préférences.

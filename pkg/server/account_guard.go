@@ -83,7 +83,9 @@ func newAccountPolicy(opts *Options) *accountPolicy {
 }
 
 // remoteOwner asks the agent for current ownership instead of trusting a
-// potentially delayed discovery snapshot. Older agents fail closed.
+// potentially delayed discovery snapshot. Older agents fail closed. Only
+// accounts that are not admins are checked here: a session the agent reports
+// as reserved to admins counts as unavailable.
 func (p *accountPolicy) remoteOwner(host, name string) (tmux.Owner, bool) {
 	if p.router == nil {
 		return "", false
@@ -95,9 +97,10 @@ func (p *accountPolicy) remoteOwner(host, name string) (tmux.Owner, bool) {
 		return "", false
 	}
 	var response struct {
-		Owner tmux.Owner `json:"owner"`
+		Owner     tmux.Owner `json:"owner"`
+		AdminOnly bool       `json:"admin_only"`
 	}
-	if json.Unmarshal(result.Result, &response) != nil {
+	if json.Unmarshal(result.Result, &response) != nil || response.AdminOnly {
 		return "", false
 	}
 	return response.Owner, true
@@ -133,8 +136,9 @@ func (p *accountPolicy) closeForChange(w http.ResponseWriter) bool {
 }
 
 // owns reports whether an account may use a session. Ownership is a label, so
-// any account may use any existing session except Atlas's internal one; the
-// pane must still belong to that session.
+// any account may use any existing session except Atlas's internal one and
+// the container shells, reserved to admins; the pane must still belong to
+// that session.
 func (p *accountPolicy) owns(host, name, pane, _ string) bool {
 	if p.opts.PeerMgr == nil || host == "" || name == "" || tmux.IsInternalSession(name) {
 		return false
@@ -149,7 +153,7 @@ func (p *accountPolicy) owns(host, name, pane, _ string) bool {
 		if err != nil {
 			return false
 		}
-		for _, session := range current {
+		for _, session := range accountSessions(current) {
 			if session.Name == name {
 				if pane == "" {
 					return true
@@ -216,6 +220,7 @@ func (p *accountPolicy) verifiedProjection(projection state.Projection) state.Pr
 				if err != nil {
 					continue
 				}
+				sessions = accountSessions(sessions)
 			}
 			for _, session := range sessions {
 				if session == nil || tmux.IsInternalSession(session.Name) {
@@ -286,6 +291,7 @@ func (p *accountPolicy) watchOwnership(ctx context.Context) {
 				if err != nil {
 					continue
 				}
+				sessions = accountSessions(sessions)
 			}
 			for _, session := range sessions {
 				if session != nil && !tmux.IsInternalSession(session.Name) {
@@ -348,7 +354,7 @@ func (p *accountPolicy) Middleware(next http.Handler) http.Handler {
 		default:
 		}
 		path := r.URL.Path
-		targeted := path == "/ws/session" || path == "/api/session/preview" || path == "/api/session/reply" || path == "/api/session/rename" || path == "/api/session/kill" || path == "/api/session/select-window" || path == "/api/session/select-pane" || path == "/api/session/release" || path == "/api/tool-event"
+		targeted := path == "/ws/session" || path == "/api/session/preview" || path == "/api/session/reply" || path == "/api/session/rename" || path == "/api/session/kill" || path == "/api/session/select-window" || path == "/api/session/select-pane" || path == "/api/session/claim" || path == "/api/session/release" || path == "/api/tool-event"
 		if user && targeted {
 			host, session, pane := r.URL.Query().Get("host_id"), r.URL.Query().Get("session"), r.URL.Query().Get("pane")
 			if path == "/ws/session" {

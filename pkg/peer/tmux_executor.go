@@ -29,12 +29,24 @@ func (executor tmuxRuntimeExecutor) Execute(_ context.Context, operation string,
 		if err != nil {
 			return nil, err
 		}
+		// The hub only lets admins use a container shell: say so, from every
+		// entry of that name.
+		response := map[string]any{}
 		for _, session := range sessions {
-			if session.Name == target.Session {
-				return json.Marshal(map[string]any{"owner": session.Owner})
+			if session.Name != target.Session {
+				continue
+			}
+			if _, found := response["owner"]; !found {
+				response["owner"] = session.Owner
+			}
+			if session.AdminOnly {
+				response["admin_only"] = true
 			}
 		}
-		return nil, RuntimeError{Code: ErrorNotFound}
+		if len(response) == 0 {
+			return nil, RuntimeError{Code: ErrorNotFound}
+		}
+		return json.Marshal(response)
 	case "claim", "release":
 		var params struct {
 			Owner     string  `json:"owner"`

@@ -401,11 +401,11 @@ func Run(ctx context.Context, opts *Options) error {
 		}
 	}
 	publicRouter.Use(fileBodyLimit(fileExplorer))
-	dockerUI := newDockerUI(opts, actionRouter)
 	accountPolicy := newAccountPolicy(opts)
 	if actionRouter != nil {
 		accountPolicy.router = actionRouter
 	}
+	dockerUI := newDockerUI(opts, actionRouter, accountPolicy)
 	if opts.AccountsAuth != nil {
 		go accountPolicy.watchOwnership(ctx)
 	}

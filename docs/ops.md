@@ -58,10 +58,19 @@ timeout and every response is read with a size bound.
   next click starts it again. A live session of the same name not opened for
   this container is never typed into: the next one is `docker-<name>-2`; the
   dead shell of a container that was recreated gives its name back.
-- The shell session is an ordinary Atlas session. In accounts mode the usual
-  session rules apply to it: every account can open every session, so a
-  `user` account can open a container shell an admin started (today all
-  accounts share the hub's Unix account, which is in the `docker` group).
+- The shell session is reserved to admins: its `@atlas-docker` option marks
+  it. In accounts mode a `user` account does not see it (session lists,
+  `/ws/events`, tool events, activity) and cannot open, preview, type into,
+  rename, kill, claim or release it, even with its exact name. The hub
+  applies the same rule to a session that an agent reports as a container
+  shell. Before docker starts in the session, the terminals that `user`
+  accounts hold on it are closed, so none sees the shell, not even one
+  opened in the instant before the marker was set. Admins, and passkey mode
+  (a single owner), keep the session as before.
+- This is a rule of Atlas, not of the system: every account still shares the
+  hub's Unix account, which is in the `docker` group, so a `user` account
+  can still run `docker` or `tmux attach` from a shell in one of its own
+  sessions.
 - Polling stops while the page is hidden.
 
 | Variable | Default | Role |

@@ -22,8 +22,9 @@ import (
 )
 
 // dockerSessionOption marks a container shell session with its container ID,
-// so a session is only reused for the container it was opened for.
-const dockerSessionOption = "@atlas-docker"
+// so a session is only reused for the container it was opened for. It also
+// reserves the session to administrators (see accountSessions).
+const dockerSessionOption = tmux.DockerSessionOption
 
 // dockerTmuxTimeout bounds each tmux command run for a container shell.
 const dockerTmuxTimeout = 5 * time.Second
@@ -42,7 +43,7 @@ func init() {
 // newDockerUI builds the Containers view (TMUXATLAS_DOCKER, TMUXATLAS_DOCKER_SOCKET).
 // Without authentication, any local account could drive Docker through it,
 // so it then needs TMUXATLAS_DOCKER=on.
-func newDockerUI(opts *Options, router *peer.ActionRouter) *dockerui.Service {
+func newDockerUI(opts *Options, router *peer.ActionRouter, policy *accountPolicy) *dockerui.Service {
 	cfg := dockerui.ConfigFromEnv()
 	if !opts.AuthEnabled {
 		cfg.Actor = "sans authentification"
@@ -54,7 +55,82 @@ func newDockerUI(opts *Options, router *peer.ActionRouter) *dockerui.Service {
 	if router != nil {
 		terminals.router = router
 	}
+	if opts.AccountsAuth != nil && policy != nil {
+		terminals.closeTerminals = policy.closeReservedTerminals
+	}
 	return dockerui.New(cfg, terminals)
+}
+
+// accountSessions keeps, from a listing of the local tmux server, the
+// sessions that an account other than an admin may see and use: all but the
+// container shells, whose docker exec is usually root in the container. A
+// name listed twice is left out if either entry is a container shell.
+func accountSessions(sessions []*tmux.Session) []*tmux.Session {
+	reserved := make(map[string]bool)
+	for _, session := range sessions {
+		if session != nil && session.AdminOnly {
+			reserved[session.Name] = true
+		}
+	}
+	if len(reserved) == 0 {
+		return sessions
+	}
+	kept := make([]*tmux.Session, 0, len(sessions))
+	for _, session := range sessions {
+		if session != nil && !reserved[session.Name] {
+			kept = append(kept, session)
+		}
+	}
+	return kept
+}
+
+// closeReservedTerminals ends the terminals that accounts other than admins
+// hold on a local session they may no longer use, and waits for them to
+// close. A container shell starts only after it, once its session carries
+// the marker: a terminal opened in the instant between the creation of the
+// session and its marker never sees the shell, and owns refuses new ones.
+func (p *accountPolicy) closeReservedTerminals() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	local := func(connection accountConnection) bool {
+		return connection.session != "" && p.opts.PeerMgr != nil && p.opts.PeerMgr.IsLocal(connection.host)
+	}
+	open := false
+	for _, connection := range p.connections {
+		open = open || local(connection)
+	}
+	if !open {
+		return true
+	}
+	if p.opts.Client == nil {
+		return false
+	}
+	current, err := p.opts.Client.ListSessions()
+	if err != nil {
+		return false
+	}
+	usable := make(map[string]bool)
+	for _, session := range accountSessions(current) {
+		usable[session.Name] = true
+	}
+	var closing []accountConnection
+	for id, connection := range p.connections {
+		if local(connection) && !usable[connection.session] {
+			connection.cancel()
+			delete(p.connections, id)
+			closing = append(closing, connection)
+		}
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for _, connection := range closing {
+		select {
+		case <-connection.done:
+		case <-timer.C:
+			return false
+		}
+	}
+	return true
 }
 
 // dockerRouters gives the Containers view the authentication of the other
@@ -83,7 +159,10 @@ func dockerRouters(r chi.Router, opts *Options, origin func(http.Handler) http.H
 type dockerTerminals struct {
 	opts   *Options
 	router runtimeActionExecutor
-	mu     sync.Mutex
+	// closeTerminals, in accounts mode, runs before docker starts in a pane
+	// (accountPolicy.closeReservedTerminals); false stops the shell.
+	closeTerminals func() bool
+	mu             sync.Mutex
 }
 
 func (t *dockerTerminals) OpenTerminal(r *http.Request, name, marker string, argv []string) (dockerui.TerminalResponse, error) {
@@ -123,7 +202,7 @@ func (t *dockerTerminals) OpenTerminal(r *http.Request, name, marker string, arg
 		switch {
 		case current == marker && pane != "" && dead:
 			// The shell of this container ended with an error: start it again.
-			if err := respawnDockerPane(tmuxPath, pane, false, argv); err != nil {
+			if err := t.startShell(tmuxPath, pane, false, argv); err != nil {
 				return dockerui.TerminalResponse{}, err
 			}
 			return dockerui.TerminalResponse{HostID: host, Session: session}, nil
@@ -135,7 +214,7 @@ func (t *dockerTerminals) OpenTerminal(r *http.Request, name, marker string, arg
 			if _, err := runTmux(tmuxPath, "set-option", "-q", "-t", pane, dockerSessionOption, marker); err != nil {
 				return dockerui.TerminalResponse{}, err
 			}
-			if err := respawnDockerPane(tmuxPath, pane, false, argv); err != nil {
+			if err := t.startShell(tmuxPath, pane, false, argv); err != nil {
 				return dockerui.TerminalResponse{}, err
 			}
 			return dockerui.TerminalResponse{HostID: host, Session: session, Created: true}, nil
@@ -173,11 +252,21 @@ func (t *dockerTerminals) create(r *http.Request, tmuxPath, host, session, marke
 	// its message on screen instead of closing the session at once. tmux
 	// before 3.3 has no "failed": the session then closes on any exit.
 	_, _ = runTmux(tmuxPath, "set-option", "-w", "-q", "-t", pane, "remain-on-exit", "failed")
-	if err := respawnDockerPane(tmuxPath, pane, true, argv); err != nil {
+	if err := t.startShell(tmuxPath, pane, true, argv); err != nil {
 		return fail(err)
 	}
 	refreshLocalSessionState(t.opts, host)
 	return nil
+}
+
+// startShell replaces the pane's process by the container shell, once the
+// pane's session carries its marker: first the terminals of other accounts
+// that may no longer use the session are closed.
+func (t *dockerTerminals) startShell(tmuxPath, pane string, kill bool, argv []string) error {
+	if t.closeTerminals != nil && !t.closeTerminals() {
+		return errors.New("des terminaux d’autres comptes restent ouverts sur cette session : réessaie")
+	}
+	return respawnDockerPane(tmuxPath, pane, kill, argv)
 }
 
 // paneState returns the ID of the target's active pane and whether its
