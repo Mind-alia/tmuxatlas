@@ -241,7 +241,8 @@ reads `Env`, `Mounts`, `Args`, `Cmd`, other labels nor `Health.Log`. A test
 (`pkg/ops/contrib_test.go`) runs the script against a fake `docker` and fails
 if the template reads any other field.
 
-`complete` is `false` when `docker inspect` failed or timed out (`error` then
+`complete` is `false` when `docker inspect` failed or timed out, or when there
+are more than 200 containers and the rest was not read (`error` then
 says why), and when `docker ps` failed (`docker_ok` false). The containers
 such a snapshot lacks keep the last state the hub saw, until a complete
 snapshot: a failed read never makes an outage look recovered. A container

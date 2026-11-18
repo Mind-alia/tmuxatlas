@@ -50,7 +50,14 @@ if ! out=$(timeout 20 "$DOCKER" ps -aq --no-trunc 2>&1); then
   out=""
 fi
 # Only container IDs go to inspect, never a warning printed by ps.
-ids=$(printf '%s\n' "$out" | grep -E '^[0-9a-f]+$' | head -n "$MAX_CONTAINERS" || true)
+all_ids=$(printf '%s\n' "$out" | grep -E '^[0-9a-f]+$' || true)
+ids=$(printf '%s\n' "$all_ids" | head -n "$MAX_CONTAINERS" || true)
+total=$(printf '%s\n' "$all_ids" | grep -c . || true)
+if [ "$total" -gt "$MAX_CONTAINERS" ]; then
+  # The containers past the limit are not read: the snapshot lacks them.
+  complete=false
+  error="$total conteneurs : seuls les $MAX_CONTAINERS premiers sont relevés"
+fi
 if [ -n "$ids" ]; then
   # shellcheck disable=SC2086 # hex strings, checked above
   set -- $ids

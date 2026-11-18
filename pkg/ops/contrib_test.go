@@ -281,3 +281,38 @@ func TestDockerSnapshotScriptMarksFailedInspectIncomplete(t *testing.T) {
 		t.Fatalf("fichiers temporaires laissés : %v", entries)
 	}
 }
+
+// Past the script's limit, the containers left out are not read: the
+// snapshot must say it is incomplete, or the hub would take their absence
+// for a recovery.
+func TestDockerSnapshotScriptMarksTruncatedListIncomplete(t *testing.T) {
+	script := contribScript(t, "docker-snapshot.sh")
+	bin := t.TempDir()
+	out := filepath.Join(t.TempDir(), "status")
+	const limit = 200 // MAX_CONTAINERS in the script
+	var ids strings.Builder
+	for i := 0; i <= limit; i++ {
+		fmt.Fprintf(&ids, "%012x\n", i+1)
+	}
+	docker := fakeDocker(t, bin, ids.String(), "", false)
+	cmd := exec.Command("bash", script)
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "TF_OPS_DIR=" + out, "TF_OPS_DOCKER=" + docker, "HOME=" + bin}
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("script : %v\n%s", err, output)
+	}
+	var raw map[string]any
+	if _, err := NewSource(out).ReadJSON(ContainersFile, &raw); err != nil {
+		t.Fatal(err)
+	}
+	message, _ := raw["error"].(string)
+	if raw["complete"] != false || raw["docker_ok"] != true || !strings.Contains(message, "201 conteneurs") {
+		t.Fatalf("relevé tronqué : complete=%v docker_ok=%v error=%q", raw["complete"], raw["docker_ok"], message)
+	}
+	args, err := os.ReadFile(filepath.Join(bin, "args.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(args), fmt.Sprintf("%012x", limit+1)) || !strings.Contains(string(args), fmt.Sprintf("%012x", limit)) {
+		t.Fatal("inspect n’a pas reçu exactement les conteneurs sous la limite")
+	}
+}
