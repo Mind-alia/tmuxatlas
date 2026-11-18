@@ -184,10 +184,31 @@ Pour chaque ouverture :
    passe), le navigateur affiche « saisie masquée ».
 6. Fin : `exit`, fermeture de l'onglet, décision prise dans le panneau,
    15 min au total ou 5 min sans activité. Le groupe de processus du shell est
-   tué, ainsi que tout processus resté dans sa session (tâches de fond).
+   tué, ainsi que tout processus resté dans sa session (tâches de fond),
+   **dans la limite de ce que le compte de l'admin peut tuer** (voir
+   ci-dessous).
 7. Rien n'est capturé : la sortie va à l'écran de l'admin seulement, les
    frappes au PTY seulement. Le hub n'apprend que la durée et la raison de la
    fermeture.
+
+**Fermer le terminal ne borne pas ce que sudo a lancé.** Le peer tourne sous
+le compte de l'admin, pas en root. Il ne peut donc pas arrêter :
+
+- un processus devenu root par `sudo` et encore en cours (`kill` lui répond
+  `EPERM`) ;
+- un processus qui a quitté la session du terminal, par exemple
+  `sudo sh -c 'setsid sleep 86400 &'`, qu'il ne retrouve même pas.
+
+La durée maximale et le délai d'inactivité ferment donc le shell et l'écran,
+pas une commande root longue ou détachée : elle continue après la fermeture,
+comme après la fermeture d'un terminal SSH. Quand un processus de la session
+refuse le signal, la raison de fermeture le dit (« N processus encore
+actif(s) dans le terminal, hors de portée du peer »), dans le panneau et dans
+l'audit ; un processus détaché n'est pas compté. À l'humain de ne pas lancer
+en fond une commande root qu'il veut voir s'arrêter, et de vérifier avec
+`ps` en cas de doute. Borner réellement ces processus demanderait un
+composant root (un scope systemd ou un cgroup détruit à la fermeture), que
+TmuxAtlas n'a pas.
 
 Audit faisant foi : `$XDG_STATE_HOME/tmuxatlas/sudo-audit.jsonl` (défaut
 `~/.local/state/tmuxatlas/`, mode 0600) chez le compte de l'admin. Une ligne par

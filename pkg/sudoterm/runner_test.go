@@ -186,6 +186,47 @@ func TestClosingKillsBackgroundJobs(t *testing.T) {
 	}
 }
 
+// The runner is not root: a process that sudo started refuses its signals.
+// The terminal then says that something is still running rather than
+// ending as if all was stopped.
+func TestClosingReportsProcessesItCannotKill(t *testing.T) {
+	var mu sync.Mutex
+	protected := 0
+	signalProcess = func(pid int, sig syscall.Signal) error {
+		mu.Lock()
+		refuse := pid == protected
+		mu.Unlock()
+		if refuse {
+			return syscall.EPERM // what kill(2) answers for a root process
+		}
+		return syscall.Kill(pid, sig)
+	}
+	t.Cleanup(func() { signalProcess = syscall.Kill })
+	runner := newTestRunner(t, Config{MaxDuration: 20 * time.Second, IdleTimeout: 10 * time.Second})
+	screen := &fakeScreen{}
+	run, err := runner.Start(Proposal{Command: "true", Requester: "h"}, 80, 24, screen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen.waitFor(t, shows("sudo true"))
+	// Deaf to HUP and TERM in a group of its own: only KILL would end it.
+	_ = run.Write([]byte("\x15(trap '' HUP TERM; exec sleep 300) & echo job=$!\r"))
+	screen.waitFor(t, func(s *fakeScreen) bool { return regexp.MustCompile(`job=\d+`).MatchString(s.output.String()) })
+	pid, _ := strconv.Atoi(strings.TrimPrefix(regexp.MustCompile(`job=\d+`).FindString(screen.text()), "job="))
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	mu.Lock()
+	protected = pid
+	mu.Unlock()
+	run.Stop("fermé")
+	result := run.Wait()
+	if !strings.HasPrefix(result.Error, "fermé ; 1 processus encore actif") {
+		t.Fatalf("reason %q does not report the surviving process", result.Error)
+	}
+	if syscall.Kill(pid, 0) != nil {
+		t.Fatalf("process %d was expected to survive in this test", pid)
+	}
+}
+
 // A shell deaf to HUP and TERM is still killed once the grace runs out.
 func TestStubbornShellIsKilledAfterTheGrace(t *testing.T) {
 	runner := newTestRunner(t, Config{MaxDuration: 20 * time.Second, IdleTimeout: 10 * time.Second})

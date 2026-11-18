@@ -7,4 +7,4 @@ package sudoterm
 // SIGHUP would outlive the terminal, so NewRunner refuses to start.
 const sessionKillSupported = false
 
-func killSession(int) {}
+func killSession(int) int { return 0 }

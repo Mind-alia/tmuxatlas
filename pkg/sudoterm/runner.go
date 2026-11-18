@@ -80,7 +80,9 @@ type Result struct {
 	Started  bool
 	ExitCode int // of the shell
 	Duration time.Duration
-	Error    string // why it ended early, if it did
+	// Error says why it ended early, if it did, and whether processes of
+	// its session could not be killed.
+	Error string
 }
 
 // Runner opens sudo terminals, one at a time.
@@ -348,11 +350,14 @@ loop:
 			}
 		}
 	}
-	// Whatever the shell left behind goes too: its process group, and the
-	// background jobs that interactive job control put in groups of their own
-	// within the same session.
+	// Whatever the shell left behind goes too, as far as this account can
+	// signal it: its process group, and the background jobs that interactive
+	// job control put in groups of their own within the same session. A
+	// process that sudo made root is out of reach (EPERM), and so is one
+	// that left the session: closing the terminal does not bound them. The
+	// first kind is counted and reported, the second cannot be seen.
 	_ = signalProcess(-run.cmd.Process.Pid, syscall.SIGKILL)
-	killSession(run.cmd.Process.Pid)
+	refused := killSession(run.cmd.Process.Pid)
 	run.ptmx.Close()
 	select {
 	case <-readDone:
@@ -362,6 +367,13 @@ loop:
 		_ = run.screen.PasswordMode(false)
 	}
 	run.mu.Lock()
+	if refused > 0 {
+		left := fmt.Sprintf("%d processus encore actif(s) dans le terminal, hors de portée du peer (lancés par sudo)", refused)
+		if run.reason != "" {
+			left = run.reason + " ; " + left
+		}
+		run.reason = left
+	}
 	result := Result{Started: true, ExitCode: exitCode(waitErr), Duration: time.Since(run.started), Error: run.reason}
 	run.mu.Unlock()
 	run.result = result

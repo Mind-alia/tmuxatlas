@@ -3,6 +3,7 @@
 package sudoterm
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -14,11 +15,14 @@ import (
 const sessionKillSupported = true
 
 // killSession kills every process of session sid that this account can
-// signal. The shell leads its session (setsid), so sid is its pid.
-func killSession(sid int) {
+// signal, and returns how many it was refused. The shell leads its session
+// (setsid), so sid is its pid. The runner is not root: a process that sudo
+// started is one it cannot signal, and one that left the session (setsid)
+// is one it does not find.
+func killSession(sid int) (refused int) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return
+		return 0
 	}
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
@@ -36,7 +40,10 @@ func killSession(sid int) {
 		}
 		fields := strings.Fields(string(data[end+1:]))
 		if len(fields) > 3 && fields[3] == strconv.Itoa(sid) {
-			_ = signalProcess(pid, syscall.SIGKILL)
+			if errors.Is(signalProcess(pid, syscall.SIGKILL), syscall.EPERM) {
+				refused++
+			}
 		}
 	}
+	return refused
 }
