@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -141,9 +142,14 @@ type Engine struct {
 }
 
 // NewEngine returns an engine persisting to path ("" disables persistence).
+// Without any notifier it still follows the alerts, which the page shows,
+// but never counts a notification as sent.
 func NewEngine(path string, policy Policy, notifiers ...Notifier) *Engine {
 	e := &Engine{policy: policy, notifiers: notifiers, now: time.Now, path: path,
 		logger: logrus.WithField("component", "ops-alerting"), states: map[string]*AlertState{}, lastByKey: map[string]time.Time{}}
+	if len(notifiers) == 0 {
+		e.logger.Warn("aucun canal de notification (ni Web Push ni TMUXATLAS_NTFY_URL) : les alertes ne partiront pas")
+	}
 	e.load()
 	return e
 }
@@ -419,9 +425,10 @@ func groupNotification(due []*AlertState, now time.Time) Notification {
 // deliver sends n through every channel and reports whether at least one
 // accepted it. Retrying after a partial failure would repeat the
 // notification on the channels that work, so one success is enough. Without
-// any channel there is nothing to wait for.
+// any channel nothing is delivered: the notification is handled like one
+// that every channel refused.
 func (e *Engine) deliver(ctx context.Context, n Notification) bool {
-	delivered := len(e.notifiers) == 0
+	delivered := false
 	for _, notifier := range e.notifiers {
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		if err := notifier.Notify(ctx, n); err != nil {
@@ -434,9 +441,17 @@ func (e *Engine) deliver(ctx context.Context, n Notification) bool {
 	return delivered
 }
 
+// ErrNoChannel means that no notification channel is configured, so nothing
+// can reach the phone.
+var ErrNoChannel = errors.New("aucun canal de notification configuré : ni Web Push ni TMUXATLAS_NTFY_URL")
+
 // Test sends a test notification through every channel, outside the
-// anti-spam rules, and returns one error per failed channel.
-func (e *Engine) Test(ctx context.Context) map[string]string {
+// anti-spam rules, and returns one error per failed channel. Without any
+// channel it sends nothing and returns ErrNoChannel.
+func (e *Engine) Test(ctx context.Context) (map[string]string, error) {
+	if len(e.notifiers) == 0 {
+		return nil, ErrNoChannel
+	}
 	n := Notification{Key: "ops:test", Kind: "test", Severity: "info", At: e.now(),
 		Title: "Test des notifications Atlas", Body: "Si tu lis ceci, les alertes arriveront sur ce téléphone."}
 	errs := map[string]string{}
@@ -447,7 +462,7 @@ func (e *Engine) Test(ctx context.Context) map[string]string {
 		}
 		cancel()
 	}
-	return errs
+	return errs, nil
 }
 
 // EngineView is the notifications part of GET /api/ops.

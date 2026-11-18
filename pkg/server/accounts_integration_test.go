@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +63,12 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 		}
 		t.Setenv("TMUXATLAS_OPS_DIR", opsDir)
 		t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data")) // alerts.json
+		// A channel that accepts everything: without any, the test
+		// notification is refused.
+		ntfy := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		t.Cleanup(ntfy.Close)
+		t.Setenv("TMUXATLAS_NTFY_URL", ntfy.URL+"/atlas-test")
+		t.Setenv("TMUXATLAS_NTFY_TOKEN", "")
 	}
 	client, err := tmux.NewClient()
 	if err != nil {
@@ -217,7 +224,7 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 		response := call(http.MethodPost, "/api/ops/notifications/test", "", adminLogin)
 		data, _ := io.ReadAll(response.Body)
 		response.Body.Close()
-		if response.StatusCode != http.StatusOK || !strings.Contains(string(data), `"channels"`) {
+		if response.StatusCode != http.StatusOK || !strings.Contains(string(data), `"channels":["ntfy"]`) || !strings.Contains(string(data), `"errors":{}`) {
 			t.Fatalf("test de notification par l'admin : %s %s", response.Status, data)
 		}
 		again := call(http.MethodPost, "/api/ops/notifications/test", "", adminLogin)

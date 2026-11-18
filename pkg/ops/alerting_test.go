@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -369,6 +370,54 @@ func TestEngineKeepsUndeliveredRecovery(t *testing.T) {
 	}
 	if v := e.View(); len(v.Alerts) != 0 || len(v.Recent) != 2 {
 		t.Fatalf("vue finale : %+v", v)
+	}
+}
+
+// Without any channel nothing can be delivered: no alert may count as
+// notified, enter the history or use the budget, and a problem that goes
+// away has no recovery to announce.
+func TestEngineWithoutChannelRecordsNothingAsSent(t *testing.T) {
+	c := &clock{t: time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)}
+	e := NewEngine("", DefaultPolicy)
+	e.now = c.now
+	ctx := context.Background()
+	failed := Signal{Key: "ops:backup:failed", Severity: "critical", Title: "Sauvegarde en échec"}
+	e.Evaluate(ctx, []Signal{failed})
+	v := e.View()
+	if len(v.Alerts) != 1 || v.Alerts[0].Notified || !v.Alerts[0].LastSent.IsZero() || v.Alerts[0].Due != "firing" || v.Alerts[0].Attempts != 1 {
+		t.Fatalf("sans canal, l'alerte ne doit pas compter comme envoyée : %+v", v.Alerts)
+	}
+	if len(v.Recent) != 0 || len(e.sent) != 0 {
+		t.Fatalf("sans canal, rien dans l'historique ni dans le budget : %d récentes, %d dans le budget", len(v.Recent), len(e.sent))
+	}
+	for i := 0; i < 2*24*60; i++ { // 24 h with the problem still there
+		c.advance(30 * time.Second)
+		e.Evaluate(ctx, []Signal{failed})
+	}
+	if v := e.View(); len(v.Alerts) != 1 || v.Alerts[0].Notified || len(v.Recent) != 0 || len(e.sent) != 0 {
+		t.Fatalf("après 24 h sans canal : %+v, budget %d", v, len(e.sent))
+	}
+	for i := 0; i < 4; i++ {
+		c.advance(30 * time.Second)
+		e.Evaluate(ctx, nil)
+	}
+	if v := e.View(); len(v.Alerts) != 0 || len(v.Recent) != 0 {
+		t.Fatalf("une panne jamais annoncée n'a pas de rétablissement : %+v", v)
+	}
+}
+
+func TestEngineTestWithoutChannelFails(t *testing.T) {
+	if errs, err := NewEngine("", DefaultPolicy).Test(context.Background()); !errors.Is(err, ErrNoChannel) || len(errs) != 0 {
+		t.Fatalf("un test sans canal ne doit pas réussir : %v, %v", errs, err)
+	}
+	e, rec, _ := newTestEngine("")
+	errs, err := e.Test(context.Background())
+	if err != nil || len(errs) != 0 || kinds(rec.take()) != "test:ops:test" {
+		t.Fatalf("test avec un canal : %v, %v", errs, err)
+	}
+	channel := &flaky{down: true}
+	if errs, err := NewEngine("", DefaultPolicy, channel).Test(context.Background()); err != nil || errs["test"] == "" {
+		t.Fatalf("un canal en échec doit être nommé : %v, %v", errs, err)
 	}
 }
 

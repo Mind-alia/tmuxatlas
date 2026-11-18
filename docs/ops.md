@@ -347,7 +347,9 @@ hub request internal addresses (SSRF).
   fails, it is tried again after 1, 2, 4, 8 then 15 min (6 attempts). After
   that a problem still there is announced again 6 h later, and an undelivered
   recovery is dropped. With several channels, one success is enough: the
-  failing one is only logged.
+  failing one is only logged. Without any channel nothing counts as sent:
+  the page still shows the alerts, but none is marked notified, enters the
+  history or uses the budget.
 - A problem notification not delivered yet waits while the problem looks
   gone, with its attempts and delay. It goes out if the problem comes back
   before the recovery is confirmed, and is dropped if the recovery is
@@ -369,8 +371,8 @@ hub request internal addresses (SSRF).
   long random one.
 
 `POST /api/ops/notifications/test` (button on the page, admin only, once every
-30 s) sends a test through every channel. `TMUXATLAS_OPS_NOTIFY=off` turns the
-notifications off.
+30 s) sends a test through every channel; without any channel it answers 503
+and sends nothing. `TMUXATLAS_OPS_NOTIFY=off` turns the notifications off.
 
 ### Limits
 

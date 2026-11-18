@@ -781,7 +781,11 @@ func Run(ctx context.Context, opts *Options) error {
 					http.Error(w, "un test vient d'être envoyé, réessaie dans 30 s", http.StatusTooManyRequests)
 					return
 				}
-				errs := alertEngine.Test(r.Context())
+				errs, err := alertEngine.Test(r.Context())
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusServiceUnavailable)
+					return
+				}
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]any{"channels": alertEngine.Notifiers(), "errors": errs})
 			})
