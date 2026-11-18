@@ -77,33 +77,8 @@ func TestSudoTerminalDoesNotHoldAccountPolicy(t *testing.T) {
 		response.Body.Close()
 		return response.StatusCode
 	}
-	// waitShown reads the terminal until text is on screen.
-	waitShown := func(browser *websocket.Conn, text string) {
-		t.Helper()
-		var screen strings.Builder
-		_ = browser.SetReadDeadline(time.Now().Add(15 * time.Second))
-		for !strings.Contains(screen.String(), text) {
-			kind, data, err := browser.ReadMessage()
-			if err != nil {
-				t.Fatalf("terminal closed before showing %q: %v (screen %q)", text, err, screen.String())
-			}
-			if kind == websocket.BinaryMessage {
-				screen.Write(data)
-			}
-		}
-	}
-	waitClosed := func(browser *websocket.Conn, what string) {
-		t.Helper()
-		_ = browser.SetReadDeadline(time.Now().Add(10 * time.Second))
-		for {
-			if _, _, err := browser.ReadMessage(); err != nil {
-				if strings.Contains(err.Error(), "i/o timeout") {
-					t.Fatalf("the terminal stayed open after %s", what)
-				}
-				return
-			}
-		}
-	}
+	waitShown := func(browser *websocket.Conn, text string) { t.Helper(); sudoWaitShown(t, browser, text) }
+	waitClosed := func(browser *websocket.Conn, what string) { t.Helper(); sudoWaitClosed(t, browser, what) }
 
 	if status := call(http.MethodGet, "/ws/sudo", userCookie, ""); status != http.StatusForbidden {
 		t.Fatalf("a non-admin account reached /ws/sudo: %d", status)
@@ -166,4 +141,69 @@ func auditRecorded(path, requestID, event string) bool {
 		}
 	}
 	return false
+}
+
+// TestSudoTerminalClosesWhenPasskeySessionEnds is the passkey counterpart of
+// the revocation check above: logging out, or deleting the passkey that
+// opened the session, closes an open sudo terminal.
+func TestSudoTerminalClosesWhenPasskeySessionEnds(t *testing.T) {
+	sessions := auth.NewSessionManager(time.Hour)
+	rig := newSudoRig(t, func(opts *Options) { opts.SessionMgr = sessions }, func(mux *http.ServeMux, service *sudoService) {
+		mux.Handle("/ws/sudo", auth.Middleware(sessions, false)(http.HandlerFunc(service.HandleTerminal)))
+	})
+	// Outside the accounts mode the signed-in owner is the administrator.
+	owner := sudo.Actor{ID: "owner", Name: "propriétaire"}
+	for _, tt := range []struct {
+		name string
+		end  func(token string)
+	}{
+		{"logout", sessions.Revoke},
+		{"deleted passkey", func(string) { sessions.RevokeCredential("cle-ouverture") }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			token, err := sessions.CreateForCredential("cle-ouverture")
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := rig.request(t, "echo ouvert")
+			browser := rig.open(t, request.ID, owner, http.Header{"Cookie": []string{"tmuxatlas_session=" + token}})
+			sudoWaitShown(t, browser, "sudo echo ouvert")
+			tt.end(token)
+			sudoWaitClosed(t, browser, "the passkey session ended")
+			// The next case opens a terminal: let this one end on the peer.
+			eventually(t, "the terminal to end on the sudo peer", func() bool {
+				return auditRecorded(rig.auditPath, request.ID, "closed")
+			})
+		})
+	}
+}
+
+// sudoWaitShown reads the terminal until text is on screen.
+func sudoWaitShown(t *testing.T, browser *websocket.Conn, text string) {
+	t.Helper()
+	var screen strings.Builder
+	_ = browser.SetReadDeadline(time.Now().Add(15 * time.Second))
+	for !strings.Contains(screen.String(), text) {
+		kind, data, err := browser.ReadMessage()
+		if err != nil {
+			t.Fatalf("terminal closed before showing %q: %v (screen %q)", text, err, screen.String())
+		}
+		if kind == websocket.BinaryMessage {
+			screen.Write(data)
+		}
+	}
+}
+
+// sudoWaitClosed fails unless the terminal closes within ten seconds.
+func sudoWaitClosed(t *testing.T, browser *websocket.Conn, what string) {
+	t.Helper()
+	_ = browser.SetReadDeadline(time.Now().Add(10 * time.Second))
+	for {
+		if _, _, err := browser.ReadMessage(); err != nil {
+			if strings.Contains(err.Error(), "i/o timeout") {
+				t.Fatalf("the terminal stayed open after %s", what)
+			}
+			return
+		}
+	}
 }

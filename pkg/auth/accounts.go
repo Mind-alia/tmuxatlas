@@ -26,6 +26,23 @@ func WithAccount(ctx context.Context, identity AccountIdentity) context.Context 
 	return context.WithValue(ctx, accountContextKey{}, identity)
 }
 
+type sessionDoneKey struct{}
+
+func withSessionDone(ctx context.Context, done <-chan struct{}) context.Context {
+	return context.WithValue(ctx, sessionDoneKey{}, done)
+}
+
+// SessionDone returns the channel closed when the request's browser session
+// ends (logout, expiry, deleted passkey or account), in both authentication
+// modes. Long connections close on it so a revoked session keeps nothing open.
+func SessionDone(ctx context.Context) (<-chan struct{}, bool) {
+	if identity, ok := AccountFromContext(ctx); ok && identity.Done != nil {
+		return identity.Done, true
+	}
+	done, ok := ctx.Value(sessionDoneKey{}).(<-chan struct{})
+	return done, ok && done != nil
+}
+
 func AccountFromContext(ctx context.Context) (AccountIdentity, bool) {
 	identity, ok := ctx.Value(accountContextKey{}).(AccountIdentity)
 	return identity, ok

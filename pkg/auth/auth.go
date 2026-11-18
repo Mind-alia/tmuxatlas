@@ -254,12 +254,17 @@ func Middleware(sm *SessionManager, secureCookies bool) func(http.Handler) http.
 				return
 			}
 			cookie, err := r.Cookie(cookieName)
-			if err != nil || !sm.Validate(cookie.Value) {
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			_, done, ok := sm.AccountSession(cookie.Value)
+			if !ok {
 				writeError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 			refreshSessionCookie(w, cookie.Value, sm.TTL(), secureCookies)
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(withSessionDone(r.Context(), done)))
 		})
 	}
 }

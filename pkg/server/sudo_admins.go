@@ -59,12 +59,8 @@ func sudoAdminOnly(admins SudoAdmins) func(http.Handler) http.Handler {
 	}
 }
 
-// accountDone returns the channel closed when the signed-in account's
-// session ends, in accounts mode.
-func accountDone(r *http.Request) (<-chan struct{}, bool) {
-	identity, ok := auth.AccountFromContext(r.Context())
-	if !ok || identity.Done == nil {
-		return nil, false
-	}
-	return identity.Done, true
+// sessionDone returns the channel closed when the administrator's browser
+// session ends, with accounts as with passkeys.
+func sessionDone(r *http.Request) (<-chan struct{}, bool) {
+	return auth.SessionDone(r.Context())
 }

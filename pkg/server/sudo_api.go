@@ -183,7 +183,7 @@ func (s *sudoService) HandleTerminal(w http.ResponseWriter, r *http.Request) {
 		sudoWSError(browser, err.Error())
 		return
 	}
-	if identity, ok := accountDone(r); ok {
+	if identity, ok := sessionDone(r); ok {
 		stop := make(chan struct{})
 		defer close(stop)
 		go func() {
