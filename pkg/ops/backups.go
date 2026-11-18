@@ -127,9 +127,13 @@ func evaluateBackups(current, last *BackupStatus, readErr error, now time.Time) 
 	if ref.Remote.RetentionDays > 0 {
 		v.R2Retention = ref.Remote.RetentionDays
 	}
+	// The newest success wins: last-success.json is written after
+	// backup-status.json, so a failed second write leaves it older than a
+	// successful current status.
 	if last != nil && !last.FinishedAt.IsZero() {
 		v.LastSuccessAt = last.FinishedAt.Unix()
-	} else if current != nil && current.Result == "success" && !current.FinishedAt.IsZero() {
+	}
+	if current != nil && current.Result == "success" && !current.FinishedAt.IsZero() && current.FinishedAt.Unix() > v.LastSuccessAt {
 		v.LastSuccessAt = current.FinishedAt.Unix()
 	}
 	interval, grace, maxDuration := ref.Schedule.ExpectedInterval, ref.Schedule.Grace, ref.Schedule.MaxDuration

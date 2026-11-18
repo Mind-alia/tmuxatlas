@@ -283,6 +283,9 @@ Check that `sha256sum` and `rclone check` are available.
 ### `backup-status.json` (schema 1)
 
 `last-success.json` has the same content, written only after a full success.
+The last success is the newer of the two files: when writing
+`last-success.json` fails, a successful `backup-status.json` still counts,
+for the date shown and for lateness.
 
 ```json
 {

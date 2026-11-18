@@ -211,3 +211,41 @@ func TestMonitorServesBackups(t *testing.T) {
 		t.Fatalf("un fichier illisible doit garder le dernier état et signaler l'erreur : %+v", resp.Backups)
 	}
 }
+
+// last-success.json is written after backup-status.json. When that second
+// write fails, the current status holds a newer success: the newest one is
+// the last success, and the next backup is expected after it.
+func TestNewestSuccessIsTheLastSuccess(t *testing.T) {
+	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	recent := backupAt("success", now.Add(-3*time.Hour), now.Add(-2*time.Hour))
+	old := backupAt("success", now.Add(-27*time.Hour), now.Add(-26*time.Hour))
+	for _, tc := range []struct {
+		name          string
+		current, last *BackupStatus
+	}{
+		{"statut courant plus récent", recent, old},
+		{"last-success plus récent", old, recent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := evaluateBackups(tc.current, tc.last, nil, now)
+			if v.State != "ok" || v.LastSuccessAt != recent.FinishedAt.Unix() || v.NextExpectedBy != recent.FinishedAt.Unix()+86400+3600 {
+				t.Fatalf("état %q (%s), dernière réussite %d, prochaine avant %d", v.State, v.Reason, v.LastSuccessAt, v.NextExpectedBy)
+			}
+		})
+	}
+	dir := t.TempDir()
+	m := New(dir)
+	m.now = func() time.Time { return now }
+	writeJSON(t, dir, BackupStatusFile, recent)
+	writeJSON(t, dir, LastSuccessFile, old)
+	m.Refresh()
+	resp := m.Snapshot()
+	if resp.Backups.State != "ok" || resp.Backups.LastSuccessAt != recent.FinishedAt.Unix() {
+		t.Fatalf("sauvegardes : %+v", resp.Backups)
+	}
+	for _, a := range resp.Alerts {
+		if a.Key == "ops:backup:late" {
+			t.Fatalf("sauvegarde réussie il y a 2 h annoncée en retard : %+v", a)
+		}
+	}
+}
