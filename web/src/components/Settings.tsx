@@ -12,6 +12,8 @@ import type { PWAInstallState } from '../hooks/usePWAInstall'
 import { Button, ToastProvider, useToast } from './ui'
 import { useApplicationState } from '../state/provider'
 import { useHostLabel } from '../lib/hostLabel'
+import { TALK_HOTKEY_HOLD_MS } from '../lib/talkHotkey'
+import { TalkKeyPicker } from './TalkKeyPicker'
 import { ChevronRight } from 'lucide-react'
 
 const terminalFontFamilies = [
@@ -587,6 +589,12 @@ function SettingsContent({
                 onChange={v => update({ quick_switcher_shortcut: v })}
                 options={shortcutOptions}
               />
+            </Row>
+            <Row
+              label="Touche du micro"
+              description={`Maintenir ${TALK_HOTKEY_HOLD_MS / 1000} s pour parler à l’agent du terminal, appuyer à nouveau pour arrêter. Propre à ce navigateur.`}
+            >
+              <TalkKeyPicker />
             </Row>
             <Divider />
             <div className="py-1.5" data-testid="pwa-install">

@@ -153,7 +153,9 @@ func (c *Client) Exec(args ...string) (string, error) {
 
 // ListSessions returns all tmux sessions
 func (c *Client) ListSessions() ([]*Session, error) {
-	out, err := c.Exec("list-sessions", "-F", "#{session_id}:#{session_name}:#{session_created}:#{session_attached}:#{session_activity}:#{@atlas-owner}")
+	// The container marker is reduced to 0 or 1: its value never reaches the
+	// listing, so a marker set by hand cannot add lines of its own.
+	out, err := c.Exec("list-sessions", "-F", "#{session_id}:#{session_name}:#{session_created}:#{session_attached}:#{session_activity}:#{!=:#{"+DockerSessionOption+"},}:#{@atlas-owner}")
 	if err != nil {
 		message := err.Error()
 		if strings.Contains(message, "no server running") || strings.Contains(message, "no sessions") ||
@@ -168,8 +170,8 @@ func (c *Client) ListSessions() ([]*Session, error) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, ":", 6)
-		if len(parts) < 6 {
+		parts := strings.SplitN(line, ":", 7)
+		if len(parts) < 7 {
 			continue
 		}
 
@@ -184,7 +186,8 @@ func (c *Client) ListSessions() ([]*Session, error) {
 		sessions = append(sessions, &Session{
 			ID:           parts[0],
 			Name:         parts[1],
-			Owner:        Owner(parts[5]),
+			Owner:        Owner(parts[6]),
+			AdminOnly:    parts[5] == "1",
 			Created:      time.Unix(created, 0),
 			Attached:     attached,
 			LastActivity: time.Unix(activity, 0),
@@ -465,4 +468,24 @@ func (c *Client) SendEnter(target string) error {
 	}
 	_, err = c.Exec("send-keys", "-t", resolved, "Enter")
 	return err
+}
+
+// ActivePaneTTY returns the terminal device of the active pane of a session,
+// the pane an attached client shows.
+func ActivePaneTTY(tmuxPath, session string) (string, error) {
+	target, err := resolveWindowTarget(tmuxPath, session, "")
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, tmuxPath, "display-message", "-p", "-t", target, "#{pane_tty}").Output()
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(path, "/dev/pts/") && !strings.HasPrefix(path, "/dev/tty") {
+		return "", fmt.Errorf("unexpected pane tty %q", path)
+	}
+	return path, nil
 }

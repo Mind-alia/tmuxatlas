@@ -37,6 +37,8 @@ Claude Code needs voice enabled in hold mode, its default. Run `/voice hold` onc
    - The **square** stops recording and leaves the transcription in the prompt, so you can edit it and press Enter.
    - The **arrow** stops recording and sends the prompt once the agent has inserted the transcription. If it was not listening or could not transcribe, nothing is sent.
 
+**Talk key.** On a computer, hold an **Option** key (⌥, left or right) alone for 3 seconds: the Talk button counts down 3, 2, 1, then dictation starts as if you had clicked **Talk**. Press the key again to stop; the text stays in the prompt, like the square. Pressing another key or clicking during the 3 seconds cancels, so Option keeps working in shortcuts, accented characters and Option-click selection. If the countdown never shows, the browser does not receive the key, often because another app keeps it: in **Réglages → Interface → Touche du micro**, click **Choisir une touche** and press the key to use (a modifier or a function key); the choice belongs to the browser. When Talk is unavailable, holding the key says why instead of doing nothing. The session terminal answers the key; on the Wall, the tile whose terminal you touched last does.
+
 agy is found through its process tree, so Talk also works when a launcher starts it and the pane shows another command, such as `python3`. agy allows one dictation stream at a time per account.
 
 ## Codex: dictation through a hidden Claude

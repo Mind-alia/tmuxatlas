@@ -879,3 +879,16 @@ func dataDir() (string, error) {
 	}
 	return dir, os.MkdirAll(dir, 0o700)
 }
+
+// Endpoints returns a copy of the probed sites with their history. Their
+// URLs come from TMUXATLAS_MONITOR_URLS and the local Caddy configuration.
+func (m *Monitor) Endpoints() []Endpoint {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Endpoint, len(m.endpoints))
+	for i, e := range m.endpoints {
+		e.History = append([]ProbePoint(nil), e.History...)
+		out[i] = e
+	}
+	return out
+}

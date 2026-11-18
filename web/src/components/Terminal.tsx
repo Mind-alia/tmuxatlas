@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, CornerDownLeft, Keyboard, KeyboardOff, MessageSquareText, Mic } from 'lucide-react'
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, CornerDownLeft, Keyboard, KeyboardOff, MessageSquareText, Mic, ShieldAlert } from 'lucide-react'
 import { useMediaQuery, COMPACT_LAYOUT_QUERY } from '../lib/useMediaQuery'
 import { useHostLabel } from '../lib/hostLabel'
 import type { Window as SessionWindow } from '../hooks/useSessions'
@@ -17,12 +17,16 @@ import { useMicStream, type MicState } from '../hooks/useMicStream'
 import { readAgyVoiceStatus } from '../lib/agyVoiceStatus'
 import type { TalkAgent } from '../lib/talkAgent'
 import { RelayTalkButton, TalkButton, type DictationRelay } from './TalkButton'
+import { claimTalkKey, releaseTalkKey, useTalkKeyOwner } from '../lib/talkHotkey'
 import { TerminalCockpit } from './TerminalCockpit'
 import { TerminalContextMenu, type TerminalMenuPosition } from './TerminalContextMenu'
 import { TerminalPasteConfirmation } from './TerminalPasteConfirmation'
 import { TerminalSearchBar } from './TerminalSearchBar'
 import { MobileInputComposer } from './MobileInputComposer'
 import { hideSoftKeyboard, useSoftKeyboardOpen } from '../lib/useSoftKeyboard'
+import { SudoPanel } from './SudoPanel'
+import { useHostTrust } from '../hooks/useHostTrust'
+import { useAccountRole } from '../lib/accountContext'
 
 export interface TerminalCommandActions {
   reconnect: () => void
@@ -170,6 +174,10 @@ export function Terminal({
   if (!inputRef.current) inputRef.current = new MobileTerminalInput()
   const input = inputRef.current
   const targetKey = terminalTargetKey(hostId, sessionName)
+  // The session terminal always answers the Talk key; on the Wall, the tile touched last does.
+  const talkKeyId = useId()
+  const talkKeyOwner = useTalkKeyOwner()
+  const answersTalkKey = !embedded || talkKeyOwner === talkKeyId
   const resolveHostLabel = useHostLabel()
   const hostLabel = resolveHostLabel(hostId, hostName === hostId ? 'Hôte' : hostName || 'Hôte') || 'Hôte'
   const targetLabel = `${hostLabel}/${sessionName}`
@@ -185,6 +193,10 @@ export function Terminal({
   const [contextMenu, setContextMenu] = useState<TerminalMenuPosition | null>(null)
   const [pendingPaste, setPendingPaste] = useState<PendingTerminalPaste | null>(null)
   const [pasteError, setPasteError] = useState('')
+  // Outside the accounts mode the signed-in owner is the administrator; the
+  // server still decides and the panel hides itself when refused.
+  const sudoAdmin = useAccountRole() !== 'user'
+  const trustedHost = useHostTrust(hostId)
   const {
     connect,
     disconnect,
@@ -209,6 +221,8 @@ export function Terminal({
     copySelection,
     pasteClipboard,
     imagePasteStatus,
+    passwordPrompt,
+    allowPasswordInput,
     commitClipboardPaste,
     selectAll,
     searchState,
@@ -266,6 +280,7 @@ export function Terminal({
     disabled: boolean,
     label?: string,
     livePlacement: 'above-left' | 'above-right' | 'below-right' = 'above-left',
+    hotkey = false,
   ) =>
     talkAgent === 'codex' ? (
       <RelayTalkButton
@@ -277,6 +292,7 @@ export function Terminal({
         targetLabel={label}
         liveText={dictationText}
         livePlacement={livePlacement}
+        hotkey={hotkey}
       />
     ) : (
       <TalkButton
@@ -287,6 +303,7 @@ export function Terminal({
         readScreen={readScreen}
         onSubmit={submitPrompt}
         targetLabel={label}
+        hotkey={hotkey}
       />
     )
 
@@ -492,6 +509,20 @@ export function Terminal({
     }
   }, [claimSize, embedded])
 
+  // On the Wall, the Talk key follows the tile touched last.
+  useEffect(() => {
+    const container = containerRef.current
+    if (!embedded || !container) return
+    const claim = () => claimTalkKey(talkKeyId)
+    container.addEventListener('pointerdown', claim, { passive: true })
+    container.addEventListener('focusin', claim)
+    return () => {
+      container.removeEventListener('pointerdown', claim)
+      container.removeEventListener('focusin', claim)
+      releaseTalkKey(talkKeyId)
+    }
+  }, [embedded, talkKeyId])
+
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -668,6 +699,17 @@ export function Terminal({
           onMore={showMenuAtButton}
         />
       )}
+      {!trustedHost && (
+        <p
+          role="note"
+          data-testid="untrusted-host-banner"
+          className="flex shrink-0 items-center gap-2 border-b border-destructive/40 bg-destructive/10 px-3 py-1 text-xs font-medium text-destructive"
+        >
+          <ShieldAlert size={14} aria-hidden="true" />
+          Hôte non fiable : ne tapez jamais de mot de passe ici
+        </p>
+      )}
+      {!embedded && <SudoPanel hostId={hostId} sessionName={sessionName} enabled={sudoAdmin} />}
       {showTalk &&
         talkSlot &&
         createPortal(
@@ -675,6 +717,7 @@ export function Terminal({
             !talkAgent || talkMic?.state !== 'on' || workspaceConnection !== 'connected' || talkLocked,
             embedded ? targetLabel : undefined,
             embedded || sharedMic ? 'below-right' : 'above-left',
+            answersTalkKey,
           ),
           talkSlot,
         )}
@@ -745,6 +788,24 @@ export function Terminal({
                 </button>
               )}
             </div>
+          </div>
+        )}
+        {passwordPrompt && (
+          <div
+            role="alert"
+            className="absolute inset-x-2 top-2 z-20 flex flex-wrap items-center gap-2 rounded border border-warning bg-card/95 px-3 py-2 text-sm"
+          >
+            <span>
+              Ce terminal attend un mot de passe sans écho : les frappes sont bloquées. Un agent peut imiter une invite
+              sudo ; pour un sudo demandé par l’agent, utilise le panneau Sudo.
+            </span>
+            <button
+              type="button"
+              onClick={allowPasswordInput}
+              className="min-h-9 rounded border border-warning px-3 text-warning"
+            >
+              Taper quand même
+            </button>
           </div>
         )}
         {imagePasteStatus && (

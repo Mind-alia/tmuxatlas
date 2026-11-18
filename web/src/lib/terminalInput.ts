@@ -1,6 +1,11 @@
 export const MAX_TERMINAL_COMMAND_BODY_BYTES = 65_535
 
-export type TerminalInputErrorCode = 'body-too-large' | 'not-connected' | 'stale-connection' | 'send-failed'
+export type TerminalInputErrorCode =
+  | 'body-too-large'
+  | 'not-connected'
+  | 'stale-connection'
+  | 'send-failed'
+  | 'password-prompt'
 
 export class TerminalInputError extends Error {
   readonly code: TerminalInputErrorCode

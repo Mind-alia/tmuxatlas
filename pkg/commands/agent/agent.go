@@ -34,6 +34,11 @@ func init() {
 				Name: "socket", Usage: "Local Unix socket path",
 				Sources: cli.EnvVars("TMUXATLAS_SOCKET"),
 			},
+			&cli.BoolFlag{
+				Name:    "sudo-terminal",
+				Usage:   "Offer sudo terminals to the hub's administrators, as this Unix account (never the agents account, never root)",
+				Sources: cli.EnvVars("TMUXATLAS_SUDO_TERMINAL"),
+			},
 		},
 		Before: func(ctx context.Context, _ *cli.Command) (context.Context, error) {
 			logrus.Info("checking for tmux...")

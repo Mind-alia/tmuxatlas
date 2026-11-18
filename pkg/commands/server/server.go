@@ -205,6 +205,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 	// Initialize web push notifications
 	var pushKeys *webpush.VAPIDKeys
 	var pushStore *webpush.Store
+	var pushSender *webpush.Sender
 	vapidKeys, err := webpush.LoadOrCreateKeys()
 	if err != nil {
 		logrus.WithError(err).Warn("failed to load VAPID keys, push notifications will be unavailable")
@@ -214,7 +215,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		if err != nil {
 			return fmt.Errorf("failed to initialize push subscription store: %w", err)
 		}
-		pushSender := webpush.NewSender(pushKeys, pushStore, tracker, prefStore)
+		pushSender = webpush.NewSender(pushKeys, pushStore, tracker, prefStore)
 		go pushSender.Run(ctx)
 	}
 
@@ -338,6 +339,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		ActivityTracker: actTracker,
 		PushKeys:        pushKeys,
 		PushStore:       pushStore,
+		PushSender:      pushSender,
 		PrefStore:       prefStore,
 		AuthEnabled:     authEnabled,
 		AccountsAuth:    accountAuth,
@@ -351,6 +353,8 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		LocalOnly:       localOnly,
 		Role:            map[bool]string{true: "hub", false: "standalone"}[pureHub],
 		Deployment:      os.Getenv("TMUXATLAS_DEPLOYMENT"),
+		SudoPeers:       c.String("sudo-peers"),
+		SudoRequesters:  c.String("sudo-requesters"),
 	}
 
 	// Start the HTTP server (blocks until ctx is cancelled)
@@ -415,6 +419,14 @@ func serverFlags() []cli.Flag {
 			Usage:   "Only show local sessions in the web UI (still shares state with hub)",
 			Sources: cli.EnvVars("TMUXATLAS_LOCAL_ONLY", "GUPPI_LOCAL_ONLY"),
 		},
+		&cli.StringFlag{
+			Name: "sudo-peers", Usage: "Comma-separated fingerprints of the peers allowed to open sudo terminals",
+			Sources: cli.EnvVars("TMUXATLAS_SUDO_PEERS"),
+		},
+		&cli.StringFlag{
+			Name: "sudo-requesters", Usage: "Comma-separated fingerprints of the hosts allowed to file sudo requests (empty refuses all)",
+			Sources: cli.EnvVars("TMUXATLAS_SUDO_REQUESTERS"),
+		},
 	}
 }
 
@@ -440,6 +452,14 @@ func hubFlags() []cli.Flag {
 		&cli.BoolFlag{
 			Name: "no-auth", Usage: "Disable authentication (loopback development only)",
 			Sources: cli.EnvVars("TMUXATLAS_NO_AUTH"),
+		},
+		&cli.StringFlag{
+			Name: "sudo-peers", Usage: "Comma-separated fingerprints of the peers allowed to open sudo terminals",
+			Sources: cli.EnvVars("TMUXATLAS_SUDO_PEERS"),
+		},
+		&cli.StringFlag{
+			Name: "sudo-requesters", Usage: "Comma-separated fingerprints of the hosts allowed to file sudo requests (empty refuses all)",
+			Sources: cli.EnvVars("TMUXATLAS_SUDO_REQUESTERS"),
 		},
 	}
 }

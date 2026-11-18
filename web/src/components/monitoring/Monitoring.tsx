@@ -206,14 +206,20 @@ function AlertRow({
   )
 }
 
-function Alerts({ alerts }: { alerts: MonitorAlert[] }) {
+export function Alerts({
+  alerts,
+  okText = 'Aucun problème détecté sur les ressources, services, tâches et sites.',
+}: {
+  alerts: MonitorAlert[]
+  okText?: string
+}) {
   const [open, setOpen] = useState<Set<string>>(new Set())
   if (alerts.length === 0) {
     return (
       <div className="mb-4 flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-lg border border-border bg-card px-3 py-2 text-xs font-normal">
         <StatusBadge tone="ok" label="Tout va bien" />
         <span className="text-muted-foreground">
-          Aucun problème détecté sur les ressources, services, tâches et sites.
+          {okText}
         </span>
       </div>
     )
@@ -296,9 +302,9 @@ function Segmented<T extends string>({
   )
 }
 
-const NUM = 'text-right tabular-nums'
+export const NUM = 'text-right tabular-nums'
 
-function Table({
+export function Table({
   label,
   head,
   numeric = [],

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,7 @@ func TestAnyAccountCanReassignAnySession(t *testing.T) {
 	runAccountsIntegration(t, "transfer-denied")
 }
 func TestAccountDirectoryExposesOnlyNames(t *testing.T)   { runAccountsIntegration(t, "directory") }
+func TestOpsStatusIsAdminOnly(t *testing.T)               { runAccountsIntegration(t, "ops") }
 func TestAccountsModeIntegration(t *testing.T)            { runAccountsIntegration(t, "standard") }
 func TestFailedClaimDoesNotDisconnectOthers(t *testing.T) { runAccountsIntegration(t, "claim") }
 func TestPreferencesHideOtherUsersData(t *testing.T)      { runAccountsIntegration(t, "preferences") }
@@ -50,6 +52,24 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("TMUXATLAS_MONITOR", "off")
+	if scenario == "ops" {
+		opsDir := filepath.Join(dir, "ops")
+		if err := os.MkdirAll(opsDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		snapshot := fmt.Sprintf(`{"schema":1,"collected_at":%q,"docker_ok":true,"containers":[{"id":"abc","name":"/secret-db","state":"running"}]}`, time.Now().UTC().Format(time.RFC3339))
+		if err := os.WriteFile(filepath.Join(opsDir, "containers.json"), []byte(snapshot), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TMUXATLAS_OPS_DIR", opsDir)
+		t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data")) // alerts.json
+		// A channel that accepts everything: without any, the test
+		// notification is refused.
+		ntfy := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		t.Cleanup(ntfy.Close)
+		t.Setenv("TMUXATLAS_NTFY_URL", ntfy.URL+"/atlas-test")
+		t.Setenv("TMUXATLAS_NTFY_TOKEN", "")
+	}
 	client, err := tmux.NewClient()
 	if err != nil {
 		t.Fatal(err)
@@ -193,6 +213,49 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 	adminLogin := loginAs(admin.Username)
 	aliceLogin := loginAs(alice.Username)
 	bobLogin := loginAs(bob.Username)
+	if scenario == "ops" {
+		for _, who := range []login{aliceLogin, {}} {
+			response := call(http.MethodPost, "/api/ops/notifications/test", "", who)
+			response.Body.Close()
+			if response.StatusCode != http.StatusForbidden && response.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("test de notification par un non-admin : %s", response.Status)
+			}
+		}
+		response := call(http.MethodPost, "/api/ops/notifications/test", "", adminLogin)
+		data, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK || !strings.Contains(string(data), `"channels":["ntfy"]`) || !strings.Contains(string(data), `"errors":{}`) {
+			t.Fatalf("test de notification par l'admin : %s %s", response.Status, data)
+		}
+		again := call(http.MethodPost, "/api/ops/notifications/test", "", adminLogin)
+		again.Body.Close()
+		if again.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("second test immédiat : %s", again.Status)
+		}
+		for _, who := range []login{aliceLogin, bobLogin, {}} {
+			response := call(http.MethodGet, "/api/ops", "", who)
+			data, _ := io.ReadAll(response.Body)
+			response.Body.Close()
+			if response.StatusCode == http.StatusOK || strings.Contains(string(data), "secret-db") {
+				t.Fatalf("données ops exposées hors admin : %s %s", response.Status, data)
+			}
+		}
+		for deadline := time.Now().Add(5 * time.Second); ; {
+			response := call(http.MethodGet, "/api/ops", "", adminLogin)
+			data, _ := io.ReadAll(response.Body)
+			response.Body.Close()
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("admin : %s", response.Status)
+			}
+			if strings.Contains(string(data), `"secret-db"`) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("admin ne voit pas les conteneurs : %s", data)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
 	if scenario == "directory" {
 		listed := call(http.MethodGet, "/api/accounts/directory", "", aliceLogin)
 		defer listed.Body.Close()

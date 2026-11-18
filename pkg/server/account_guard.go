@@ -18,7 +18,7 @@ import (
 var accountUserRoutes = map[string]bool{
 	"GET /api/voice": true, "GET /api/monitor": true, "GET /api/stats": true, "GET /ws/mic": true,
 	"GET /api/preferences": true, "POST /api/auth/change-password": true, "GET /api/accounts/directory": true,
-	"GET /api/sessions": true, "GET /api/hosts": true, "GET /api/tool-events": true,
+	"GET /api/sessions": true, "GET /api/hosts": true, "GET /api/hosts/trust": true, "GET /api/tool-events": true,
 	"GET /api/activity": true, "GET /api/session/directories": true,
 	"POST /api/session/new": true, "POST /api/session/claim": true, "POST /api/session/release": true,
 	"GET /api/session/preview": true, "POST /api/session/reply": true,
@@ -45,12 +45,16 @@ var accountOtherRoutes = map[string]string{
 	"POST /api/auth/logout": "authenticated", "GET /api/version": "public",
 	"GET /api/admin/users": "admin", "POST /api/admin/users": "admin",
 	"PATCH /api/admin/users/{id}": "admin", "DELETE /api/admin/users/{id}": "admin",
-	"GET /api/admin/sessions": "admin", "GET /api/admin/cli-assignments": "admin", "PUT /api/admin/cli-assignments": "admin", "GET /api/peers": "admin",
+	"GET /api/admin/sessions": "admin", "GET /api/ops": "admin", "POST /api/ops/notifications/test": "admin", "GET /api/peers": "admin",
+	"GET /api/admin/cli-assignments": "admin", "PUT /api/admin/cli-assignments": "admin",
 	"GET /api/agent-status": "admin", "DELETE /api/tool-events": "admin",
 	"GET /api/push/vapid-key": "admin", "POST /api/push/subscribe": "admin",
 	"POST /api/push/unsubscribe": "admin", "PUT /api/preferences": "admin", "POST /api/pair": "admin",
 	"GET /ws/peer": "peer", "GET /ws/peer-pty": "peer",
-	"POST /api/pair/complete": "peer", "GET /*": "public",
+	"GET /api/sudo/requests": "admin", "GET /api/sudo/requests/{id}": "admin", "GET /api/sudo/peers": "admin",
+	"POST /api/sudo/requests/{id}/edit": "admin", "POST /api/sudo/requests/{id}/refuse": "admin",
+	"POST /api/sudo/requests/{id}/approve": "admin", "POST /api/sudo/requests/{id}/done": "admin",
+	"GET /ws/sudo": "admin", "POST /api/pair/complete": "peer", "GET /*": "public",
 	"CONNECT /api/*": "denied", "DELETE /api/*": "denied", "GET /api/*": "denied",
 	"HEAD /api/*": "denied", "OPTIONS /api/*": "denied", "PATCH /api/*": "denied",
 	"POST /api/*": "denied", "PUT /api/*": "denied", "TRACE /api/*": "denied",
@@ -79,7 +83,9 @@ func newAccountPolicy(opts *Options) *accountPolicy {
 }
 
 // remoteOwner asks the agent for current ownership instead of trusting a
-// potentially delayed discovery snapshot. Older agents fail closed.
+// potentially delayed discovery snapshot. Older agents fail closed. Only
+// accounts that are not admins are checked here: a session the agent reports
+// as reserved to admins counts as unavailable.
 func (p *accountPolicy) remoteOwner(host, name string) (tmux.Owner, bool) {
 	if p.router == nil {
 		return "", false
@@ -91,9 +97,10 @@ func (p *accountPolicy) remoteOwner(host, name string) (tmux.Owner, bool) {
 		return "", false
 	}
 	var response struct {
-		Owner tmux.Owner `json:"owner"`
+		Owner     tmux.Owner `json:"owner"`
+		AdminOnly bool       `json:"admin_only"`
 	}
-	if json.Unmarshal(result.Result, &response) != nil {
+	if json.Unmarshal(result.Result, &response) != nil || response.AdminOnly {
 		return "", false
 	}
 	return response.Owner, true
@@ -129,8 +136,9 @@ func (p *accountPolicy) closeForChange(w http.ResponseWriter) bool {
 }
 
 // owns reports whether an account may use a session. Ownership is a label, so
-// any account may use any existing session except Atlas's internal one; the
-// pane must still belong to that session.
+// any account may use any existing session except Atlas's internal one and
+// the container shells, reserved to admins; the pane must still belong to
+// that session.
 func (p *accountPolicy) owns(host, name, pane, _ string) bool {
 	if p.opts.PeerMgr == nil || host == "" || name == "" || tmux.IsInternalSession(name) {
 		return false
@@ -145,7 +153,7 @@ func (p *accountPolicy) owns(host, name, pane, _ string) bool {
 		if err != nil {
 			return false
 		}
-		for _, session := range current {
+		for _, session := range accountSessions(current) {
 			if session.Name == name {
 				if pane == "" {
 					return true
@@ -212,6 +220,7 @@ func (p *accountPolicy) verifiedProjection(projection state.Projection) state.Pr
 				if err != nil {
 					continue
 				}
+				sessions = accountSessions(sessions)
 			}
 			for _, session := range sessions {
 				if session == nil || tmux.IsInternalSession(session.Name) {
@@ -282,6 +291,7 @@ func (p *accountPolicy) watchOwnership(ctx context.Context) {
 				if err != nil {
 					continue
 				}
+				sessions = accountSessions(sessions)
 			}
 			for _, session := range sessions {
 				if session != nil && !tmux.IsInternalSession(session.Name) {
@@ -344,7 +354,7 @@ func (p *accountPolicy) Middleware(next http.Handler) http.Handler {
 		default:
 		}
 		path := r.URL.Path
-		targeted := path == "/ws/session" || path == "/api/session/preview" || path == "/api/session/reply" || path == "/api/session/rename" || path == "/api/session/kill" || path == "/api/session/select-window" || path == "/api/session/select-pane" || path == "/api/session/release" || path == "/api/tool-event"
+		targeted := path == "/ws/session" || path == "/api/session/preview" || path == "/api/session/reply" || path == "/api/session/rename" || path == "/api/session/kill" || path == "/api/session/select-window" || path == "/api/session/select-pane" || path == "/api/session/claim" || path == "/api/session/release" || path == "/api/tool-event"
 		if user && targeted {
 			host, session, pane := r.URL.Query().Get("host_id"), r.URL.Query().Get("session"), r.URL.Query().Get("pane")
 			if path == "/ws/session" {
@@ -388,7 +398,12 @@ func (p *accountPolicy) Middleware(next http.Handler) http.Handler {
 				return
 			}
 		}
-		if path == "/ws/session" || path == "/ws/events" || path == "/ws/mic" {
+		// Long-lived connections must not keep the policy mutex: every other
+		// request of every account would wait for them to close. /ws/sudo is
+		// absent from accountUserRoutes, so only administrators reach this point
+		// and take the unregistered branch; the handler itself closes the
+		// terminal when the session is revoked.
+		if path == "/ws/session" || path == "/ws/events" || path == "/ws/mic" || path == "/ws/sudo" {
 			if user {
 				ctx, cancel := context.WithCancel(r.Context())
 				p.nextID++

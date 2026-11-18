@@ -7,12 +7,14 @@ const files = readdirSync(assets).filter(name => /\.(js|css)$/.test(name))
 const limits = {
   'entry gzip': 130 * 1024,
   // WebGL (25 Kio gzip) est chargé à la demande sur desktop ; Unicode 11,
-  // le Mur et À traiter augmentent aussi le budget global. Marge d’environ 5 %.
-  'xterm gzip': 97 * 1024,
-  // L’explorateur de fichiers (éditeur, Markdown, coloration) ajoute ~42 Kio brotli
-  // et l’onglet Boucles ~6 Kio brotli, chargés uniquement à la demande.
-  // Réserve 1 Kio pour la récupération après interruption du chargement.
-  'total brotli': 301 * 1024,
+  // le Mur et À traiter augmentent aussi le budget global. Le panneau Sudo et
+  // la touche du micro ajoutent environ 4 Kio au chunk Terminal. Marge d’environ 3 %.
+  'xterm gzip': 102 * 1024,
+  // L’explorateur de fichiers (éditeur, Markdown, coloration) pèse environ
+  // 42 Kio brotli, la vue Docker (conteneurs, images, volumes) environ 14,
+  // l’onglet Boucles et les comptes CLI du monitoring environ 20. Tous sont
+  // chargés à la demande. Marge d’environ 3 %.
+  'total brotli': 340 * 1024,
 }
 let entryGzip = 0
 let xtermGzip = 0

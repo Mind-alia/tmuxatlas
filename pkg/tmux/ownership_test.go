@@ -110,3 +110,59 @@ func TestNewOwnedSession(t *testing.T) {
 		t.Fatalf("sessions: %v, %v", sessions, err)
 	}
 }
+
+// A container shell carries DockerSessionOption and is AdminOnly, whatever
+// the marker's value; the value never reaches the listing, so a marker set by
+// hand cannot add a session line of its own.
+func TestListSessionsMarksContainerShells(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "atlas-admin-only-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Setenv("TMUX_TMPDIR", dir)
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	client, err := NewClient()
+	if err != nil {
+		t.Skip(err)
+	}
+	t.Cleanup(func() { _, _ = client.Exec("kill-server") })
+	for _, name := range []string{"plain", "shell", "zero", "forged"} {
+		if err := client.NewOwnedSession(name, "", "admin"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for session, marker := range map[string]string{
+		"shell":  "abcdef0123456789",
+		"zero":   "0",
+		"forged": "x\n$99:plain:0:0:0:0:admin",
+	} {
+		if _, err := client.Exec("set-option", "-t", ExactWindow(session, ""), DockerSessionOption, marker); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sessions, err := client.ListSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, session := range sessions {
+		if _, twice := got[session.Name]; twice {
+			t.Fatalf("%s listée deux fois : %+v", session.Name, sessions)
+		}
+		got[session.Name] = session.AdminOnly
+		if session.Owner != "admin" {
+			t.Errorf("%s : propriétaire %q", session.Name, session.Owner)
+		}
+	}
+	want := map[string]bool{"plain": false, "shell": true, "zero": true, "forged": true}
+	if len(got) != len(want) {
+		t.Fatalf("sessions : %v", got)
+	}
+	for name, adminOnly := range want {
+		if got[name] != adminOnly {
+			t.Errorf("%s : AdminOnly %v, attendu %v", name, got[name], adminOnly)
+		}
+	}
+}

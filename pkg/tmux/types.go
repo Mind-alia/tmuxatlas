@@ -15,6 +15,10 @@ func (o Owner) MarshalJSON() ([]byte, error) {
 	return json.Marshal(string(o))
 }
 
+// DockerSessionOption holds, in a session opened by the Containers view, the
+// full ID of the container whose shell it runs. Such a session is AdminOnly.
+const DockerSessionOption = "@atlas-docker"
+
 // Session represents a tmux session
 type Session struct {
 	ID           string    `json:"id"`
@@ -27,6 +31,10 @@ type Session struct {
 	Created      time.Time `json:"created"`
 	Attached     bool      `json:"attached"`
 	LastActivity time.Time `json:"last_activity"`
+	// AdminOnly marks a session that accounts other than admins may neither
+	// see nor use: a container shell (DockerSessionOption). ListSessions reads
+	// it from tmux; it is never sent to browsers or peers.
+	AdminOnly bool `json:"-"`
 }
 
 // Window represents a tmux window
