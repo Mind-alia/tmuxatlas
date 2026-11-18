@@ -32,6 +32,13 @@ type PreferenceSource interface {
 	Get() *preferences.Preferences
 }
 
+// sendTimeout bounds one push request even when the caller's context has no
+// deadline: the default client of webpush-go has none, so a push service
+// that accepts the connection and never answers would block for good.
+const sendTimeout = 10 * time.Second
+
+var defaultClient = &http.Client{Timeout: sendTimeout}
+
 // Sender listens for tool events and sends push notifications
 type Sender struct {
 	keys    *VAPIDKeys
@@ -39,7 +46,8 @@ type Sender struct {
 	tracker *toolevents.Tracker
 	prefs   PreferenceSource
 	logger  *logrus.Entry
-	send    func([]byte, *wp.Subscription, *wp.Options) (*http.Response, error)
+	send    func(context.Context, []byte, *wp.Subscription, *wp.Options) (*http.Response, error)
+	client  *http.Client // nil means defaultClient
 }
 
 // NewSender creates a push notification sender
@@ -55,7 +63,7 @@ func NewSender(
 		tracker: tracker,
 		prefs:   prefs,
 		logger:  logrus.WithField("component", "webpush"),
-		send:    wp.SendNotification,
+		send:    wp.SendNotificationWithContext,
 	}
 }
 
@@ -77,12 +85,12 @@ func (s *Sender) Run(ctx context.Context) {
 			if !s.statusEnabled(evt.Status) {
 				continue
 			}
-			s.sendAll(evt)
+			s.sendAll(ctx, evt)
 		}
 	}
 }
 
-func (s *Sender) sendAll(evt *toolevents.Event) {
+func (s *Sender) sendAll(ctx context.Context, evt *toolevents.Event) {
 	subs := s.store.All()
 	if len(subs) == 0 {
 		return
@@ -98,13 +106,14 @@ func (s *Sender) sendAll(evt *toolevents.Event) {
 		s.logger.WithError(err).Error("failed to marshal push payload")
 		return
 	}
-	s.sendData(subs, data, 30, "")
+	s.sendData(ctx, subs, data, 30, "")
 }
 
 // Broadcast sends payload to every subscription. Ops notifications use a
 // longer TTL and high urgency so a phone in doze still gets them. It fails
-// when there is no subscription or when no delivery succeeded.
-func (s *Sender) Broadcast(_ context.Context, payload any, ttl time.Duration, urgency string) error {
+// when there is no subscription or when no delivery succeeded, and gives up
+// on every send still running when ctx ends.
+func (s *Sender) Broadcast(ctx context.Context, payload any, ttl time.Duration, urgency string) error {
 	subs := s.store.All()
 	if len(subs) == 0 {
 		return errors.New("aucun appareil abonné aux notifications (Réglages > Notifications)")
@@ -113,17 +122,23 @@ func (s *Sender) Broadcast(_ context.Context, payload any, ttl time.Duration, ur
 	if err != nil {
 		return err
 	}
-	if s.sendData(subs, data, int(ttl/time.Second), wp.Urgency(urgency)) == 0 {
+	if s.sendData(ctx, subs, data, int(ttl/time.Second), wp.Urgency(urgency)) == 0 {
 		return fmt.Errorf("aucun des %d abonnements n'a accepté la notification", len(subs))
 	}
 	return nil
 }
 
-// sendData delivers data to subs and returns how many accepted it.
-func (s *Sender) sendData(subs []*wp.Subscription, data []byte, ttl int, urgency wp.Urgency) int {
+// sendData delivers data to subs and returns how many accepted it. Each
+// request stops when ctx ends, and after sendTimeout at the latest.
+func (s *Sender) sendData(ctx context.Context, subs []*wp.Subscription, data []byte, ttl int, urgency wp.Urgency) int {
+	client := s.client
+	if client == nil {
+		client = defaultClient
+	}
 	delivered := 0
 	for _, sub := range subs {
-		resp, err := s.send(data, sub, &wp.Options{
+		resp, err := s.send(ctx, data, sub, &wp.Options{
+			HTTPClient:      client,
 			Subscriber:      "mailto:tmuxatlas@localhost",
 			VAPIDPublicKey:  s.keys.PublicKey,
 			VAPIDPrivateKey: s.keys.PrivateKey,

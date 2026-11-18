@@ -363,7 +363,9 @@ hub request internal addresses (SSRF).
   in *Réglages*. Only admins can subscribe (`/api/push/subscribe` is admin
   only), so ops notifications only reach admins. TTL 1 h, high urgency; the
   recovery replaces the outage on the phone (same tag). On iOS, Web Push
-  needs iOS 16.4 or later and the app added to the home screen.
+  needs iOS 16.4 or later and the app added to the home screen. A push
+  service that does not answer is given up after 10 s, and the whole channel
+  after 15 s, so it cannot hold the next evaluations.
 - **ntfy** (optional): set `TMUXATLAS_NTFY_URL=https://ntfy.sh/<topic>` and,
   for a protected topic, `TMUXATLAS_NTFY_TOKEN`, in the hub's
   `~/.config/tmuxatlas/.env` (not versioned, see `.env.example`). A token is
