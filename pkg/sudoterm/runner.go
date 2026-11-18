@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -34,6 +33,9 @@ const SystemPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 var (
 	ErrRoot = errors.New("le terminal sudo ne tourne pas en root")
 	ErrBusy = errors.New("un terminal sudo est déjà ouvert")
+	// ErrUnsupported: without a way to list a session's processes, a job left
+	// in the background could outlive the terminal, as root once sudo ran.
+	ErrUnsupported = errors.New("le terminal sudo n'est disponible que sous Linux : ailleurs, un travail laissé en arrière-plan pourrait survivre à la fermeture du terminal")
 )
 
 // Config bounds one terminal.
@@ -91,6 +93,9 @@ type Runner struct {
 func NewRunner(config Config) (*Runner, error) {
 	if os.Geteuid() == 0 {
 		return nil, ErrRoot
+	}
+	if !sessionKillSupported {
+		return nil, ErrUnsupported
 	}
 	defaults := DefaultConfig()
 	if config.Shell == "" {
@@ -405,34 +410,6 @@ func (run *Run) terminate(reason string) <-chan time.Time {
 	_ = signalProcess(-pid, syscall.SIGHUP)
 	_ = signalProcess(-pid, syscall.SIGTERM)
 	return time.After(killGrace)
-}
-
-// killSession kills every process of session sid that this account can
-// signal. The shell leads its session (setsid), so sid is its pid.
-func killSession(sid int) {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 1 {
-			continue
-		}
-		data, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
-		if err != nil {
-			continue
-		}
-		// pid (comm) state ppid pgrp session ...; comm may hold spaces.
-		end := strings.LastIndexByte(string(data), ')')
-		if end < 0 {
-			continue
-		}
-		fields := strings.Fields(string(data[end+1:]))
-		if len(fields) > 3 && fields[3] == strconv.Itoa(sid) {
-			_ = signalProcess(pid, syscall.SIGKILL)
-		}
-	}
 }
 
 // watchEcho reports when the PTY reads a line without echo: the shape of a

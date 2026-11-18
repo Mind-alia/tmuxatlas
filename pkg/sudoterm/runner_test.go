@@ -155,25 +155,34 @@ func TestRunLimits(t *testing.T) {
 }
 
 func TestClosingKillsBackgroundJobs(t *testing.T) {
-	runner := newTestRunner(t, Config{MaxDuration: 20 * time.Second, IdleTimeout: 10 * time.Second})
-	screen := &fakeScreen{}
-	run, err := runner.Start(Proposal{Command: "true", Requester: "h"}, 80, 24, screen)
-	if err != nil {
-		t.Fatal(err)
-	}
-	screen.waitFor(t, shows("sudo true"))
-	_ = run.Write([]byte("\x15sleep 300 & echo job=$!\r"))
-	screen.waitFor(t, func(s *fakeScreen) bool { return regexp.MustCompile(`job=\d+`).MatchString(s.output.String()) })
-	pid, _ := strconv.Atoi(strings.TrimPrefix(regexp.MustCompile(`job=\d+`).FindString(screen.text()), "job="))
-	run.Stop("fermé")
-	run.Wait()
-	deadline := time.Now().Add(3 * time.Second)
-	for syscall.Kill(pid, 0) == nil {
-		if time.Now().After(deadline) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-			t.Fatalf("background job %d survived the terminal", pid)
-		}
-		time.Sleep(20 * time.Millisecond)
+	for _, tt := range []struct{ name, job string }{
+		{"job", "sleep 300 &"},
+		// Its own process group, deaf to SIGHUP, like nohup: only the
+		// session sweep reaches it.
+		{"nohup", "(trap '' HUP; exec sleep 300) &"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := newTestRunner(t, Config{MaxDuration: 20 * time.Second, IdleTimeout: 10 * time.Second})
+			screen := &fakeScreen{}
+			run, err := runner.Start(Proposal{Command: "true", Requester: "h"}, 80, 24, screen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			screen.waitFor(t, shows("sudo true"))
+			_ = run.Write([]byte("\x15" + tt.job + " echo job=$!\r"))
+			screen.waitFor(t, func(s *fakeScreen) bool { return regexp.MustCompile(`job=\d+`).MatchString(s.output.String()) })
+			pid, _ := strconv.Atoi(strings.TrimPrefix(regexp.MustCompile(`job=\d+`).FindString(screen.text()), "job="))
+			run.Stop("fermé")
+			run.Wait()
+			deadline := time.Now().Add(3 * time.Second)
+			for syscall.Kill(pid, 0) == nil {
+				if time.Now().After(deadline) {
+					_ = syscall.Kill(pid, syscall.SIGKILL)
+					t.Fatalf("background job %d survived the terminal", pid)
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		})
 	}
 }
 
