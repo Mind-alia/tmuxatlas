@@ -3,6 +3,7 @@ package ops
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,7 +32,8 @@ func contribScript(t *testing.T, name string) string {
 }
 
 // fakeDocker writes a docker stub that records its arguments (one per line)
-// in args.log and prints canned output.
+// in args.log and prints canned output. inspect also prints inspect.err on
+// stderr and exits with the code in inspect.rc, when those files exist.
 func fakeDocker(t *testing.T, dir, psOut, inspectOut string, psFails bool) string {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, "ps.out"), []byte(psOut), 0o600); err != nil {
@@ -50,7 +52,9 @@ printf '%s\n' "--call--" "$@" >>"$dir/args.log"
 case "$1" in
   ps) ` + fail + `
       cat "$dir/ps.out" ;;
-  inspect) cat "$dir/inspect.out" ;;
+  inspect) cat "$dir/inspect.out"
+      if [ -f "$dir/inspect.err" ]; then cat "$dir/inspect.err" >&2; fi
+      exit "$(cat "$dir/inspect.rc" 2>/dev/null || echo 0)" ;;
   *) exit 3 ;;
 esac
 `
@@ -203,5 +207,77 @@ func TestDockerSnapshotScriptReportsDockerDown(t *testing.T) {
 	}
 	if snap.DockerOK || !strings.Contains(snap.Error, `"Is it running?"`) || len(snap.Containers) != 0 {
 		t.Fatalf("Docker arrêté : %+v", snap)
+	}
+}
+
+// docker ps works but docker inspect fails, after printing part of its
+// output or nothing at all (timeout): the snapshot says it is incomplete,
+// and the hub keeps the outage it knew about.
+func TestDockerSnapshotScriptMarksFailedInspectIncomplete(t *testing.T) {
+	script := contribScript(t, "docker-snapshot.sh")
+	bin := t.TempDir()
+	out := filepath.Join(t.TempDir(), "status")
+	docker := fakeDocker(t, bin, "aaa111\nbbb222\n", "", false)
+	now := time.Now().UTC()
+	web := container("web", "exited", "", 0, now.Add(-time.Hour))
+	web.ID, web.FinishedAt, web.ExitCode = "aaa111", now.Add(-10*time.Minute), 1
+	api := container("api", "running", "", 0, now.Add(-time.Hour))
+	api.ID = "bbb222"
+	line := func(c ContainerState) string {
+		data, err := json.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data) + "\n"
+	}
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := New(out)
+	run := func(stdout, stderr, rc string) (map[string]any, Response) {
+		t.Helper()
+		write("inspect.out", stdout)
+		write("inspect.err", stderr)
+		write("inspect.rc", rc)
+		cmd := exec.Command("bash", script)
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "TF_OPS_DIR=" + out, "TF_OPS_DOCKER=" + docker, "HOME=" + bin}
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("script : %v\n%s", err, output)
+		}
+		var raw map[string]any
+		if _, err := NewSource(out).ReadJSON(ContainersFile, &raw); err != nil {
+			t.Fatal(err)
+		}
+		m.Refresh()
+		return raw, m.Snapshot()
+	}
+	count := func(raw map[string]any) int {
+		list, _ := raw["containers"].([]any)
+		return len(list)
+	}
+
+	raw, resp := run(line(web)+line(api), "", "0")
+	if raw["docker_ok"] != true || raw["complete"] != true || count(raw) != 2 || !alertKeys(resp)["ops:container:web:down"] {
+		t.Fatalf("relevé complet : %v %v", raw, alertKeys(resp))
+	}
+	raw, resp = run(line(api), "Error response from daemon: i/o timeout\n", "1")
+	if raw["docker_ok"] != true || raw["complete"] != false || count(raw) != 1 || !strings.Contains(fmt.Sprint(raw["error"]), "i/o timeout") {
+		t.Fatalf("inspect partiel puis en échec : %v", raw)
+	}
+	if keys := alertKeys(resp); !keys["ops:container:web:down"] || !keys["ops:containers:incomplete"] {
+		t.Fatalf("la panne connue de web doit rester : %v", keys)
+	}
+	raw, resp = run("", "", "124")
+	if raw["docker_ok"] != true || raw["complete"] != false || count(raw) != 0 || !strings.Contains(fmt.Sprint(raw["error"]), "20 s") {
+		t.Fatalf("inspect sans réponse : %v", raw)
+	}
+	if keys := alertKeys(resp); !keys["ops:container:web:down"] || len(resp.Containers.Items) != 2 {
+		t.Fatalf("après un inspect sans réponse : %v %+v", keys, resp.Containers.Items)
+	}
+	entries, _ := os.ReadDir(out)
+	if len(entries) != 1 {
+		t.Fatalf("fichiers temporaires laissés : %v", entries)
 	}
 }

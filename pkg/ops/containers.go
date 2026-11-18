@@ -24,6 +24,34 @@ type ContainersSnapshot struct {
 	DockerOK    bool             `json:"docker_ok"`
 	Error       string           `json:"error,omitempty"`
 	Containers  []ContainerState `json:"containers"`
+	// Complete is false when the collector could not read every container
+	// (docker inspect failed or timed out). A collector older than the field
+	// leaves it out, and its snapshots count as complete.
+	Complete *bool `json:"complete,omitempty"`
+}
+
+// complete reports whether the snapshot lists every container. Without
+// Docker it lists none, whatever the collector says.
+func (s ContainersSnapshot) complete() bool {
+	return s.DockerOK && (s.Complete == nil || *s.Complete)
+}
+
+// withLastKnown adds to an incomplete snapshot the last observation, from
+// prev, of each container it lacks: missing from such a snapshot does not
+// mean gone.
+func withLastKnown(snap, prev ContainersSnapshot) ContainersSnapshot {
+	present := make(map[string]bool, len(snap.Containers))
+	for _, c := range snap.Containers {
+		present[c.Name] = true
+	}
+	kept := append([]ContainerState(nil), snap.Containers...)
+	for _, c := range prev.Containers {
+		if !present[c.Name] {
+			kept = append(kept, c)
+		}
+	}
+	snap.Containers = kept
+	return snap
 }
 
 // ContainerState is one container as reported by `docker inspect`.
@@ -64,6 +92,9 @@ type ContainersView struct {
 	DockerOK    bool        `json:"docker_ok"`
 	DockerError string      `json:"docker_error,omitempty"`
 	Items       []Container `json:"items"`
+	// Incomplete: the last snapshot may lack containers; those it lacks are
+	// shown with their last known state.
+	Incomplete bool `json:"incomplete,omitempty"`
 }
 
 // containerTracker remembers what earlier snapshots showed, so restarts can

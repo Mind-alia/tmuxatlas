@@ -14,6 +14,10 @@ const (
 	// SiteFailures consecutive failed probes make a site "down". The host
 	// monitor probes every minute.
 	SiteFailures = 3
+	// IncompletePending: one container removed between docker ps and docker
+	// inspect is enough to make a snapshot incomplete, so only a lasting
+	// failure notifies.
+	IncompletePending = 5 * time.Minute
 )
 
 // pendingFor returns how long an ops alert must last before it notifies, and
@@ -22,6 +26,8 @@ func pendingFor(key string) (time.Duration, bool) {
 	switch {
 	case key == "ops:containers:missing" || key == "ops:backup:missing" || key == "ops:backup:unknown":
 		return 0, false // not set up yet: shown on the page only
+	case key == "ops:containers:incomplete":
+		return IncompletePending, true
 	case strings.HasSuffix(key, ":down") || strings.HasSuffix(key, ":unhealthy"):
 		return ContainerPending, true // container down/unhealthy, Docker down
 	}

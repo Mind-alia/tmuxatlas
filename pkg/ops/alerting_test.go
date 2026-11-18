@@ -425,12 +425,14 @@ func TestSignals(t *testing.T) {
 	resp := Response{Alerts: []Alert{
 		{Key: "ops:containers:missing"}, {Key: "ops:backup:missing"},
 		{Key: "ops:container:web:down"}, {Key: "ops:docker:down"}, {Key: "ops:container:db:flapping"}, {Key: "ops:backup:r2-failed"},
+		{Key: "ops:containers:incomplete"},
 	}}
 	got := map[string]time.Duration{}
 	for _, s := range OpsSignals(resp) {
 		got[s.Key] = s.Pending
 	}
-	want := map[string]time.Duration{"ops:container:web:down": time.Minute, "ops:docker:down": time.Minute, "ops:container:db:flapping": 0, "ops:backup:r2-failed": 0}
+	want := map[string]time.Duration{"ops:container:web:down": time.Minute, "ops:docker:down": time.Minute, "ops:container:db:flapping": 0, "ops:backup:r2-failed": 0,
+		"ops:containers:incomplete": 5 * time.Minute}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("signaux : %v", got)
 	}

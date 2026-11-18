@@ -121,6 +121,12 @@ func (m *Monitor) Refresh() {
 		return
 	}
 	m.contErr = nil
+	if !snap.complete() {
+		// A container missing from this snapshot may be one that Docker
+		// could not describe: dropping it would let its outage look
+		// recovered. Its last observation stays until a complete snapshot.
+		snap = withLastKnown(snap, m.containers)
+	}
 	m.containers = snap
 	m.tracker.observe(snap, now)
 }
@@ -158,6 +164,7 @@ func (m *Monitor) containersView(now time.Time) ContainersView {
 	v.Available = true
 	v.DockerOK = snap.DockerOK
 	v.DockerError = snap.Error
+	v.Incomplete = !snap.complete()
 	if !snap.CollectedAt.IsZero() {
 		v.CollectedAt = snap.CollectedAt.Unix()
 		v.AgeSec = int64(now.Sub(snap.CollectedAt).Seconds())
@@ -203,7 +210,15 @@ func containerAlerts(v ContainersView, dir string) []Alert {
 			Severity: "critical", Title: "Docker injoignable",
 			Detail:   v.DockerError,
 			Commands: []monitor.Command{{Label: "État du démon Docker", Command: "systemctl status docker"}},
-			Advice:   "Le collecteur n'a pas pu interroger Docker : démon arrêté ou socket inaccessible.",
+			Advice:   "Le collecteur n'a pas pu interroger Docker : démon arrêté ou socket inaccessible. Les conteneurs gardent leur dernier état connu.",
+		}})
+	} else if v.Incomplete {
+		out = append(out, Alert{Key: "ops:containers:incomplete", Alert: monitor.Alert{
+			Severity: "warning", Title: "Relevé Docker incomplet",
+			Detail:   v.DockerError,
+			Facts:    []monitor.Fact{{Label: "Fichier", Value: dir + "/" + ContainersFile}},
+			Commands: collectorCommands,
+			Advice:   "docker inspect n'a pas décrit tous les conteneurs. Ceux qui manquent gardent leur dernier état connu, pour qu'une panne en cours ne passe pas pour rétablie.",
 		}})
 	}
 	for _, c := range v.Items {

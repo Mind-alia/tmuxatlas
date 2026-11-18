@@ -198,6 +198,7 @@ If the service fails with `218/CAPABILITIES` or `status=226/NAMESPACE`, the
   "schema": 1,
   "collected_at": "2026-11-16T12:00:00Z",
   "docker_ok": true,
+  "complete": true,
   "error": "",
   "containers": [
     {
@@ -216,6 +217,14 @@ reads `Env`, `Mounts`, `Args`, `Cmd`, other labels nor `Health.Log`. A test
 (`pkg/ops/contrib_test.go`) runs the script against a fake `docker` and fails
 if the template reads any other field.
 
+`complete` is `false` when `docker inspect` failed or timed out (`error` then
+says why), and when `docker ps` failed (`docker_ok` false). The containers
+such a snapshot lacks keep the last state the hub saw, until a complete
+snapshot: a failed read never makes an outage look recovered. A container
+removed between `ps` and `inspect` is enough to make one snapshot
+incomplete; it is then dropped by the next one. A snapshot without the
+field (collector older than it) counts as complete when `docker_ok` is true.
+
 ## Alerts
 
 The hub reads the directory every 15 s and derives:
@@ -226,6 +235,7 @@ The hub reads the directory every 15 s and derives:
 | `ops:container:<name>:unhealthy` | critical | healthcheck `unhealthy` |
 | `ops:container:<name>:flapping` | warning | 3 restarts or more in 10 min |
 | `ops:docker:down` | critical | the collector could not reach Docker |
+| `ops:containers:incomplete` | warning | `docker inspect` could not describe every container |
 | `ops:containers:stale` | critical | no new snapshot for 2 min |
 | `ops:containers:missing` | warning | no snapshot at all |
 
@@ -322,6 +332,7 @@ host monitor, and notifies the phone when something breaks or comes back.
 | Docker unreachable | 60 s |
 | container restarted 3 times in 10 min | at once |
 | collector silent | 2 min without a new snapshot |
+| snapshot incomplete (`docker inspect` failing) | 5 min |
 | site down | 3 failed probes in a row (one probe per minute) |
 | backup failed, R2 copy failed, backup stuck or late | at once |
 

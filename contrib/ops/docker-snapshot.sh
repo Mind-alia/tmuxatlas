@@ -36,30 +36,47 @@ json_string() { # escapes $1 as a JSON string (one line, at most 300 chars)
 
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 docker_ok=true
+# complete=false: some containers may be missing from the list. The hub then
+# keeps its last observation of every container the snapshot lacks, so an
+# outage it knows about never looks recovered on missing data.
+complete=true
 error=""
 items=""
 
-if ! ids=$(timeout 20 "$DOCKER" ps -aq --no-trunc 2>&1); then
+if ! out=$(timeout 20 "$DOCKER" ps -aq --no-trunc 2>&1); then
   docker_ok=false
-  error=$(printf '%s' "$ids" | head -n 1)
-  ids=""
+  complete=false
+  error=$(printf '%s' "$out" | head -n 1)
+  out=""
 fi
+# Only container IDs go to inspect, never a warning printed by ps.
+ids=$(printf '%s\n' "$out" | grep -E '^[0-9a-f]+$' | head -n "$MAX_CONTAINERS" || true)
 if [ -n "$ids" ]; then
-  # shellcheck disable=SC2086 # ids are hex strings from docker ps
-  set -- $(printf '%s\n' "$ids" | head -n "$MAX_CONTAINERS")
-  if lines=$(timeout 20 "$DOCKER" inspect --format "$FORMAT" "$@" 2>/dev/null); then
-    items=$(printf '%s\n' "$lines" | grep '^{' | paste -sd, - || true)
-  else
-    # A container may vanish between ps and inspect: keep what was printed.
-    items=$(printf '%s\n' "${lines:-}" | grep '^{' | paste -sd, - || true)
+  # shellcheck disable=SC2086 # hex strings, checked above
+  set -- $ids
+  # docker inspect prints the objects it found, then its errors: the JSON
+  # lines are told apart by their first character.
+  rc=0
+  lines=$(timeout 20 "$DOCKER" inspect --format "$FORMAT" "$@" 2>&1) || rc=$?
+  items=$(printf '%s\n' "$lines" | grep '^{' | paste -sd, - || true)
+  if [ "$rc" != 0 ]; then
+    # A container removed since ps, a daemon error or the timeout: what was
+    # printed is kept, and the snapshot says it may lack containers.
+    complete=false
+    if [ "$rc" = 124 ]; then
+      error="docker inspect : pas de réponse en 20 s"
+    else
+      reason=$(printf '%s\n' "$lines" | grep -v '^{' | head -n 1 || true)
+      error="docker inspect : ${reason:-code $rc}"
+    fi
   fi
 fi
 
 mkdir -p "$OUT_DIR"
 tmp=$(mktemp "$OUT_DIR/.containers.json.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
-printf '{"schema":1,"collected_at":"%s","docker_ok":%s,"error":%s,"containers":[%s]}\n' \
-  "$now" "$docker_ok" "$(json_string "$error")" "$items" >"$tmp"
+printf '{"schema":1,"collected_at":"%s","docker_ok":%s,"complete":%s,"error":%s,"containers":[%s]}\n' \
+  "$now" "$docker_ok" "$complete" "$(json_string "$error")" "$items" >"$tmp"
 chmod 0640 "$tmp"
 mv -f "$tmp" "$OUT_DIR/containers.json"
 trap - EXIT
