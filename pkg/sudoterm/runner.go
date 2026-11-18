@@ -341,10 +341,13 @@ loop:
 	result := Result{Started: true, ExitCode: exitCode(waitErr), Duration: time.Since(run.started), Error: run.reason}
 	run.mu.Unlock()
 	run.result = result
-	close(run.done)
+	// Free the runner before telling anyone the terminal ended: whoever
+	// learns it closed (Wait, the audit log, the hub) may open the next one
+	// at once.
 	run.runner.mu.Lock()
 	run.runner.busy = false
 	run.runner.mu.Unlock()
+	close(run.done)
 }
 
 func exitCode(err error) int {

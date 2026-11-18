@@ -185,14 +185,17 @@ func TestRunIsExclusive(t *testing.T) {
 	if _, err := runner.Start(Proposal{Command: "true", Requester: "h"}, 80, 24, &fakeScreen{}); !errors.Is(err, ErrBusy) {
 		t.Fatalf("second terminal: %v", err)
 	}
+	// Once Wait returns, the next terminal opens at once, every time.
+	for i := 0; i < 20; i++ {
+		run.Stop("test")
+		run.Wait()
+		run, err = runner.Start(Proposal{Command: "true", Requester: "h"}, 80, 24, &fakeScreen{})
+		if err != nil {
+			t.Fatalf("terminal %d after the previous one closed: %v", i+2, err)
+		}
+	}
 	run.Stop("test")
 	run.Wait()
-	next, err := runner.Start(Proposal{Command: "true", Requester: "h"}, 80, 24, &fakeScreen{})
-	if err != nil {
-		t.Fatalf("terminal after the first closed: %v", err)
-	}
-	next.Stop("test")
-	next.Wait()
 }
 
 func TestRejectsCommandsThatCouldTypeKeys(t *testing.T) {
