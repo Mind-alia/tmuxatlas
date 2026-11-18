@@ -424,6 +424,50 @@ func TestCloseReservedTerminalsWaitsForThem(t *testing.T) {
 	}
 }
 
+// A terminal that does not close in time refuses the shell, and keeps
+// refusing it on the next attempt for as long as it is open.
+func TestCloseReservedTerminalsKeepsRefusingAnOpenTerminal(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "atlas-docker-stuck-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Setenv("TMUX_TMPDIR", dir)
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	client, err := tmux.NewClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.NewSession("shell"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = client.Exec("kill-server") })
+	if _, err := client.Exec("set-option", "-t", "=shell:", dockerSessionOption, dockerTestID); err != nil {
+		t.Fatal(err)
+	}
+	node, err := identity.Generate("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerManager := peer.NewManager(node, nil, state.NewManager(client))
+	policy := newAccountPolicy(&Options{Client: client, PeerMgr: peerManager})
+	reservedTerminalsGrace = 200 * time.Millisecond
+	t.Cleanup(func() { reservedTerminalsGrace = 5 * time.Second })
+	done := make(chan struct{})
+	policy.connections[1] = accountConnection{accountID: "alice", host: peerManager.LocalID(), session: "shell",
+		cancel: func() {}, done: done}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if policy.closeReservedTerminals() {
+			t.Fatalf("essai %d : shell autorisé alors que le terminal est encore ouvert", attempt)
+		}
+	}
+	close(done)
+	if !policy.closeReservedTerminals() || len(policy.connections) != 0 {
+		t.Fatalf("terminal fermé, pourtant refusé ou encore suivi : %+v", policy.connections)
+	}
+}
+
 type ownerResult string
 
 func (r ownerResult) Execute(context.Context, string, peer.SessionTarget, json.RawMessage) (peer.ActionResponse, error) {

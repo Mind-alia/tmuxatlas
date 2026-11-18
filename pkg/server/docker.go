@@ -140,25 +140,31 @@ func (p *accountPolicy) closeReservedTerminals() bool {
 	for _, session := range accountSessions(current) {
 		usable[session.Name] = true
 	}
-	var closing []accountConnection
+	// A terminal stays followed until it has closed: one that outlives the
+	// wait refuses the next attempt too, instead of being forgotten.
+	closing := make(map[uint64]accountConnection)
 	for id, connection := range p.connections {
 		if local(connection) && !usable[connection.session] {
 			connection.cancel()
-			delete(p.connections, id)
-			closing = append(closing, connection)
+			closing[id] = connection
 		}
 	}
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(reservedTerminalsGrace)
 	defer timer.Stop()
-	for _, connection := range closing {
+	for id, connection := range closing {
 		select {
 		case <-connection.done:
+			delete(p.connections, id)
 		case <-timer.C:
 			return false
 		}
 	}
 	return true
 }
+
+// reservedTerminalsGrace is how long closeReservedTerminals waits for the
+// terminals it cancelled.
+var reservedTerminalsGrace = 5 * time.Second
 
 // dockerRouters gives the Containers view the authentication of the other
 // routes and the Origin and CSRF checks of the other changes, but not the
