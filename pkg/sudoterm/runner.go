@@ -305,29 +305,48 @@ func (run *Run) supervise() {
 	deadline := time.NewTimer(run.runner.config.MaxDuration)
 	defer deadline.Stop()
 	var waitErr error
+	// escalate fires killGrace after the shell was asked to stop. It lives in
+	// this loop, not in a detached timer, so KILL only goes out while the
+	// shell is not reaped yet: until then its pid cannot name anyone else.
+	var escalate <-chan time.Time
+	stop := func(reason string) {
+		if fire := run.terminate(reason); fire != nil {
+			escalate = fire
+		}
+	}
 loop:
 	for {
 		select {
 		case waitErr = <-exited:
 			break loop
 		case reason := <-run.kill:
-			run.terminate(reason)
+			stop(reason)
 		case <-deadline.C:
-			run.terminate("durée maximale atteinte")
+			stop("durée maximale atteinte")
+		case <-escalate:
+			escalate = nil
+			select {
+			case waitErr = <-exited:
+				break loop // already reaped: the cleanup below handles the rest
+			default:
+			}
+			pid := run.cmd.Process.Pid
+			_ = signalProcess(-pid, syscall.SIGKILL)
+			killSession(pid)
 		case <-ticker.C:
 			run.watchEcho()
 			run.mu.Lock()
 			idle := time.Since(run.activity) > run.runner.config.IdleTimeout
 			run.mu.Unlock()
 			if idle {
-				run.terminate("inactivité")
+				stop("inactivité")
 			}
 		}
 	}
 	// Whatever the shell left behind goes too: its process group, and the
 	// background jobs that interactive job control put in groups of their own
 	// within the same session.
-	_ = syscall.Kill(-run.cmd.Process.Pid, syscall.SIGKILL)
+	_ = signalProcess(-run.cmd.Process.Pid, syscall.SIGKILL)
 	killSession(run.cmd.Process.Pid)
 	run.ptmx.Close()
 	select {
@@ -364,22 +383,28 @@ func exitCode(err error) int {
 	return -1
 }
 
-// terminate stops the whole process group: HUP and TERM, then KILL.
-func (run *Run) terminate(reason string) {
+// killGrace is how long the shell's process group has to stop after HUP
+// and TERM before KILL.
+const killGrace = 2 * time.Second
+
+// signalProcess sends signals for the runner; tests watch it.
+var signalProcess = syscall.Kill
+
+// terminate asks the whole process group to stop with HUP and TERM, and
+// returns the channel that fires when KILL is due. It returns nil when the
+// shell was already asked to stop.
+func (run *Run) terminate(reason string) <-chan time.Time {
 	run.mu.Lock()
 	if run.reason != "" {
 		run.mu.Unlock()
-		return
+		return nil
 	}
 	run.reason = reason
 	run.mu.Unlock()
 	pid := run.cmd.Process.Pid
-	_ = syscall.Kill(-pid, syscall.SIGHUP)
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
-	time.AfterFunc(2*time.Second, func() {
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		killSession(pid)
-	})
+	_ = signalProcess(-pid, syscall.SIGHUP)
+	_ = signalProcess(-pid, syscall.SIGTERM)
+	return time.After(killGrace)
 }
 
 // killSession kills every process of session sid that this account can
@@ -405,7 +430,7 @@ func killSession(sid int) {
 		}
 		fields := strings.Fields(string(data[end+1:]))
 		if len(fields) > 3 && fields[3] == strconv.Itoa(sid) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+			_ = signalProcess(pid, syscall.SIGKILL)
 		}
 	}
 }

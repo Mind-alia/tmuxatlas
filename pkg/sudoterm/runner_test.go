@@ -3,6 +3,7 @@ package sudoterm
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -173,6 +174,66 @@ func TestClosingKillsBackgroundJobs(t *testing.T) {
 			t.Fatalf("background job %d survived the terminal", pid)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A shell deaf to HUP and TERM is still killed once the grace runs out.
+func TestStubbornShellIsKilledAfterTheGrace(t *testing.T) {
+	runner := newTestRunner(t, Config{MaxDuration: 20 * time.Second, IdleTimeout: 10 * time.Second})
+	screen := &fakeScreen{}
+	run, err := runner.Start(Proposal{Command: "true", Requester: "h"}, 80, 24, screen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen.waitFor(t, shows("sudo true"))
+	_ = run.Write([]byte("\x15trap '' HUP TERM; echo piege-$((6*7))-pose\r"))
+	screen.waitFor(t, shows("piege-42-pose"))
+	started := time.Now()
+	run.Stop("fermé")
+	done := make(chan Result, 1)
+	go func() { done <- run.Wait() }()
+	select {
+	case <-done:
+		if elapsed := time.Since(started); elapsed < killGrace/2 {
+			t.Fatalf("the shell ignored HUP and TERM but ended after %s", elapsed)
+		}
+	case <-time.After(killGrace + 5*time.Second):
+		t.Fatal("the shell survived the grace")
+	}
+}
+
+// Once the terminal ended, no signal may go out for its pid any more: the
+// pid can belong to another process by then.
+func TestNoSignalAfterTheTerminalEnded(t *testing.T) {
+	var mu sync.Mutex
+	var ended bool
+	var late []string
+	signalProcess = func(pid int, sig syscall.Signal) error {
+		mu.Lock()
+		if ended {
+			late = append(late, fmt.Sprintf("%d %v", pid, sig))
+		}
+		mu.Unlock()
+		return syscall.Kill(pid, sig)
+	}
+	t.Cleanup(func() { signalProcess = syscall.Kill })
+	runner := newTestRunner(t, Config{MaxDuration: 20 * time.Second, IdleTimeout: 10 * time.Second})
+	screen := &fakeScreen{}
+	run, err := runner.Start(Proposal{Command: "true", Requester: "h"}, 80, 24, screen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen.waitFor(t, shows("sudo true"))
+	run.Stop("fermé") // the shell leaves at once on HUP
+	run.Wait()
+	mu.Lock()
+	ended = true
+	mu.Unlock()
+	time.Sleep(killGrace + 500*time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(late) > 0 {
+		t.Fatalf("signals sent after the terminal ended: %v", late)
 	}
 }
 
