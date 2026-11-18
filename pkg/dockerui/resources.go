@@ -19,6 +19,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sirupsen/logrus"
+
+	"github.com/LosFurina/tmuxatlas/pkg/httpguard"
 )
 
 // Images, volumes and container creation: the rest of what Docker Desktop
@@ -51,6 +53,11 @@ var (
 	mountPattern    = regexp.MustCompile(`^/[A-Za-z0-9._/@+-]+$`)
 	anonymousVolume = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
+
+// bodyReadTimeout bounds the time a client has to send a request body: the
+// server has no ReadTimeout, and bodyLimit bounds the size only. A variable
+// so that tests can shorten it.
+var bodyReadTimeout = 10 * time.Second
 
 // Engine API payloads.
 
@@ -153,13 +160,16 @@ type volumeSizes struct {
 }
 
 func (s *Service) registerResources(read, mutate chi.Router) {
-	mutate.Post("/docker/containers", s.handleCreate)
+	// The routes that take a body read it whole, within the deadline, and
+	// check that it is one JSON value before their handler runs.
+	body := mutate.With(httpguard.BodyReadDeadline(bodyReadTimeout), httpguard.JSONBody(bodyLimit))
+	body.Post("/docker/containers", s.handleCreate)
 	read.Get("/docker/images", s.handleImages)
-	mutate.Post("/docker/images/pull", s.handlePull)
+	body.Post("/docker/images/pull", s.handlePull)
 	mutate.Post("/docker/images/prune", s.handlePrune)
 	mutate.Delete("/docker/images/{id}", s.handleRemoveImage)
 	read.Get("/docker/volumes", s.handleVolumes)
-	mutate.Post("/docker/volumes", s.handleCreateVolume)
+	body.Post("/docker/volumes", s.handleCreateVolume)
 	mutate.Delete("/docker/volumes/{name}", s.handleRemoveVolume)
 }
 

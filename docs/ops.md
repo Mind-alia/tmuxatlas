@@ -44,6 +44,12 @@ timeout and every response is read with a size bound.
   the whole of every request: a stop lasts the container's grace period and
   would freeze every account meanwhile. Each change, and each inspect, is
   logged with the account, the container and the result.
+- The routes that take a body (`POST /docker/containers`,
+  `/docker/images/pull`, `/docker/volumes`) read it whole before anything
+  else, like the other JSON routes: `application/json`, one JSON value, at
+  most 64 KiB, sent within 10 s. The server has no read timeout: without
+  this deadline, a body sent byte by byte would hold the request for ever.
+  A refused body closes the connection rather than being drained.
 - Without authentication (`--no-auth`), the view stays off unless
   `TMUXATLAS_DOCKER=on`: every local account could otherwise drive Docker.
   When on, its changes still check `Origin`, like the file explorer.

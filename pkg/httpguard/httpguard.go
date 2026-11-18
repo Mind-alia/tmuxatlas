@@ -29,17 +29,21 @@ func GlobalBodyLimitMiddleware(limit int64) func(http.Handler) http.Handler {
 }
 
 // JSONBody validates the media type, reads a bounded body, and accepts exactly
-// one JSON value before restoring the body for the route's decoder.
+// one JSON value before restoring the body for the route's decoder. A body it
+// leaves unread, or could not read before the BodyReadDeadline deadline, ends
+// the connection (see closeUnread).
 func JSONBody(limit int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 			if err != nil || mediaType != "application/json" {
+				closeUnread(w, r)
 				http.Error(w, "application/json required", http.StatusUnsupportedMediaType)
 				return
 			}
 			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 			if err != nil {
+				closeUnread(w, r)
 				var maxErr *http.MaxBytesError
 				if errors.As(err, &maxErr) {
 					http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
@@ -62,6 +66,17 @@ func JSONBody(limit int64) func(http.Handler) http.Handler {
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			next.ServeHTTP(w, r)
 		})
+	}
+}
+
+// closeUnread closes an HTTP/1 connection after the answer instead of
+// letting net/http drain the body left unread: that drain has no deadline
+// once BodyReadDeadline has returned, and the answer waits for it, so a body
+// sent byte by byte would still hold the connection. HTTP/2 resets the
+// stream instead of draining it.
+func closeUnread(w http.ResponseWriter, r *http.Request) {
+	if r.ProtoMajor == 1 {
+		w.Header().Set("Connection", "close")
 	}
 }
 

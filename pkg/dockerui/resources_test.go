@@ -1,7 +1,10 @@
 package dockerui
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +18,9 @@ func serveBody(s *Service, method, target, body string) *httptest.ResponseRecord
 	router := chi.NewRouter()
 	s.Register(router, router)
 	request := httptest.NewRequest(method, target, strings.NewReader(body))
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json") // as the interface sends it
+	}
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	return response
@@ -244,5 +250,57 @@ func TestCreateContainer(t *testing.T) {
 	response = serveBody(s, http.MethodPost, "/docker/containers", `{"image":"missing:latest"}`)
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "télécharge") {
 		t.Fatalf("missing image: %d %s", response.Code, response.Body)
+	}
+}
+
+// A body sent byte by byte, forever, must not hold the request: the server
+// has no ReadTimeout and the body limit bounds the size only. Each route that
+// reads a body gives up after its deadline, before anything reaches Docker.
+func TestBodiesAreReadWithinADeadline(t *testing.T) {
+	f := newFakeDocker(t)
+	s := newTestService(t, f, nil)
+	previous := bodyReadTimeout
+	bodyReadTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { bodyReadTimeout = previous })
+	router := chi.NewRouter()
+	s.Register(router, router)
+	server := httptest.NewServer(router)
+	t.Cleanup(server.Close)
+	for _, path := range []string{"/docker/containers", "/docker/images/pull", "/docker/volumes"} {
+		t.Run(path, func(t *testing.T) {
+			conn, err := net.Dial("tcp", server.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			before := len(f.mutations())
+			started := time.Now()
+			fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: atlas\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n{", path)
+			stop := make(chan struct{})
+			defer close(stop)
+			go func() {
+				for {
+					select {
+					case <-stop:
+						return
+					case <-time.After(50 * time.Millisecond):
+						if _, err := conn.Write([]byte(" ")); err != nil {
+							return
+						}
+					}
+				}
+			}()
+			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			status, err := bufio.NewReader(conn).ReadString('\n')
+			if err != nil {
+				t.Fatalf("no answer after %s: %v", time.Since(started).Round(time.Millisecond), err)
+			}
+			if !strings.HasPrefix(status, "HTTP/1.1 400") || time.Since(started) > 2*time.Second {
+				t.Fatalf("answer after %s: %q", time.Since(started).Round(time.Millisecond), status)
+			}
+			if len(f.mutations()) != before {
+				t.Fatalf("Docker reached: %v", f.mutations()[before:])
+			}
+		})
 	}
 }
