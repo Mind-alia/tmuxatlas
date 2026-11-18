@@ -167,6 +167,88 @@ func TestSanitizeInspect(t *testing.T) {
 	}
 }
 
+// Credentials sent as HTTP headers, in argument lists and in the joined
+// strings of a shell (CMD-SHELL, sh -c), are masked wherever the inspect view
+// shows a command.
+func TestSanitizeInspectMasksAuthorization(t *testing.T) {
+	for _, test := range []struct {
+		name, where string // Cmd, Entrypoint, Healthcheck (Test) or Args
+		args        []any
+		secret      string
+		kept        []string
+	}{
+		{"-H Authorization Bearer", "Cmd", []any{"curl", "-H", "Authorization: Bearer sk-live-cmd", "https://api.example/v1"},
+			"sk-live-cmd", []string{`"-H","Authorization: ••••","https://api.example/v1"`}},
+		{"--header Proxy-Authorization Basic", "Entrypoint", []any{"wget", "--header", "Proxy-Authorization: Basic cHJveHk6c2VjcmV0", "http://x"},
+			"cHJveHk6c2VjcmV0", []string{`"--header","Proxy-Authorization: ••••","http://x"`}},
+		{"--header=", "Cmd", []any{"wget", "--header=X-Api-Key: k3yvalue", "http://x"},
+			"k3yvalue", []string{`"--header=X-Api-Key: ••••"`}},
+		{"-H attached", "Entrypoint", []any{"curl", "-HAuthorization: Bearer sk-live-attached", "http://x"},
+			"sk-live-attached", []string{`"-HAuthorization: ••••"`}},
+		{"-H another header", "Cmd", []any{"curl", "-H", "Cookie: session=c00kie", "http://x"},
+			"c00kie", []string{`"-H","Cookie: ••••"`}},
+		{"Healthcheck CMD", "Healthcheck", []any{"CMD", "curl", "-f", "-H", "Authorization: Bearer sk-live-hc", "http://localhost/health"},
+			"sk-live-hc", []string{`"-H","Authorization: ••••","http://localhost/health"`}},
+		{"header as an argument", "Args", []any{"GET", "http://x", "Authorization:Bearer sk-live-httpie"},
+			"sk-live-httpie", []string{`"Authorization:••••"`}},
+		{"Bearer alone", "Cmd", []any{"client", "--value", "Bearer sk-live-bare"},
+			"sk-live-bare", []string{`"--value","Bearer ••••"`}},
+		{"Basic alone", "Healthcheck", []any{"CMD", "client", "--value", "Basic dXNlcjpwYXNzd29yZA=="},
+			"dXNlcjpwYXNzd29yZA==", []string{`"--value","Basic ••••"`}},
+		{"Basic without padding", "Cmd", []any{"client", "--value", "Basic dXNlcjpwYXNzd29yZA"},
+			"dXNlcjpwYXNzd29yZA", []string{`"--value","Basic ••••"`}},
+		{"--oauth2-bearer", "Cmd", []any{"curl", "--oauth2-bearer", "sk-live-oauth", "http://x"},
+			"sk-live-oauth", []string{`"--oauth2-bearer","••••","http://x"`}},
+		{"CMD-SHELL, single quotes", "Healthcheck", []any{"CMD-SHELL", "curl -fsS -H 'Authorization: Bearer sk-live-shell' http://localhost/health || exit 1"},
+			"sk-live-shell", []string{`"curl -fsS -H 'Authorization: ••••' http://localhost/health || exit 1"`}},
+		{"sh -c, double quotes", "Cmd", []any{"sh", "-c", `curl -H "X-Api-Key: shellk3y" http://x`},
+			"shellk3y", []string{`"curl -H \"X-Api-Key: ••••\" http://x"`}},
+		{"sh -c, --header=", "Entrypoint", []any{"sh", "-c", `wget -q --header="Proxy-Authorization: Basic cHJveHk6c2hlbGw=" -O- http://x`},
+			"cHJveHk6c2hlbGw", []string{`"wget -q --header=\"Proxy-Authorization: ••••\" -O- http://x"`}},
+		{"CMD-SHELL, unquoted", "Healthcheck", []any{"CMD-SHELL", "curl -H Authorization:sk-live-unquoted http://localhost/health"},
+			"sk-live-unquoted", []string{`"curl -H Authorization:•••• http://localhost/health"`}},
+		{"CMD-SHELL, attached and quoted", "Healthcheck", []any{"CMD-SHELL", `curl -H"X-Token: sk-live-glued" http://x`},
+			"sk-live-glued", []string{`"curl -H\"X-Token: ••••\" http://x"`}},
+		{"CMD-SHELL, --oauth2-bearer", "Healthcheck", []any{"CMD-SHELL", "curl --oauth2-bearer sk-live-flag http://x"},
+			"sk-live-flag", []string{`"curl --oauth2-bearer •••• http://x"`}},
+		{"sh -c, Authorization in code", "Cmd", []any{"python", "-c", `requests.get(u, headers={"Authorization": "Bearer sk-live-py"})`},
+			"sk-live-py", []string{`headers={\"Authorization\": \"••••\"})`}},
+		{"sh -c, Bearer alone", "Entrypoint", []any{"sh", "-c", "TOKEN_HEADER='Bearer sk-live-var' exec app"},
+			"sk-live-var", []string{`"TOKEN_HEADER='Bearer ••••' exec app"`}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := map[string]any{"Labels": map[string]any{
+				"org.opencontainers.image.description": "Basic auth enabled",
+				"org.opencontainers.image.title":       "Basic authentication proxy",
+			}}
+			doc := map[string]any{"Id": webID, "Config": config}
+			switch test.where {
+			case "Healthcheck":
+				config["Healthcheck"] = map[string]any{"Test": test.args}
+			case "Args":
+				doc["Args"] = test.args
+			default:
+				config[test.where] = test.args
+			}
+			raw, _ := json.Marshal(doc)
+			sanitized, err := sanitizeInspect(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(sanitized)
+			if strings.Contains(text, test.secret) {
+				t.Errorf("%q survived: %s", test.secret, text)
+			}
+			// Words after "Basic" that cannot be credentials are kept.
+			for _, kept := range append(test.kept, `"Basic auth enabled"`, `"Basic authentication proxy"`) {
+				if !strings.Contains(text, kept) {
+					t.Errorf("missing %s in %s", kept, text)
+				}
+			}
+		})
+	}
+}
+
 func TestComputeStats(t *testing.T) {
 	now := time.Date(2026, 11, 17, 8, 0, 0, 0, time.UTC)
 	raw := apiStats{Read: now.Format(time.RFC3339Nano)}

@@ -23,7 +23,7 @@ timeout and every response is read with a size bound.
 |---|---|---|
 | `GET /docker/containers` | `/containers/json?all=1`, `/info`, inspect, `/stats` | inspect cached 15 s (or until the state changes), at most 3 s for all of them, retried 15 s after a failure; stats refreshed at most every 3 s and shared by every poll |
 | `GET /docker/containers/{id}/logs?tail=N&since=T` | `/logs` | stdout and stderr with timestamps, demultiplexed without TTY; the newest 2000 lines and 2 MiB, out of at most 8 MiB read |
-| `GET /docker/containers/{id}/inspect` | `/containers/{id}/json` | every environment value replaced by `••••`, plus values of secret-looking keys, flags and URL passwords |
+| `GET /docker/containers/{id}/inspect` | `/containers/{id}/json` | every environment value replaced by `••••`, plus values of secret-looking keys and flags, URL passwords, and HTTP credentials in commands and healthchecks, shell strings (`CMD-SHELL`, `sh -c`) included: every `-H`/`--header` value, `Authorization` and `Proxy-Authorization`, Bearer and Basic tokens |
 | `POST /docker/containers/{id}/start`, `stop`, `restart` | same | stop waits for the container's grace period |
 | `DELETE /docker/containers/{id}` | `DELETE /containers/{id}` | refused (409) while running; never `force` nor `v` |
 | `POST /docker/containers/{id}/terminal` | — | opens a shell in a tmux session, see below |
@@ -82,10 +82,11 @@ timeout and every response is read with a size bound.
 gives it to every TmuxAtlas admin. On this server the hub account is already
 in the `docker` group, so its admins could already run `docker` from a
 terminal; the view does not widen that, but anyone given an admin account
-gets it too. Only the environment, the obvious secret names and URL
-passwords are masked in *Inspecter*: a secret passed another way (a plain
-command-line argument, for instance) still shows, and the logs are shown as
-the container writes them.
+gets it too. Only the environment, the obvious secret names, URL passwords
+and HTTP credentials are masked in *Inspecter*: a secret passed another way
+(a plain command-line argument, or a flag whose name does not look secret,
+for instance) still shows, and the logs are shown as the container writes
+them.
 
 ## Who does what (collector and alerts)
 
