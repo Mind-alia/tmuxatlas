@@ -91,6 +91,12 @@ export function translateAccountServerError(raw: string, fallback: string): stri
   if (/dernier administrateur/i.test(text)) {
     return 'Impossible de désactiver ou supprimer le dernier administrateur actif.'
   }
+  if (/opération interdite sur cet administrateur/i.test(text)) {
+    return 'Opération interdite sur votre propre compte ou sur le dernier administrateur actif.'
+  }
+  if (/rôle invalide/i.test(text)) {
+    return 'Rôle invalide.'
+  }
   if (/introuvable/i.test(text)) {
     return 'Ce compte est introuvable.'
   }
@@ -123,11 +129,15 @@ export async function fetchAdminUsers(): Promise<AccountUser[]> {
   return data?.users ?? []
 }
 
-export async function createAdminUser(username: string, password: string): Promise<AccountUser> {
+export async function createAdminUser(
+  username: string,
+  password: string,
+  role: 'admin' | 'user' = 'user',
+): Promise<AccountUser> {
   const res = await apiFetch('/api/admin/users', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: username.trim(), password }),
+    body: JSON.stringify({ username: username.trim(), password, role }),
   })
   if (!res.ok) {
     throw new Error(await parseErrorMessage(res, 'Impossible de créer le compte.'))
@@ -137,7 +147,7 @@ export async function createAdminUser(username: string, password: string): Promi
 
 export async function updateAdminUser(
   id: string,
-  patch: { password?: string; disabled?: boolean },
+  patch: { password?: string; disabled?: boolean; role?: 'admin' | 'user' },
 ): Promise<AccountUser> {
   const res = await apiFetch(`/api/admin/users/${encodeURIComponent(id)}`, {
     method: 'PATCH',

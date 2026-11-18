@@ -295,10 +295,16 @@ func (a *AccountsAuth) ChangePassword(w http.ResponseWriter, r *http.Request) {
 // UpdateAccount serializes credential changes with login, so that a successful
 // login cannot create a session after the account was disabled or reset.
 func (a *AccountsAuth) UpdateAccount(id, actor, hash string, disabled *bool) (accounts.User, error) {
+	return a.UpdateAccountWithRole(id, actor, hash, disabled, nil)
+}
+
+// UpdateAccountWithRole serializes account credential, state, and role updates
+// with login, revoking active sessions when access is reduced or credentials change.
+func (a *AccountsAuth) UpdateAccountWithRole(id, actor, hash string, disabled *bool, role *string) (accounts.User, error) {
 	a.lifecycle.Lock()
 	defer a.lifecycle.Unlock()
-	user, err := a.Store.Update(id, actor, hash, disabled)
-	if err == nil && (hash != "" || (disabled != nil && *disabled)) {
+	user, err := a.Store.UpdateWithRole(id, actor, hash, disabled, role)
+	if err == nil && (hash != "" || (disabled != nil && *disabled) || (role != nil && *role != "admin")) {
 		a.Sessions.RevokeAccount(id, "")
 	}
 	return user, err

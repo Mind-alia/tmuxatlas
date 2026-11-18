@@ -36,7 +36,7 @@ func writeAccountError(w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case errors.Is(err, accounts.ErrProtectedAdmin), errors.Is(err, accounts.ErrDuplicateUsername):
 		status = http.StatusConflict
-	case errors.Is(err, accounts.ErrInvalidUsername), errors.Is(err, accounts.ErrInvalidPassword):
+	case errors.Is(err, accounts.ErrInvalidUsername), errors.Is(err, accounts.ErrInvalidPassword), errors.Is(err, accounts.ErrInvalidRole):
 		status = http.StatusBadRequest
 	}
 	message := "erreur interne"
@@ -64,17 +64,22 @@ func handleAdminUsers(w http.ResponseWriter, r *http.Request, opts *Options) {
 	var request struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		Role     string `json:"role"`
 	}
 	if json.NewDecoder(r.Body).Decode(&request) != nil {
 		http.Error(w, "requête invalide", http.StatusBadRequest)
 		return
+	}
+	role := request.Role
+	if role == "" {
+		role = "user"
 	}
 	hash, err := accounts.HashPassword(request.Password)
 	if err != nil {
 		writeAccountError(w, err)
 		return
 	}
-	user, err := opts.AccountsAuth.Store.Create(request.Username, hash, "user")
+	user, err := opts.AccountsAuth.Store.Create(request.Username, hash, role)
 	if err != nil {
 		writeAccountError(w, err)
 		return
@@ -89,8 +94,9 @@ func handleAdminUserUpdate(w http.ResponseWriter, r *http.Request, opts *Options
 	var request struct {
 		Password *string `json:"password"`
 		Disabled *bool   `json:"disabled"`
+		Role     *string `json:"role"`
 	}
-	if json.NewDecoder(r.Body).Decode(&request) != nil || (request.Password == nil && request.Disabled == nil) {
+	if json.NewDecoder(r.Body).Decode(&request) != nil || (request.Password == nil && request.Disabled == nil && request.Role == nil) {
 		http.Error(w, "requête invalide", http.StatusBadRequest)
 		return
 	}
@@ -103,7 +109,7 @@ func handleAdminUserUpdate(w http.ResponseWriter, r *http.Request, opts *Options
 			return
 		}
 	}
-	user, err := opts.AccountsAuth.UpdateAccount(chi.URLParam(r, "id"), identity.User.ID, hash, request.Disabled)
+	user, err := opts.AccountsAuth.UpdateAccountWithRole(chi.URLParam(r, "id"), identity.User.ID, hash, request.Disabled, request.Role)
 	if err != nil {
 		writeAccountError(w, err)
 		return
