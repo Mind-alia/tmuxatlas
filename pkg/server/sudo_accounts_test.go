@@ -89,12 +89,12 @@ func TestSudoTerminalDoesNotHoldAccountPolicy(t *testing.T) {
 	waitShown(browser, "sudo echo premier")
 	// Make this shell ignore SIGHUP: it then outlives the decision until the
 	// sudo peer kills it 2 s later, so reopening at once would find the peer
-	// busy. Ctrl-U clears the proposed line first; 40+2 is only on screen
-	// once the line ran.
-	if err := browser.WriteMessage(websocket.BinaryMessage, []byte("\x15trap '' HUP; echo $((40+2))\r")); err != nil {
+	// busy. Ctrl-U clears the proposed line first; "piege-42-pose" is only
+	// on screen once the line ran (a bare 42 can be part of an escape sequence).
+	if err := browser.WriteMessage(websocket.BinaryMessage, []byte("\x15trap '' HUP; echo piege-$((6*7))-pose\r")); err != nil {
 		t.Fatal(err)
 	}
-	waitShown(browser, "42")
+	waitShown(browser, "piege-42-pose")
 
 	if status := call(http.MethodGet, "/api/sessions", userCookie, ""); status != http.StatusNoContent {
 		t.Fatalf("GET /api/sessions = %d", status)
