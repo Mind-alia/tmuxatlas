@@ -1029,3 +1029,32 @@ html[data-visual-keyboard-open] {
     font-size: max(16px, 1em);
   }
 }
+
+/* Agent teams page (components/agents) */
+@keyframes agents-twinkle { 0%, 100% { opacity: 0.15; } 50% { opacity: 0.9; } }
+@keyframes agents-spin { to { transform: rotate(360deg); } }
+@keyframes agents-spin-reverse { from { transform: rotate(360deg); } to { transform: rotate(0deg); } }
+@keyframes agents-travel { 0% { left: 0; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { left: 100%; opacity: 0; } }
+@keyframes agents-aura {
+  0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--primary) 50%, transparent); }
+  100% { box-shadow: 0 0 0 16px color-mix(in oklch, var(--primary) 0%, transparent); }
+}
+@keyframes agents-sun {
+  0%, 100% { box-shadow: 0 0 40px 6px color-mix(in oklch, var(--warning) 35%, transparent); }
+  50% { box-shadow: 0 0 70px 16px color-mix(in oklch, var(--warning) 55%, transparent); }
+}
+@keyframes agents-cursor { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+.agents-twinkle { animation: agents-twinkle 3s ease-in-out infinite; }
+.agents-orbit { animation: agents-spin 60s linear infinite; }
+.agents-orbit-reverse { animation: agents-spin-reverse 90s linear infinite; }
+.agents-spin { animation: agents-spin 1.6s linear infinite; }
+.agents-travel { left: 0; animation: agents-travel 1.6s linear infinite; }
+.agents-aura { animation: agents-aura 1.8s ease-out infinite; }
+.agents-sun { animation: agents-sun 3.5s ease-in-out infinite; }
+.agents-cursor { animation: agents-cursor 1s steps(1) infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .agents-twinkle, .agents-orbit, .agents-orbit-reverse, .agents-spin, .agents-travel, .agents-aura, .agents-sun, .agents-cursor {
+    animation: none;
+  }
+  .agents-travel { left: 50%; }
+}

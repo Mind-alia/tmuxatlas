@@ -74,6 +74,7 @@ type View =
   | 'files'
   | 'ops'
   | 'loops'
+  | 'agents'
 
 const AdminPage = lazy(() => import('./components/AdminPage').then(module => ({ default: module.AdminPage })))
 const MonitoringPage = lazy(() =>
@@ -82,6 +83,9 @@ const MonitoringPage = lazy(() =>
 const FilesPage = lazy(() => import('./components/files/FilesPage').then(module => ({ default: module.FilesPage })))
 const LoopsPage = lazy(() =>
   import('./components/loops/LoopsPage').then(module => ({ default: module.LoopsPage })),
+)
+const AgentsPage = lazy(() =>
+  import('./components/agents/AgentsPage').then(module => ({ default: module.AgentsPage })),
 )
 const SessionFiles = lazy(() =>
   import('./components/files/SessionFiles').then(module => ({ default: module.SessionFiles })),
@@ -106,6 +110,7 @@ function getViewFromPath(): { view: View; sessionKey: string | null } {
   if (window.location.pathname === '/ops') return { view: 'ops', sessionKey: null }
   if (window.location.pathname === '/wall') return { view: 'wall', sessionKey: null }
   if (window.location.pathname === '/loops') return { view: 'loops', sessionKey: null }
+  if (window.location.pathname === '/agents') return { view: 'agents', sessionKey: null }
   if (window.location.pathname === '/files') return { view: 'files', sessionKey: null }
   if (window.location.pathname === '/settings') {
     return { view: 'settings', sessionKey: null }
@@ -391,7 +396,8 @@ function AppInner({
         view === 'admin' ||
         view === 'files' ||
         view === 'ops' ||
-        view === 'loops'
+        view === 'loops' ||
+        view === 'agents'
       ) {
         path = `/${view}`
       } else if (view === 'settings') {
@@ -455,7 +461,7 @@ function AppInner({
       navigateTo(null)
       return
     }
-    if (role === 'user' && (currentView === 'setup' || currentView === 'ops')) {
+    if (role === 'user' && (currentView === 'setup' || currentView === 'ops' || currentView === 'agents')) {
       navigateTo(null)
     }
   }, [currentView, navigateTo, role])
@@ -786,6 +792,8 @@ function AppInner({
       document.title = 'Conteneurs — Atlas'
     } else if (currentView === 'loops') {
       document.title = 'Boucles — Atlas'
+    } else if (currentView === 'agents') {
+      document.title = 'Équipes d’agents — Atlas'
     } else {
       document.title =
         currentView === 'monitoring' ? 'Monitoring — Atlas' : currentView === 'wall' ? 'Mur — Atlas' : 'Atlas'
@@ -887,6 +895,7 @@ function AppInner({
             onMonitoring={() => navigateTo(null, 'monitoring')}
             onWall={() => navigateTo(null, 'wall')}
             onLoops={() => navigateTo(null, 'loops')}
+            onAgents={role !== 'user' ? () => navigateTo(null, 'agents') : undefined}
             onFiles={() => navigateTo(null, 'files')}
             onOps={role !== 'user' ? () => navigateTo(null, 'ops') : undefined}
             onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}
@@ -969,6 +978,8 @@ function AppInner({
               <FilesPage hosts={hosts} />
             ) : currentView === 'ops' && role !== 'user' ? (
               <OpsPage onOpenSession={key => void openCreatedSession(key)} />
+            ) : currentView === 'agents' && role !== 'user' ? (
+              <AgentsPage onOpenSession={openSessionFromView} />
             ) : currentView === 'loops' ? (
               <LoopsPage
                 currentUsername={username}
@@ -1105,6 +1116,7 @@ function AppInner({
           onMonitoring={() => navigateTo(null, 'monitoring')}
           onWall={() => navigateTo(null, 'wall')}
           onLoops={() => navigateTo(null, 'loops')}
+          onAgents={role !== 'user' ? () => navigateTo(null, 'agents') : undefined}
           onFiles={() => navigateTo(null, 'files')}
           onOps={role !== 'user' ? () => navigateTo(null, 'ops') : undefined}
           onAdmin={role === 'admin' ? () => navigateTo(null, 'admin') : undefined}

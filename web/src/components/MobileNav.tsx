@@ -8,6 +8,7 @@ import {
   List,
   LogOut,
   Menu as MenuIcon,
+  Orbit,
   Plus,
   RefreshCw,
   Settings,
@@ -33,6 +34,7 @@ export function MobileNav({
   onMonitoring,
   onWall,
   onLoops,
+  onAgents,
   onFiles,
   onOps,
   onAdmin,
@@ -48,6 +50,7 @@ export function MobileNav({
   onMonitoring: () => void
   onWall?: () => void
   onLoops?: () => void
+  onAgents?: () => void
   onFiles?: () => void
   onOps?: () => void
   onAdmin?: () => void
@@ -66,6 +69,7 @@ export function MobileNav({
   const secondary: Destination[] = [
     ...(onNewSession ? [{ label: 'Nouvelle session', icon: Plus, action: onNewSession }] : []),
     ...(onWall ? [{ label: 'Mur de sessions', icon: LayoutGrid, action: onWall, active: currentView === 'wall' }] : []),
+    ...(onAgents ? [{ label: 'Équipes d’agents', icon: Orbit, action: onAgents, active: currentView === 'agents' }] : []),
     ...(onOps ? [{ label: 'Conteneurs', icon: Container, action: onOps, active: currentView === 'ops' }] : []),
     ...(role === 'admin' && onAdmin
       ? [{ label: 'Administration', icon: Shield, action: onAdmin, active: currentView === 'admin' }]

@@ -26,6 +26,7 @@ import (
 
 	"github.com/LosFurina/tmuxatlas/pkg/activity"
 	"github.com/LosFurina/tmuxatlas/pkg/agentcheck"
+	"github.com/LosFurina/tmuxatlas/pkg/agentteams"
 	"github.com/LosFurina/tmuxatlas/pkg/auth"
 	"github.com/LosFurina/tmuxatlas/pkg/common"
 	"github.com/LosFurina/tmuxatlas/pkg/dictation"
@@ -377,6 +378,10 @@ func Run(ctx context.Context, opts *Options) error {
 	var fileExplorer *files.Handler
 	if files.Enabled(os.Getenv("TMUXATLAS_FILES")) {
 		fileExplorer = files.New()
+	}
+	var agentTeams *agentteams.Reader
+	if home, homeErr := os.UserHomeDir(); homeErr == nil {
+		agentTeams = agentteams.NewReader(filepath.Join(home, ".claude"))
 	}
 	var loopsMgr *loops.Manager
 	var loopsHandler *loops.Handler
@@ -745,6 +750,28 @@ func Run(ctx context.Context, opts *Options) error {
 			// Ops endpoint — containers and backups, admin only. The account
 			// policy already refuses it to "user" accounts; the handler checks
 			// again so a future allow-list change cannot expose it.
+			// Agent teams — the sub-agents of the Claude Code sessions running under
+			// the hub account (pkg/agentteams). Admin only in accounts mode: the
+			// lines quote commands and file names from every session.
+			r.Get("/agent-teams", func(w http.ResponseWriter, r *http.Request) {
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role != "admin" {
+					http.Error(w, "accès interdit", http.StatusForbidden)
+					return
+				}
+				if agentTeams == nil {
+					http.Error(w, "équipes d'agents indisponibles", http.StatusServiceUnavailable)
+					return
+				}
+				teams, err := agentTeams.Teams()
+				if err != nil {
+					http.Error(w, "lecture des équipes d'agents impossible", http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				json.NewEncoder(w).Encode(map[string]any{"teams": teams})
+			})
+
 			r.Get("/ops", func(w http.ResponseWriter, r *http.Request) {
 				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role != "admin" {
 					http.Error(w, "accès interdit", http.StatusForbidden)

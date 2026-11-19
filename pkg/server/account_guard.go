@@ -47,7 +47,7 @@ var accountOtherRoutes = map[string]string{
 	"PATCH /api/admin/users/{id}": "admin", "DELETE /api/admin/users/{id}": "admin",
 	"GET /api/admin/sessions": "admin", "GET /api/ops": "admin", "POST /api/ops/notifications/test": "admin", "GET /api/peers": "admin",
 	"GET /api/admin/cli-assignments": "admin", "PUT /api/admin/cli-assignments": "admin",
-	"GET /api/agent-status": "admin", "DELETE /api/tool-events": "admin",
+	"GET /api/agent-status": "admin", "GET /api/agent-teams": "admin", "DELETE /api/tool-events": "admin",
 	"GET /api/push/vapid-key": "admin", "POST /api/push/subscribe": "admin",
 	"POST /api/push/unsubscribe": "admin", "PUT /api/preferences": "admin", "POST /api/pair": "admin",
 	"GET /ws/peer": "peer", "GET /ws/peer-pty": "peer",
