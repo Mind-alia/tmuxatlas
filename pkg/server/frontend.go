@@ -11,7 +11,7 @@ import (
 func isSPARoute(requestPath string) bool {
 	cleaned := path.Clean("/" + strings.TrimPrefix(requestPath, "/"))
 	switch cleaned {
-	case "/", "/settings", "/setup", "/monitoring", "/wall", "/files", "/loops", "/agents":
+	case "/", "/settings", "/setup", "/monitoring", "/wall", "/files", "/loops", "/agents", "/secrets":
 		return true
 	}
 	if strings.HasPrefix(cleaned, "/session/") {
