@@ -211,6 +211,22 @@ func TestSecretsRoutesKeepTheServerGuards(t *testing.T) {
 		t.Fatalf("révélation : %s", answer)
 	}
 
+	// The unlock belongs to the browser session that gave the passphrase:
+	// the same admin signed in from another browser reads nothing with it.
+	elsewhere := loginAs("admin")
+	if code, body := call(http.MethodGet, "/api/secrets/status", base, elsewhere, false, ""); code != http.StatusOK ||
+		!strings.Contains(body, `"unlocked":false`) || !strings.Contains(body, `"unlocked_elsewhere":true`) {
+		t.Fatalf("état vu d’une autre session : %d %s", code, body)
+	}
+	for _, path := range []string{"/api/secrets/apps/shop/vars/TOKEN/reveal", "/api/secrets/apps/shop/export", "/api/secrets/apps/shop/apply"} {
+		if code, body := call(http.MethodPost, path, base, elsewhere, true, ""); code != http.StatusLocked || strings.Contains(body, "valeur-de-test") {
+			t.Fatalf("autre session admin, %s : %d %s", path, code, body)
+		}
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatal("une session sans la phrase de passe a écrit le fichier cible")
+	}
+
 	// Apply writes the file, then restarts through the Containers view: the
 	// name is resolved in a listing and the Engine API gets the full ID.
 	if calls := dockerCalls(); len(calls) != 0 {
@@ -233,6 +249,26 @@ func TestSecretsRoutesKeepTheServerGuards(t *testing.T) {
 	ok(http.MethodPost, "/api/secrets/lock", "")
 	if code, _ := call(http.MethodPost, "/api/secrets/apps/shop/vars/TOKEN/reveal", base, admin, true, ""); code != http.StatusLocked {
 		t.Fatalf("révélation après verrouillage : %d", code)
+	}
+
+	// Signing out ends the unlock of that session: the private key does not
+	// stay in memory behind a session that no longer exists.
+	ok(http.MethodPost, "/api/secrets/unlock", passphrase)
+	if code, body := call(http.MethodGet, "/api/secrets/status", base, elsewhere, false, ""); !strings.Contains(body, `"unlocked_elsewhere":true`) {
+		t.Fatalf("avant déconnexion : %d %s", code, body)
+	}
+	if code, body := call(http.MethodPost, "/api/auth/logout", base, admin, true, ""); code >= 300 {
+		t.Fatalf("déconnexion : %d %s", code, body)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		_, body := call(http.MethodGet, "/api/secrets/status", base, elsewhere, false, "")
+		if !strings.Contains(body, `"unlocked_elsewhere":true`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("la déconnexion n’a pas verrouillé le coffre : %s", body)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

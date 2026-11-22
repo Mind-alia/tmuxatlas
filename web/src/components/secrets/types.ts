@@ -1,6 +1,11 @@
 export interface VaultStatus {
   initialized: boolean
+  /** True for this browser session only, if it gave the passphrase. */
   unlocked: boolean
+  /** Another session holds an unlock; this one still has to unlock itself. */
+  unlocked_elsewhere?: boolean
+  /** Set for a vault that exists but cannot be read or trusted. */
+  problem?: string
   /** When the private key is forgotten (RFC 3339); absent while locked. */
   expires_at?: string
   /** The server clock, so the countdown does not depend on the browser's. */
@@ -26,6 +31,8 @@ export interface SecretApp {
   name: string
   target?: SecretTarget
   variables: SecretVariable[]
+  /** The application's file is damaged: it can only be deleted. */
+  unreadable?: boolean
 }
 
 export interface ImportResult {
@@ -37,6 +44,8 @@ export interface ApplyResult {
   env_file: string
   variables: number
   backup: boolean
+  /** The file already had this exact content. */
+  unchanged?: boolean
   container?: string
   restarted: boolean
   restart_error?: string

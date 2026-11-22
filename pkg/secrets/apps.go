@@ -41,6 +41,9 @@ type App struct {
 	Name      string     `json:"name"`
 	Target    *Target    `json:"target,omitempty"`
 	Variables []Variable `json:"variables"`
+	// Unreadable marks an application whose file is damaged: it can only be
+	// deleted.
+	Unreadable bool `json:"unreadable,omitempty"`
 }
 
 // Variable names one stored value.
@@ -63,7 +66,19 @@ func (v *Vault) readApp(name string) (appDoc, error) {
 	if err != nil {
 		return doc, err
 	}
-	if json.Unmarshal(raw, &doc) != nil || doc.Name != name {
+	if json.Unmarshal(raw, &doc) != nil || doc.Name != name || len(doc.Vars) > MaxVariables {
+		return doc, ErrCorrupt
+	}
+	// The file is not trusted more than a request: a name written there by
+	// hand would otherwise reach an applied file as it is.
+	seen := make(map[string]bool, len(doc.Vars))
+	for _, variable := range doc.Vars {
+		if ValidateVarName(variable.Name) != nil || seen[variable.Name] || variable.Value == "" {
+			return doc, ErrCorrupt
+		}
+		seen[variable.Name] = true
+	}
+	if doc.Target != nil && (doc.Target.EnvFile == "" || (doc.Target.Container != "" && !containerName.MatchString(doc.Target.Container))) {
 		return doc, ErrCorrupt
 	}
 	return doc, nil
@@ -111,17 +126,25 @@ func (v *Vault) Apps() ([]App, error) {
 	apps := make([]App, 0, len(names))
 	for _, name := range names {
 		doc, err := v.readApp(name)
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrCorrupt):
+			// One damaged file does not hide the other applications.
+			apps = append(apps, App{Name: name, Variables: []Variable{}, Unreadable: true})
+		case errors.Is(err, ErrAppNotFound):
+		case err != nil:
 			return nil, err
+		default:
+			apps = append(apps, appView(doc))
 		}
-		apps = append(apps, appView(doc))
 	}
 	return apps, nil
 }
 
 // update reads an application under the vault's locks, lets fn change it and
-// writes it back atomically. The recipient is given so fn can encrypt.
-func (v *Vault) update(name string, fn func(doc *appDoc, recipient *age.X25519Recipient) error) (App, error) {
+// writes it back atomically. The recipient is given so fn can encrypt. The
+// entry fn returns goes to the audit trail once the file is written, so the
+// trail never tells of a change that did not happen.
+func (v *Vault) update(name string, fn func(doc *appDoc, recipient *age.X25519Recipient) (Entry, error)) (App, error) {
 	if err := ValidateAppName(name); err != nil {
 		return App{}, err
 	}
@@ -137,12 +160,14 @@ func (v *Vault) update(name string, fn func(doc *appDoc, recipient *age.X25519Re
 		if err != nil {
 			return err
 		}
-		if err := fn(&doc, recipient); err != nil {
+		entry, err := fn(&doc, recipient)
+		if err != nil {
 			return err
 		}
 		if err := writeJSONFile(v.appPath(name), doc); err != nil {
 			return err
 		}
+		v.auditLocked(entry)
 		view = appView(doc)
 		return nil
 	})
@@ -194,7 +219,8 @@ func (v *Vault) DeleteApp(actor, name string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	return v.withFileLock(func() error {
-		if _, err := v.readApp(name); err != nil {
+		// A damaged application can still be deleted.
+		if _, err := v.readApp(name); err != nil && !errors.Is(err, ErrCorrupt) {
 			return err
 		}
 		if err := os.Remove(v.appPath(name)); err != nil {
@@ -233,12 +259,9 @@ func (v *Vault) SetVar(actor, app, name, value string) (App, error) {
 	if err := validateValue(value); err != nil {
 		return App{}, err
 	}
-	return v.update(app, func(doc *appDoc, recipient *age.X25519Recipient) error {
-		if err := setVar(doc, recipient, name, value, v.now().UTC()); err != nil {
-			return err
-		}
-		v.auditLocked(Entry{Actor: actor, Action: "var_set", App: app, Name: name})
-		return nil
+	return v.update(app, func(doc *appDoc, recipient *age.X25519Recipient) (Entry, error) {
+		return Entry{Actor: actor, Action: "var_set", App: app, Name: name},
+			setVar(doc, recipient, name, value, v.now().UTC())
 	})
 }
 
@@ -247,15 +270,14 @@ func (v *Vault) DeleteVar(actor, app, name string) (App, error) {
 	if err := ValidateVarName(name); err != nil {
 		return App{}, err
 	}
-	return v.update(app, func(doc *appDoc, _ *age.X25519Recipient) error {
+	return v.update(app, func(doc *appDoc, _ *age.X25519Recipient) (Entry, error) {
 		for i := range doc.Vars {
 			if doc.Vars[i].Name == name {
 				doc.Vars = append(doc.Vars[:i], doc.Vars[i+1:]...)
-				v.auditLocked(Entry{Actor: actor, Action: "var_delete", App: app, Name: name})
-				return nil
+				return Entry{Actor: actor, Action: "var_delete", App: app, Name: name}, nil
 			}
 		}
-		return ErrVarNotFound
+		return Entry{}, ErrVarNotFound
 	})
 }
 
@@ -285,15 +307,14 @@ func (v *Vault) Import(actor, app, text string) (ImportResult, error) {
 		}
 		result.Imported = append(result.Imported, pair.Name)
 	}
-	result.App, err = v.update(app, func(doc *appDoc, recipient *age.X25519Recipient) error {
+	result.App, err = v.update(app, func(doc *appDoc, recipient *age.X25519Recipient) (Entry, error) {
 		now := v.now().UTC()
 		for _, pair := range pairs {
 			if err := setVar(doc, recipient, pair.Name, pair.Value, now); err != nil {
-				return err
+				return Entry{}, err
 			}
 		}
-		v.auditLocked(Entry{Actor: actor, Action: "import", App: app, Detail: strconv.Itoa(len(pairs)) + " variables"})
-		return nil
+		return Entry{Actor: actor, Action: "import", App: app, Detail: strconv.Itoa(len(pairs)) + " variables"}, nil
 	})
 	if err != nil {
 		return ImportResult{}, err
@@ -315,9 +336,9 @@ func decryptAll(doc appDoc, identity *age.X25519Identity) ([]Pair, error) {
 	return pairs, nil
 }
 
-// Reveal decrypts one value. The vault must be unlocked, and the reading is
-// written to the audit trail before the value is returned.
-func (v *Vault) Reveal(actor, app, name string) (string, error) {
+// Reveal decrypts one value. The vault must be unlocked by this session, and
+// the reading is written to the audit trail before the value is returned.
+func (v *Vault) Reveal(actor, session, app, name string) (string, error) {
 	if err := ValidateAppName(app); err != nil {
 		return "", err
 	}
@@ -329,9 +350,9 @@ func (v *Vault) Reveal(actor, app, name string) (string, error) {
 	if _, err := v.readVault(); err != nil {
 		return "", err
 	}
-	identity := v.unlockedLocked()
-	if identity == nil {
-		return "", ErrLocked
+	identity, err := v.keyFor(session)
+	if err != nil {
+		return "", err
 	}
 	doc, err := v.readApp(app)
 	if err != nil {
@@ -354,8 +375,8 @@ func (v *Vault) Reveal(actor, app, name string) (string, error) {
 }
 
 // Export returns the application as a dotenv text. The vault must be
-// unlocked; the export is audited first.
-func (v *Vault) Export(actor, app string) (string, error) {
+// unlocked by this session; the export is audited first.
+func (v *Vault) Export(actor, session, app string) (string, error) {
 	if err := ValidateAppName(app); err != nil {
 		return "", err
 	}
@@ -364,9 +385,9 @@ func (v *Vault) Export(actor, app string) (string, error) {
 	if _, err := v.readVault(); err != nil {
 		return "", err
 	}
-	identity := v.unlockedLocked()
-	if identity == nil {
-		return "", ErrLocked
+	identity, err := v.keyFor(session)
+	if err != nil {
+		return "", err
 	}
 	doc, err := v.readApp(app)
 	if err != nil {

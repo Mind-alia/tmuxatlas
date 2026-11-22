@@ -47,6 +47,7 @@ const actionLabels: Record<string, string> = {
   init: 'Coffre initialisé',
   unlock: 'Déverrouillage',
   unlock_failed: 'Déverrouillage refusé',
+  unlock_blocked: 'Déverrouillage bloqué (trop d’essais)',
   lock: 'Verrouillage',
   app_create: 'Application créée',
   app_delete: 'Application supprimée',
@@ -247,8 +248,11 @@ function LockBanner({
           Verrouillé
         </StatusPill>
         <span className="min-w-0 flex-1 text-xs text-muted-foreground">
+          {status.unlocked_elsewhere
+            ? 'Déverrouillé dans une autre session, pas dans celle-ci : chaque session donne elle-même la phrase de passe. '
+            : ''}
           Ajouter ou remplacer une valeur reste possible. Révéler, exporter et appliquer demandent la phrase de passe,
-          pour {Math.round(status.ttl_seconds / 60)} minutes.
+          pour {Math.round(status.ttl_seconds / 60)} minutes et pour cette session seulement.
         </span>
       </div>
       <form onSubmit={unlock} className="flex flex-col gap-2 sm:flex-row" autoComplete="off">
@@ -438,9 +442,39 @@ function AppPanel({ app, unlocked, revealed, onReveal, onHide, onChanged, onLock
       await onChanged()
     })
 
+  const count = app.variables.length
+  const removeApp = (body: ReactNode) =>
+    setConfirmation({
+      title: `Supprimer « ${app.name} » ?`,
+      action: 'Supprimer définitivement',
+      destructive: true,
+      body,
+      run: async () => {
+        await deleteApp(app.name)
+        await onChanged()
+      },
+    })
+
+  if (app.unreadable) {
+    return (
+      <section aria-label={`Application ${app.name}`} className={`${cardClass} space-y-3`}>
+        <h2 className="break-all font-mono text-sm font-medium">{app.name}</h2>
+        <ErrorNote text="Le fichier de cette application est illisible ou a été modifié à la main. Ses valeurs ne peuvent plus être lues ni appliquées ; elle peut seulement être supprimée, puis recréée." />
+        <Button
+          size="sm"
+          variant="destructive"
+          leadingIcon={<Trash2 size={14} aria-hidden />}
+          onClick={() => removeApp(<p>Le fichier illisible de cette application est retiré du coffre.</p>)}
+        >
+          Supprimer l’application
+        </Button>
+        <ConfirmDialog request={confirmation} onClose={() => setConfirmation(null)} />
+      </section>
+    )
+  }
+
   const target = app.target
   const targetDirty = envFile.trim() !== (target?.env_file ?? '') || container.trim() !== (target?.container ?? '')
-  const count = app.variables.length
   const lockedHint = unlocked ? undefined : 'Déverrouille le coffre d’abord'
 
   const askApply = () => {
@@ -457,8 +491,14 @@ function AppPanel({ app, unlocked, revealed, onReveal, onHide, onChanged, onLock
             par le compte du hub (0600).
           </p>
           <p>
-            S’il existe déjà, son contenu actuel est gardé à côté dans{' '}
-            <code className="break-all font-mono">{target.env_file}.bak</code> (la sauvegarde précédente est écrasée).
+            S’il existe déjà et qu’il change, son contenu actuel est gardé à côté dans{' '}
+            <code className="break-all font-mono">{target.env_file}.bak</code> (la sauvegarde précédente passe en{' '}
+            <code className="font-mono">.bak.1</code>).
+          </p>
+          <p>
+            Le fichier écrit est un <strong>nouveau fichier</strong>, lisible par le seul compte du hub : un conteneur
+            qui monte ce fichier lui-même (et non son dossier) garde l’ancien jusqu’à sa recréation, et un processus qui
+            tourne sous un autre utilisateur ne pourra plus le lire.
           </p>
           {target.container ? (
             <p>
@@ -493,21 +533,12 @@ function AppPanel({ app, unlocked, revealed, onReveal, onHide, onChanged, onLock
           variant="ghost"
           leadingIcon={<Trash2 size={14} aria-hidden />}
           onClick={() =>
-            setConfirmation({
-              title: `Supprimer « ${app.name} » ?`,
-              action: 'Supprimer définitivement',
-              destructive: true,
-              body: (
-                <p>
-                  L’application et ses {count} valeur{count > 1 ? 's' : ''} chiffrée{count > 1 ? 's' : ''} sont retirées
-                  du coffre. Les fichiers déjà appliqués ne sont pas touchés.
-                </p>
-              ),
-              run: async () => {
-                await deleteApp(app.name)
-                await onChanged()
-              },
-            })
+            removeApp(
+              <p>
+                L’application et ses {count} valeur{count > 1 ? 's' : ''} chiffrée{count > 1 ? 's' : ''} sont retirées du
+                coffre. Les fichiers déjà appliqués ne sont pas touchés.
+              </p>,
+            )
           }
         >
           Supprimer l’application
@@ -718,8 +749,11 @@ function AppPanel({ app, unlocked, revealed, onReveal, onHide, onChanged, onLock
           </Button>
           <Button
             variant="primary"
-            disabled={!unlocked || !target || targetDirty}
-            title={lockedHint ?? (!target ? 'Enregistre une cible d’abord' : undefined)}
+            disabled={!unlocked || !target || targetDirty || count === 0}
+            title={
+              lockedHint ??
+              (!target ? 'Enregistre une cible d’abord' : count === 0 ? 'Aucune variable à appliquer' : undefined)
+            }
             onClick={askApply}
           >
             Appliquer…
@@ -732,11 +766,18 @@ function AppPanel({ app, unlocked, revealed, onReveal, onHide, onChanged, onLock
 
       {applied && (
         <div role="status" className="rounded-md border border-border px-2.5 py-2 text-xs leading-relaxed">
-          <p>
-            {applied.variables} variable{applied.variables > 1 ? 's' : ''} écrite{applied.variables > 1 ? 's' : ''} dans{' '}
-            <code className="break-all font-mono">{applied.env_file}</code>
-            {applied.backup ? ' (ancien fichier gardé en .bak).' : '.'}
-          </p>
+          {applied.unchanged ? (
+            <p>
+              <code className="break-all font-mono">{applied.env_file}</code> contenait déjà exactement ces{' '}
+              {applied.variables} variable{applied.variables > 1 ? 's' : ''} : rien n’a changé.
+            </p>
+          ) : (
+            <p>
+              {applied.variables} variable{applied.variables > 1 ? 's' : ''} écrite{applied.variables > 1 ? 's' : ''} dans{' '}
+              <code className="break-all font-mono">{applied.env_file}</code>
+              {applied.backup ? ' (ancien fichier gardé en .bak).' : '.'}
+            </p>
+          )}
           {applied.container && applied.restarted && <p>Conteneur {applied.container} redémarré.</p>}
           {applied.container && !applied.restarted && (
             <p className="text-destructive">
@@ -853,7 +894,7 @@ export function SecretsPage() {
     try {
       const next = await fetchStatus()
       acceptStatus(next)
-      if (next.initialized) await loadContent()
+      if (next.initialized && !next.problem) await loadContent()
       setLoadError(null)
     } catch (failure) {
       if (failure instanceof SecretsApiError && failure.status === 403) setForbidden(true)
@@ -875,6 +916,8 @@ export function SecretsPage() {
   }, [])
 
   const unlocked = Boolean(status?.unlocked)
+  const unlockedRef = useRef(false)
+  unlockedRef.current = unlocked
   useEffect(() => {
     if (!unlocked) return
     const timer = window.setInterval(() => {
@@ -903,6 +946,8 @@ export function SecretsPage() {
   const reveal = useCallback(
     async (app: string, name: string) => {
       const value = await revealVariable(app, name)
+      // An answer that comes back after the vault was locked is dropped.
+      if (!unlockedRef.current) return
       const key = `${app}/${name}`
       const previous = timersRef.current.get(key)
       if (previous !== undefined) window.clearTimeout(previous)
@@ -958,6 +1003,14 @@ export function SecretsPage() {
         ) : (
           <p className="text-xs text-muted-foreground">Chargement…</p>
         )
+      ) : status.problem ? (
+        <div className="max-w-3xl space-y-2">
+          <ErrorNote text={`${status.problem[0].toUpperCase()}${status.problem.slice(1)}.`} />
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Rien n’est chiffré ni déchiffré tant que le fichier du coffre n’est pas revenu à l’état connu au démarrage
+            du hub. Voir docs/secrets.md.
+          </p>
+        </div>
       ) : !status.initialized ? (
         <InitForm
           minLength={status.min_passphrase_length}

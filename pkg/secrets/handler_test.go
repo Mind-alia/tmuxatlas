@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -83,7 +84,7 @@ func TestEveryRouteIsDeclaredAndAdminOnly(t *testing.T) {
 	if string(v.vaultBytes(t)) != before {
 		t.Fatal("a refused request changed the vault")
 	}
-	if status, _ := v.Status(); status.Unlocked {
+	if status, _ := v.Status(""); status.Unlocked {
 		t.Fatal("a user account unlocked the vault")
 	}
 }
@@ -202,6 +203,85 @@ func TestRoutesFlow(t *testing.T) {
 	call(404, "not_found", "DELETE", "/secrets/apps/shop/vars/TOKEN", "")
 	call(200, "", "DELETE", "/secrets/apps/shop", "")
 	call(404, "not_found", "DELETE", "/secrets/apps/shop", "")
+}
+
+// Two browser sessions of admins: the passphrase given in one opens nothing
+// in the other, and the end of a session ends its unlock.
+func TestUnlockBelongsToTheBrowserSession(t *testing.T) {
+	v := newTestVault(t)
+	v.ready(t, "shop")
+	if _, err := v.SetVar("root", "shop", "TOKEN", testValue); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(v.Vault, "", "passkey")
+	router := chi.NewRouter()
+	h.Register(router, router)
+	ended := make(chan struct{})
+	as := func(cookie string, done <-chan struct{}, method, path, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		if body != "" {
+			request.Header.Set("Content-Type", "application/json")
+		}
+		request.AddCookie(&http.Cookie{Name: "tmuxatlas_session", Value: cookie})
+		identity := *testAdmin
+		identity.Token, identity.Done = cookie, done
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request.WithContext(auth.WithAccount(request.Context(), identity)))
+		return response
+	}
+	if response := as("cookie-a", ended, "POST", "/secrets/unlock", `{"passphrase":"`+testPassphrase+`"}`); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"unlocked":true`) {
+		t.Fatalf("unlock by a: %d %s", response.Code, response.Body)
+	}
+	status := as("cookie-b", nil, "GET", "/secrets/status", "").Body.String()
+	if !strings.Contains(status, `"unlocked":false`) || !strings.Contains(status, `"unlocked_elsewhere":true`) || strings.Contains(status, "expires_at") {
+		t.Fatalf("status seen by b: %s", status)
+	}
+	for _, path := range []string{"/secrets/apps/shop/vars/TOKEN/reveal", "/secrets/apps/shop/export", "/secrets/apps/shop/apply"} {
+		response := as("cookie-b", nil, "POST", path, "")
+		if response.Code != http.StatusLocked || errorCode(response) != "locked" || !strings.Contains(response.Body.String(), "autre") || strings.Contains(response.Body.String(), testValue) {
+			t.Fatalf("%s by b: %d %s", path, response.Code, response.Body)
+		}
+	}
+	if response := as("cookie-a", ended, "POST", "/secrets/apps/shop/vars/TOKEN/reveal", ""); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), testValue) {
+		t.Fatalf("reveal by a: %d %s", response.Code, response.Body)
+	}
+	// The session cookie itself is not what the vault keeps.
+	v.mu.Lock()
+	for held := range v.sessions {
+		if strings.Contains(held, "cookie-a") || len(held) != 64 {
+			t.Errorf("session kept as %q", held)
+		}
+	}
+	v.mu.Unlock()
+	close(ended)
+	waitFor(t, func() bool {
+		return as("cookie-a", nil, "POST", "/secrets/apps/shop/vars/TOKEN/reveal", "").Code == http.StatusLocked
+	})
+}
+
+func TestStatusShowsADamagedVaultAndApplication(t *testing.T) {
+	v := newTestVault(t)
+	v.ready(t, "shop")
+	h := NewHandler(v.Vault, "", "passkey")
+	if err := os.WriteFile(filepath.Join(v.dir, "apps", "shop.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if response := serve(h, testAdmin, "GET", "/secrets/apps", ""); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"unreadable":true`) {
+		t.Fatalf("listing with a damaged application: %d %s", response.Code, response.Body)
+	}
+	if response := serve(h, testAdmin, "DELETE", "/secrets/apps/shop", ""); response.Code != http.StatusOK {
+		t.Fatalf("delete of a damaged application: %d %s", response.Code, response.Body)
+	}
+	if err := os.WriteFile(filepath.Join(v.dir, "vault.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	response := serve(h, testAdmin, "GET", "/secrets/status", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"problem":"le coffre est illisible`) {
+		t.Fatalf("status of a damaged vault: %d %s", response.Code, response.Body)
+	}
+	if response := serve(h, testAdmin, "GET", "/secrets/apps", ""); response.Code != http.StatusInternalServerError || errorCode(response) != "corrupt" {
+		t.Fatalf("apps of a damaged vault: %d %s", response.Code, response.Body)
+	}
 }
 
 func TestUnlockRouteIsThrottled(t *testing.T) {

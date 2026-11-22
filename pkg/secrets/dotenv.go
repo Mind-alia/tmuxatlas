@@ -14,7 +14,7 @@ type Pair struct {
 // ParseDotenv reads a dotenv text: blank lines and # comments are skipped,
 // an "export " prefix is accepted, a value may be bare (an inline " #"
 // comment is cut), single-quoted (literal, may span lines) or double-quoted
-// (\n \r \t \\ \" \$ escapes, may span lines). A name given twice keeps its
+// (\n \r \t \\ \" \$ \` escapes, may span lines). A name given twice keeps its
 // last value. Errors name the line, never its content.
 func ParseDotenv(text string) ([]Pair, error) {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
@@ -108,7 +108,7 @@ func parseQuoted(text string, start int) (string, int, bool) {
 				value.WriteByte('\r')
 			case 't':
 				value.WriteByte('\t')
-			case '\\', '"', '$':
+			case '\\', '"', '$', '`':
 				value.WriteByte(text[i])
 			default:
 				value.WriteByte('\\')
@@ -141,7 +141,7 @@ func FormatDotenv(pairs []Pair) string {
 			out.WriteByte('\'')
 		default:
 			out.WriteByte('"')
-			out.WriteString(strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`, "\n", `\n`, "\r", `\r`).Replace(pair.Value))
+			out.WriteString(strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`, "`", "\\`", "\n", `\n`, "\r", `\r`).Replace(pair.Value))
 			out.WriteByte('"')
 		}
 		out.WriteByte('\n')

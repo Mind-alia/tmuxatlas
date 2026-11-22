@@ -118,14 +118,14 @@ func TestApply(t *testing.T) {
 	if _, err := v.Import("root", "shop", "TOKEN="+testValue+"\nGREETING='hello world'\nKEY=\"a\\nb\"\n"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.Apply("root", "shop"); !errors.Is(err, ErrLocked) {
+	if _, err := v.Apply("root", "", "shop"); !errors.Is(err, ErrLocked) {
 		t.Fatalf("apply while locked: %v", err)
 	}
 	v.unlock(t)
-	if _, err := v.Apply("root", "shop"); !errors.Is(err, ErrNoTarget) {
+	if _, err := v.Apply("root", "", "shop"); !errors.Is(err, ErrNoTarget) {
 		t.Fatalf("apply without a target: %v", err)
 	}
-	if _, err := v.Apply("root", "missing"); !errors.Is(err, ErrAppNotFound) {
+	if _, err := v.Apply("root", "", "missing"); !errors.Is(err, ErrAppNotFound) {
 		t.Fatalf("apply of a missing app: %v", err)
 	}
 	if _, err := v.SetTarget("root", "shop", target, ""); err != nil {
@@ -133,7 +133,7 @@ func TestApply(t *testing.T) {
 	}
 
 	// First apply: no older file, no container.
-	result, err := v.Apply("root", "shop")
+	result, err := v.Apply("root", "", "shop")
 	if err != nil || result.Backup || result.Restarted || result.Variables != 3 || result.EnvFile != target {
 		t.Fatalf("first apply: %+v %v", result, err)
 	}
@@ -162,7 +162,7 @@ func TestApply(t *testing.T) {
 	if _, err := v.SetTarget("root", "shop", target, "shop-web"); err != nil {
 		t.Fatal(err)
 	}
-	result, err = v.Apply("alice", "shop")
+	result, err = v.Apply("alice", "", "shop")
 	if err != nil || !result.Backup || !result.Restarted || result.RestartError != "" || result.Container != "shop-web" {
 		t.Fatalf("second apply: %+v %v", result, err)
 	}
@@ -187,7 +187,7 @@ func TestApply(t *testing.T) {
 
 	// A failed restart is reported; the file is written all the same.
 	v.restarter.err = errors.New("conteneur introuvable")
-	result, err = v.Apply("root", "shop")
+	result, err = v.Apply("root", "", "shop")
 	if err != nil || result.Restarted || result.RestartError != "conteneur introuvable" {
 		t.Fatalf("failed restart: %+v %v", result, err)
 	}
@@ -203,7 +203,7 @@ func TestApply(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := len(v.restarter.calls)
-	if _, err := v.Apply("root", "shop"); !errors.Is(err, ErrLocked) {
+	if _, err := v.Apply("root", "", "shop"); !errors.Is(err, ErrLocked) {
 		t.Fatalf("apply after lock: %v", err)
 	}
 	if raw, _ := os.ReadFile(target); string(raw) != "UNTOUCHED=1\n" || len(v.restarter.calls) != before {
@@ -223,7 +223,7 @@ func TestApplyWithoutRestarter(t *testing.T) {
 		t.Fatal(err)
 	}
 	v.unlock(t)
-	result, err := v.Apply("root", "shop")
+	result, err := v.Apply("root", "", "shop")
 	if err != nil || result.Restarted || result.RestartError == "" {
 		t.Fatalf("apply without a restarter: %+v %v", result, err)
 	}
@@ -257,7 +257,7 @@ func TestApplyChecksTheTargetAgain(t *testing.T) {
 	if err := os.Symlink(victim, target); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.Apply("root", "shop"); !errors.As(err, &validation) {
+	if _, err := v.Apply("root", "", "shop"); !errors.As(err, &validation) {
 		t.Fatalf("file swapped for a link: %v", err)
 	}
 	if err := os.Remove(target); err != nil {
@@ -271,7 +271,7 @@ func TestApplyChecksTheTargetAgain(t *testing.T) {
 	if err := os.Symlink(outside, dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.Apply("root", "shop"); !errors.As(err, &validation) {
+	if _, err := v.Apply("root", "", "shop"); !errors.As(err, &validation) {
 		t.Fatalf("directory swapped for a link: %v", err)
 	}
 	if raw, _ := os.ReadFile(victim); string(raw) != "VICTIM=1\n" {
@@ -283,5 +283,166 @@ func TestApplyChecksTheTargetAgain(t *testing.T) {
 	}
 	if len(v.restarter.calls) != 0 {
 		t.Fatalf("a refused apply restarted a container: %v", v.restarter.calls)
+	}
+}
+
+func TestApplyRefusesAnEmptyApplication(t *testing.T) {
+	v := newTestVault(t)
+	v.ready(t, "shop")
+	target := filepath.Join(mkdir(t, v.home, "shop"), ".env")
+	if err := os.WriteFile(target, []byte("WORKING=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.SetTarget("root", "shop", target, "web"); err != nil {
+		t.Fatal(err)
+	}
+	v.unlock(t)
+	var validation *ValidationError
+	if _, err := v.Apply("root", "", "shop"); !errors.As(err, &validation) {
+		t.Fatalf("apply of an empty application: %v", err)
+	}
+	if raw, _ := os.ReadFile(target); string(raw) != "WORKING=1\n" {
+		t.Fatalf("the working file was replaced: %q", raw)
+	}
+	if _, err := os.Stat(target + ".bak"); !errors.Is(err, os.ErrNotExist) || len(v.restarter.calls) != 0 {
+		t.Fatal("a refused apply made a backup or restarted")
+	}
+}
+
+// The backup is the file from before the last change: applying again does
+// not replace it by a copy of what the vault wrote, and an older backup is
+// kept one generation more.
+func TestApplyBackups(t *testing.T) {
+	v := newTestVault(t)
+	v.ready(t, "shop")
+	target := filepath.Join(mkdir(t, v.home, "shop"), ".env")
+	read := func(path string) string {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return "<" + filepath.Base(path) + " missing>"
+		}
+		return string(raw)
+	}
+	if err := os.WriteFile(target, []byte("ORIGINAL=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.SetVar("root", "shop", "A", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.SetTarget("root", "shop", target, ""); err != nil {
+		t.Fatal(err)
+	}
+	v.unlock(t)
+	if result, err := v.Apply("root", "", "shop"); err != nil || !result.Backup || result.Unchanged {
+		t.Fatalf("first apply: %+v %v", result, err)
+	}
+	if read(target) != "A=1\n" || read(target+".bak") != "ORIGINAL=1\n" {
+		t.Fatalf("after the first apply: %q, backup %q", read(target), read(target+".bak"))
+	}
+	// The same content again: the file and its backup are left alone.
+	before, _ := os.Stat(target)
+	result, err := v.Apply("root", "", "shop")
+	if err != nil || result.Backup || !result.Unchanged {
+		t.Fatalf("second apply: %+v %v", result, err)
+	}
+	after, _ := os.Stat(target)
+	if !os.SameFile(before, after) || read(target+".bak") != "ORIGINAL=1\n" {
+		t.Fatalf("an unchanged apply rewrote the file or its backup (%q)", read(target+".bak"))
+	}
+	if _, err := os.Stat(target + ".bak.1"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("an unchanged apply rotated the backup")
+	}
+	// An unchanged file that is readable by others is still made private.
+	if err := os.Chmod(target, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := v.Apply("root", "", "shop"); err != nil || !result.Unchanged {
+		t.Fatalf("apply on a readable file: %+v %v", result, err)
+	}
+	if info, _ := os.Stat(target); info.Mode().Perm() != 0o600 || read(target+".bak") != "ORIGINAL=1\n" {
+		t.Fatalf("mode %o, backup %q", info.Mode().Perm(), read(target+".bak"))
+	}
+	// A change: the previous backup moves to .bak.1.
+	if _, err := v.SetVar("root", "shop", "A", "2"); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := v.Apply("root", "", "shop"); err != nil || !result.Backup {
+		t.Fatalf("third apply: %+v %v", result, err)
+	}
+	if read(target) != "A=2\n" || read(target+".bak") != "A=1\n" || read(target+".bak.1") != "ORIGINAL=1\n" {
+		t.Fatalf("generations: %q %q %q", read(target), read(target+".bak"), read(target+".bak.1"))
+	}
+	// The file put back by hand to what the backup holds: no rotation, the
+	// older generation survives.
+	if err := os.WriteFile(target, []byte("A=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Apply("root", "", "shop"); err != nil {
+		t.Fatal(err)
+	}
+	if read(target) != "A=2\n" || read(target+".bak") != "A=1\n" || read(target+".bak.1") != "ORIGINAL=1\n" {
+		t.Fatalf("identical backup: %q %q %q", read(target), read(target+".bak"), read(target+".bak.1"))
+	}
+	for _, path := range []string{target, target + ".bak", target + ".bak.1"} {
+		if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+			t.Errorf("%s: mode %o", path, info.Mode().Perm())
+		}
+	}
+	// A backup that is a link is moved aside, never written through.
+	outside := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(outside, []byte("VICTIM\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(target + ".bak"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, target+".bak"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.SetVar("root", "shop", "A", "3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Apply("root", "", "shop"); err != nil {
+		t.Fatal(err)
+	}
+	if read(outside) != "VICTIM\n" || read(target+".bak") != "A=2\n" {
+		t.Fatalf("backup through a link: victim %q, backup %q", read(outside), read(target+".bak"))
+	}
+	leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(target), ".tmp-*"))
+	if len(leftovers) != 0 {
+		t.Fatalf("temporary files left: %v", leftovers)
+	}
+}
+
+func TestApplyBoundsTheFileItBacksUp(t *testing.T) {
+	v := newTestVault(t)
+	v.ready(t, "shop")
+	target := filepath.Join(mkdir(t, v.home, "shop"), ".env")
+	if _, err := v.SetVar("root", "shop", "A", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.SetTarget("root", "shop", target, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A sparse file: large for the check, free on disk.
+	if err := os.Truncate(target, maxTargetBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	v.unlock(t)
+	var validation *ValidationError
+	if _, err := v.Apply("root", "", "shop"); !errors.As(err, &validation) {
+		t.Fatalf("oversized existing file: %v", err)
+	}
+	if info, _ := os.Stat(target); info.Size() != maxTargetBytes+1 {
+		t.Fatal("the oversized file was replaced")
+	}
+	if err := os.Truncate(target, maxTargetBytes); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := v.Apply("root", "", "shop"); err != nil || !result.Backup {
+		t.Fatalf("file at the bound: %+v %v", result, err)
 	}
 }

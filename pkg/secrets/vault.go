@@ -54,6 +54,11 @@ const (
 	freeAttempts = 5
 	baseBlock    = 30 * time.Second
 	maxBlock     = 15 * time.Minute
+	// failureWindow without a new failure clears the count.
+	failureWindow = time.Hour
+	// maxScryptLogN bounds the work a vault file can ask of an unlock: a
+	// rewritten file must not be able to stall the hub. The age default is 18.
+	maxScryptLogN = 20
 )
 
 // Errors mapped to HTTP statuses by the handler. None of them ever carries a
@@ -62,12 +67,19 @@ var (
 	ErrNotInitialized     = errors.New("le coffre n’est pas initialisé")
 	ErrAlreadyInitialized = errors.New("le coffre est déjà initialisé")
 	ErrLocked             = errors.New("le coffre est verrouillé")
-	ErrWrongPassphrase    = errors.New("phrase de passe incorrecte")
-	ErrAppNotFound        = errors.New("application introuvable")
-	ErrAppExists          = errors.New("cette application existe déjà")
-	ErrVarNotFound        = errors.New("variable introuvable")
-	ErrNoTarget           = errors.New("aucun fichier cible n’est configuré pour cette application")
-	ErrCorrupt            = errors.New("le coffre est illisible ou incohérent")
+	// ErrLockedHere is ErrLocked for a session that did not give the
+	// passphrase while another one did.
+	ErrLockedHere      = fmt.Errorf("%w pour cette session : il est déverrouillé dans une autre, saisis la phrase de passe ici", ErrLocked)
+	ErrWrongPassphrase = errors.New("phrase de passe incorrecte")
+	ErrAppNotFound     = errors.New("application introuvable")
+	ErrAppExists       = errors.New("cette application existe déjà")
+	ErrVarNotFound     = errors.New("variable introuvable")
+	ErrNoTarget        = errors.New("aucun fichier cible n’est configuré pour cette application")
+	ErrCorrupt         = errors.New("le coffre est illisible ou incohérent")
+	// errKeyChanged and errVaultGone are the vault file changing under a
+	// running hub: nothing is encrypted for a key that was not there at start.
+	errKeyChanged = fmt.Errorf("%w : sa clé publique a changé depuis le démarrage du hub", ErrCorrupt)
+	errVaultGone  = fmt.Errorf("%w : son fichier a disparu depuis le démarrage du hub", ErrCorrupt)
 )
 
 // ValidationError is a refused input; its message is safe to show.
@@ -173,16 +185,26 @@ type Vault struct {
 	ttl       time.Duration
 	workLogN  int
 
+	maxLogN int
+	// seals counts the passphrase derivations made to create a vault.
+	seals int
+
 	// unlockMu lets a single passphrase derivation run at a time: scrypt is
 	// expensive by design and must not be multiplied by parallel requests.
 	unlockMu sync.Mutex
 
 	// mu guards the fields below and every read or write of the directory.
-	mu           sync.Mutex
-	identity     *age.X25519Identity
-	expiresAt    time.Time
-	generation   uint64
+	mu sync.Mutex
+	// identity is the private key, kept while at least one session holds an
+	// unlock; sessions gives each of them its own expiry.
+	identity *age.X25519Identity
+	sessions map[string]time.Time
+	// pinned is the public key read first from the vault file. Every value
+	// is encrypted for it, and a file that later shows another key is
+	// refused: whoever can write the file cannot redirect new values.
+	pinned       string
 	failures     int
+	lastFailure  time.Time
 	blockedUntil time.Time
 }
 
@@ -216,15 +238,47 @@ func New(opts Options) (*Vault, error) {
 	if v.ttl <= 0 {
 		v.ttl = DefaultUnlockTTL
 	}
+	v.sessions = make(map[string]time.Time)
+	v.maxLogN = maxScryptLogN
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.cleanTemporaryFiles()
+	// The public key is pinned now if the vault exists; an unreadable vault
+	// is reported by Status.
+	_, _ = v.readVault()
 	return v, nil
+}
+
+// cleanTemporaryFiles removes what a write interrupted by a crash left in
+// the vault. v.mu is held.
+func (v *Vault) cleanTemporaryFiles() {
+	if _, err := os.Stat(v.dir); err != nil {
+		return
+	}
+	_ = v.withFileLock(func() error {
+		for _, pattern := range []string{filepath.Join(v.dir, ".tmp-*"), filepath.Join(v.dir, appsDir, ".tmp-*")} {
+			leftovers, _ := filepath.Glob(pattern)
+			for _, path := range leftovers {
+				if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
+					_ = os.Remove(path)
+				}
+			}
+		}
+		return nil
+	})
 }
 
 // Status is the public state of the vault.
 type Status struct {
 	Initialized bool `json:"initialized"`
-	Unlocked    bool `json:"unlocked"`
-	// ExpiresAt is when the private key is forgotten; nil while locked.
+	// Unlocked is true for the session that asks, if it gave the passphrase.
+	Unlocked bool `json:"unlocked"`
+	// UnlockedElsewhere is true when another session holds an unlock.
+	UnlockedElsewhere bool `json:"unlocked_elsewhere,omitempty"`
+	// ExpiresAt is when this session's unlock ends; nil while locked.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Problem is set for a vault that exists but cannot be trusted or read.
+	Problem string `json:"problem,omitempty"`
 	// Now is the server clock, so the countdown does not depend on the
 	// browser's.
 	Now        time.Time `json:"now"`
@@ -235,25 +289,35 @@ type Status struct {
 	MinPassphraseLength int `json:"min_passphrase_length"`
 }
 
-// Status never fails for a missing vault: it is then not initialized.
-func (v *Vault) Status() (Status, error) {
+// Status is the state of the vault as session sees it. It does not fail for
+// a missing vault (not initialized) nor for a corrupt one (Problem is set).
+func (v *Vault) Status(session string) (Status, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	now := v.now()
 	status := Status{Now: now, TTLSeconds: int(v.ttl / time.Second), MinPassphraseLength: MinPassphraseLength}
 	doc, err := v.readVault()
-	if errors.Is(err, ErrNotInitialized) {
+	switch {
+	case errors.Is(err, ErrNotInitialized):
 		return status, nil
-	}
-	if err != nil {
+	case errors.Is(err, ErrCorrupt):
+		status.Initialized = true
+		status.Problem = err.Error()
+		return status, nil
+	case err != nil:
 		return status, err
 	}
 	status.Initialized = true
 	status.PublicKey = doc.PublicKey
-	if v.unlockedLocked() != nil {
-		expires := v.expiresAt
-		status.Unlocked = true
-		status.ExpiresAt = &expires
+	v.pruneLocked()
+	for holder, expires := range v.sessions {
+		if holder == session {
+			expires := expires
+			status.Unlocked = true
+			status.ExpiresAt = &expires
+		} else {
+			status.UnlockedElsewhere = true
+		}
 	}
 	if wait := v.blockedUntil.Sub(now); wait > 0 {
 		status.RetryAfterSeconds = int((wait + time.Second - 1) / time.Second)
@@ -261,29 +325,52 @@ func (v *Vault) Status() (Status, error) {
 	return status, nil
 }
 
-// unlockedLocked returns the private key while the unlock lasts, and forgets
-// it once expired. v.mu is held.
-func (v *Vault) unlockedLocked() *age.X25519Identity {
+// pruneLocked ends the unlocks whose time is up, and forgets the private
+// key with the last of them. v.mu is held.
+func (v *Vault) pruneLocked() {
+	now := v.now()
+	for session, expires := range v.sessions {
+		if !now.Before(expires) {
+			delete(v.sessions, session)
+		}
+	}
+	if len(v.sessions) == 0 {
+		v.identity = nil
+	}
+}
+
+// keyFor returns the private key if session holds an unlock. The key is
+// never handed to a session that did not give the passphrase itself, even
+// while another one has. v.mu is held.
+func (v *Vault) keyFor(session string) (*age.X25519Identity, error) {
+	v.pruneLocked()
 	if v.identity == nil {
-		return nil
+		return nil, ErrLocked
 	}
-	if !v.now().Before(v.expiresAt) {
-		v.forgetLocked()
-		return nil
+	if _, holds := v.sessions[session]; !holds {
+		return nil, ErrLockedHere
 	}
-	return v.identity
+	return v.identity, nil
 }
 
 func (v *Vault) forgetLocked() {
 	v.identity = nil
-	v.expiresAt = time.Time{}
-	v.generation++
+	clear(v.sessions)
 }
 
 // Init creates the vault: a new X25519 identity whose private key is stored
 // encrypted by the passphrase. The vault stays locked.
 func (v *Vault) Init(actor, passphrase string) error {
 	if err := validatePassphrase(passphrase); err != nil {
+		return err
+	}
+	// An existing vault is refused before any costly derivation.
+	v.mu.Lock()
+	_, err := v.readVault()
+	v.mu.Unlock()
+	if err == nil {
+		return ErrAlreadyInitialized
+	} else if !errors.Is(err, ErrNotInitialized) {
 		return err
 	}
 	identity, err := age.GenerateX25519Identity()
@@ -312,12 +399,14 @@ func (v *Vault) Init(actor, passphrase string) error {
 		if err := writeJSONFile(filepath.Join(v.dir, vaultFile), doc); err != nil {
 			return err
 		}
+		v.pinned = doc.PublicKey
 		v.auditLocked(Entry{Actor: actor, Action: "init"})
 		return nil
 	})
 }
 
 func (v *Vault) sealIdentity(identity *age.X25519Identity, passphrase string) (string, error) {
+	v.seals++
 	recipient, err := age.NewScryptRecipient(passphrase)
 	if err != nil {
 		return "", invalid("phrase de passe invalide")
@@ -328,9 +417,12 @@ func (v *Vault) sealIdentity(identity *age.X25519Identity, passphrase string) (s
 	return encryptArmored([]byte(identity.String()+"\n"), recipient)
 }
 
-// Unlock keeps the private key in memory for the TTL. An unlock while
-// already unlocked checks the passphrase again and restarts the TTL.
-func (v *Vault) Unlock(actor, passphrase string) (Status, error) {
+// Unlock keeps the private key in memory for the TTL, for session alone:
+// every other session still has to give the passphrase itself. A session
+// that unlocks again restarts its own TTL. done, when not nil, is closed
+// when the session ends (logout, revocation): its unlock ends with it.
+// An empty session is the one shared by a server without authentication.
+func (v *Vault) Unlock(actor, session, passphrase string, done <-chan struct{}) (Status, error) {
 	v.unlockMu.Lock()
 	defer v.unlockMu.Unlock()
 
@@ -339,6 +431,7 @@ func (v *Vault) Unlock(actor, passphrase string) (Status, error) {
 	if err == nil {
 		if wait := v.blockedUntil.Sub(v.now()); wait > 0 {
 			err = &ThrottledError{RetryAfter: wait}
+			v.auditLocked(Entry{Actor: actor, Action: "unlock_blocked"})
 		}
 	}
 	v.mu.Unlock()
@@ -346,18 +439,23 @@ func (v *Vault) Unlock(actor, passphrase string) (Status, error) {
 		return Status{}, err
 	}
 
-	identity, openErr := openIdentity(doc, passphrase)
+	identity, openErr := openIdentity(doc, passphrase, v.maxLogN)
 
 	v.mu.Lock()
 	if openErr != nil {
 		if errors.Is(openErr, ErrWrongPassphrase) {
+			now := v.now()
+			if !v.lastFailure.IsZero() && now.Sub(v.lastFailure) >= failureWindow {
+				v.failures = 0
+			}
 			v.failures++
+			v.lastFailure = now
 			if v.failures >= freeAttempts {
 				block := baseBlock << min(v.failures-freeAttempts, 10)
 				if block > maxBlock {
 					block = maxBlock
 				}
-				v.blockedUntil = v.now().Add(block)
+				v.blockedUntil = now.Add(block)
 			}
 			v.auditLocked(Entry{Actor: actor, Action: "unlock_failed"})
 		}
@@ -365,29 +463,40 @@ func (v *Vault) Unlock(actor, passphrase string) (Status, error) {
 		return Status{}, openErr
 	}
 	v.failures = 0
+	v.lastFailure = time.Time{}
 	v.blockedUntil = time.Time{}
 	v.identity = identity
-	v.expiresAt = v.now().Add(v.ttl)
-	v.generation++
-	generation := v.generation
+	expires := v.now().Add(v.ttl)
+	v.sessions[session] = expires
 	v.auditLocked(Entry{Actor: actor, Action: "unlock"})
 	v.mu.Unlock()
 
-	// The key is also dropped when the time is up, not only at the next call.
-	time.AfterFunc(v.ttl, func() {
+	// The unlock also ends when its time is up, not only at the next call,
+	// and at once when the session ends.
+	timer := time.NewTimer(v.ttl)
+	go func() {
+		defer timer.Stop()
+		ended := false
+		select {
+		case <-timer.C:
+		case <-done: // a nil channel never fires
+			ended = true
+		}
 		v.mu.Lock()
 		defer v.mu.Unlock()
-		if v.generation == generation && v.identity != nil {
-			v.forgetLocked()
+		if ended && v.sessions[session].Equal(expires) {
+			delete(v.sessions, session)
+			v.auditLocked(Entry{Actor: actor, Action: "lock", Detail: "session terminée"})
 		}
-	})
-	return v.Status()
+		v.pruneLocked()
+	}()
+	return v.Status(session)
 }
 
 // openIdentity decrypts the private key. Whatever fails in the passphrase
 // layer is reported as a wrong passphrase; a key that does not match the
 // stored public key is a corrupt vault.
-func openIdentity(doc vaultDoc, passphrase string) (*age.X25519Identity, error) {
+func openIdentity(doc vaultDoc, passphrase string, maxLogN int) (*age.X25519Identity, error) {
 	if passphrase == "" || len(passphrase) > 4*MaxPassphraseLength {
 		return nil, ErrWrongPassphrase
 	}
@@ -395,6 +504,7 @@ func openIdentity(doc vaultDoc, passphrase string) (*age.X25519Identity, error) 
 	if err != nil {
 		return nil, ErrWrongPassphrase
 	}
+	scrypt.SetMaxWorkFactor(maxLogN)
 	plain, err := decryptArmored(doc.Identity, scrypt)
 	if err != nil {
 		return nil, ErrWrongPassphrase
@@ -406,21 +516,26 @@ func openIdentity(doc vaultDoc, passphrase string) (*age.X25519Identity, error) 
 	return identity, nil
 }
 
-// Lock forgets the private key now.
+// Lock forgets the private key now, for every session.
 func (v *Vault) Lock(actor string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	v.pruneLocked()
 	if v.identity != nil {
 		v.forgetLocked()
 		v.auditLocked(Entry{Actor: actor, Action: "lock"})
 	}
 }
 
-// readVault reads vault.json. v.mu is held.
+// readVault reads vault.json and holds it to the public key pinned at the
+// first reading. v.mu is held.
 func (v *Vault) readVault() (vaultDoc, error) {
 	var doc vaultDoc
 	raw, err := os.ReadFile(filepath.Join(v.dir, vaultFile))
 	if errors.Is(err, os.ErrNotExist) {
+		if v.pinned != "" {
+			return doc, errVaultGone
+		}
 		return doc, ErrNotInitialized
 	}
 	if err != nil {
@@ -432,16 +547,21 @@ func (v *Vault) readVault() (vaultDoc, error) {
 	if _, err := age.ParseX25519Recipient(doc.PublicKey); err != nil {
 		return doc, ErrCorrupt
 	}
+	if v.pinned == "" {
+		v.pinned = doc.PublicKey
+	} else if doc.PublicKey != v.pinned {
+		return doc, errKeyChanged
+	}
 	return doc, nil
 }
 
-// recipient is the public key every value is encrypted for. v.mu is held.
+// recipient is the pinned public key every value is encrypted for; the
+// vault file is checked against it first. v.mu is held.
 func (v *Vault) recipient() (*age.X25519Recipient, error) {
-	doc, err := v.readVault()
-	if err != nil {
+	if _, err := v.readVault(); err != nil {
 		return nil, err
 	}
-	return age.ParseX25519Recipient(doc.PublicKey)
+	return age.ParseX25519Recipient(v.pinned)
 }
 
 // withFileLock serializes writers across processes too, like the accounts

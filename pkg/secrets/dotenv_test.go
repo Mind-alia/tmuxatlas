@@ -94,6 +94,7 @@ func TestFormatDotenvRoundTrip(t *testing.T) {
 		"single'quote", `double"quote`, `both ' and "`, "dollar $HOME ${X}", `back\slash`, `back\nslash-n`,
 		"line1\nline2", "crlf\r\nline", "trailing newline\n", "'", `"`, `\`, "a=b", "é ü 漢字",
 		"-----BEGIN KEY-----\nMIIB'x'\"y\"$z\\\n-----END KEY-----\n", "export X=1", "`cmd` $(cmd) ; && |",
+		"it's `whoami`", "`id`\n'x'", "\\`",
 	}
 	pairs := make([]Pair, len(values))
 	for i, value := range values {
@@ -118,6 +119,11 @@ func TestFormatDotenvRoundTrip(t *testing.T) {
 	want := "A=abc-1.2/x:y@z\nB='two words $X'\nC=\"it's\\n\"\nD=\n"
 	if got != want {
 		t.Fatalf("format:\n%s\nwant:\n%s", got, want)
+	}
+	// In double quotes nothing is left that a shell reading the file would
+	// run or expand.
+	if got := FormatDotenv([]Pair{{"A", "it's `id` $(id) $HOME"}}); got != "A=\"it's \\`id\\` \\$(id) \\$HOME\"\n" {
+		t.Fatalf("backtick in double quotes: %s", got)
 	}
 }
 
@@ -153,7 +159,7 @@ func TestImport(t *testing.T) {
 		t.Fatal("an imported value is stored in clear")
 	}
 	v.unlock(t)
-	exported, err := v.Export("root", "shop")
+	exported, err := v.Export("root", "", "shop")
 	if err != nil || exported != "KEEP=kept\nTOKEN="+testValue+"\nDB_URL=postgres://u:p@db/app\n" {
 		t.Fatalf("export: %q %v", exported, err)
 	}

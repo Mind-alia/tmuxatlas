@@ -1,6 +1,8 @@
 package secrets
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -120,6 +122,20 @@ func (h *Handler) who(r *http.Request) string {
 	return h.actor
 }
 
+// session identifies the browser session of the request, for the unlock it
+// may hold, with the channel closed when that session ends. The cookie is
+// only kept as a hash. A server without authentication has no session: its
+// unlock is shared.
+func session(r *http.Request) (string, <-chan struct{}) {
+	token := auth.SessionCookie(r)
+	if token == "" {
+		return "", nil
+	}
+	sum := sha256.Sum256([]byte(token))
+	done, _ := auth.SessionDone(r.Context())
+	return hex.EncodeToString(sum[:]), done
+}
+
 // decode reads the JSON body into out; unknown fields are refused. The
 // error never quotes the body.
 func decode(w http.ResponseWriter, r *http.Request, out any) bool {
@@ -133,7 +149,8 @@ func decode(w http.ResponseWriter, r *http.Request, out any) bool {
 }
 
 func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
-	status, err := h.vault.Status()
+	id, _ := session(r)
+	status, err := h.vault.Status(id)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -162,7 +179,8 @@ func (h *Handler) unlock(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	status, err := h.vault.Unlock(h.who(r), body.Passphrase)
+	id, done := session(r)
+	status, err := h.vault.Unlock(h.who(r), id, body.Passphrase, done)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -249,7 +267,8 @@ func (h *Handler) deleteVar(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) reveal(w http.ResponseWriter, r *http.Request) {
-	value, err := h.vault.Reveal(h.who(r), chi.URLParam(r, "app"), chi.URLParam(r, "name"))
+	id, _ := session(r)
+	value, err := h.vault.Reveal(h.who(r), id, chi.URLParam(r, "app"), chi.URLParam(r, "name"))
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -273,7 +292,8 @@ func (h *Handler) importDotenv(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) export(w http.ResponseWriter, r *http.Request) {
-	text, err := h.vault.Export(h.who(r), chi.URLParam(r, "app"))
+	id, _ := session(r)
+	text, err := h.vault.Export(h.who(r), id, chi.URLParam(r, "app"))
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -282,7 +302,8 @@ func (h *Handler) export(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) apply(w http.ResponseWriter, r *http.Request) {
-	result, err := h.vault.Apply(h.who(r), chi.URLParam(r, "app"))
+	id, _ := session(r)
+	result, err := h.vault.Apply(h.who(r), id, chi.URLParam(r, "app"))
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -329,7 +350,7 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, ErrAppNotFound), errors.Is(err, ErrVarNotFound):
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, ErrCorrupt):
-		h.logger.WithField("path", r.URL.Path).Error("secrets vault unreadable or inconsistent")
+		h.logger.WithField("route", chi.RouteContext(r.Context()).RoutePattern()).Error("secrets vault unreadable or inconsistent")
 		writeError(w, http.StatusInternalServerError, "corrupt", err.Error())
 	case errors.As(err, &failed):
 		writeError(w, http.StatusInternalServerError, "failed", failed.Message)

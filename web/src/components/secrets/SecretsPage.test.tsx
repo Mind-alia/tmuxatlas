@@ -285,6 +285,116 @@ describe('SecretsPage', () => {
   })
 })
 
+describe('SecretsPage, sessions et coffre abîmé', () => {
+  it('dit quand le coffre est déverrouillé dans une autre session et garde tout verrouillé ici', async () => {
+    mockApi({
+      'GET /api/secrets/status': { ...locked, unlocked_elsewhere: true },
+      'GET /api/secrets/apps': { apps: [shop] },
+      'GET /api/secrets/audit': audit,
+    })
+    render(<SecretsPage />)
+    expect(await screen.findByText(/Déverrouillé dans une autre session, pas dans celle-ci/)).toBeTruthy()
+    expect(screen.getByText('Verrouillé')).toBeTruthy()
+    expect(screen.getByLabelText('Phrase de passe du coffre')).toBeTruthy()
+    expect(((await screen.findByRole('button', { name: 'Révéler API_TOKEN' })) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Appliquer…' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('n’offre pas d’appliquer une application sans variable', async () => {
+    mockApi({
+      'GET /api/secrets/status': unlocked,
+      'GET /api/secrets/apps': { apps: [{ ...shop, variables: [] }] },
+      'GET /api/secrets/audit': audit,
+    })
+    render(<SecretsPage />)
+    const apply = (await screen.findByRole('button', { name: 'Appliquer…' })) as HTMLButtonElement
+    expect(apply.disabled).toBe(true)
+    expect(apply.title).toBe('Aucune variable à appliquer')
+  })
+
+  it('prévient dans la confirmation que le fichier écrit est un nouveau fichier privé', async () => {
+    mockApi({
+      'GET /api/secrets/status': unlocked,
+      'GET /api/secrets/apps': { apps: [shop] },
+      'GET /api/secrets/audit': audit,
+    })
+    render(<SecretsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Appliquer…' }))
+    const text = (await screen.findByRole('alertdialog')).textContent ?? ''
+    expect(text).toContain('nouveau fichier')
+    expect(text).toContain('monte ce fichier lui-même')
+    expect(text).toContain('sous un autre utilisateur')
+    expect(text).toContain('.bak.1')
+  })
+
+  it('ignore une valeur révélée qui arrive après le verrouillage', async () => {
+    let status: unknown = unlocked
+    let release: (value: unknown) => void = () => {}
+    const pending = new Promise(resolve => (release = resolve))
+    const calls = mockApi({
+      'GET /api/secrets/status': () => status,
+      'POST /api/secrets/lock': () => (status = locked),
+      'GET /api/secrets/apps': { apps: [shop] },
+      'GET /api/secrets/audit': audit,
+    })
+    const answered = vi.mocked(window.fetch).getMockImplementation()!
+    vi.mocked(window.fetch).mockImplementation(async (input, init) => {
+      if (String(input).endsWith('/reveal')) {
+        calls.push({ url: String(input), method: 'POST' })
+        await pending
+        return new Response(JSON.stringify({ value: 'valeur-en-retard' }), { status: 200 })
+      }
+      return answered(input, init)
+    })
+    render(<SecretsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Révéler API_TOKEN' }))
+    await waitFor(() => expect(made(calls, 'POST', '/api/secrets/apps/shop/vars/API_TOKEN/reveal')).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Verrouiller' }))
+    expect(await screen.findByText('Verrouillé')).toBeTruthy()
+    await act(async () => {
+      release(null)
+      await pending
+      await Promise.resolve()
+    })
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Révéler API_TOKEN' }) as HTMLButtonElement).getAttribute('aria-busy')).toBeNull(),
+    )
+    expect(screen.queryByText('valeur-en-retard')).toBeNull()
+    expect(screen.queryByTestId('value-API_TOKEN')).toBeNull()
+    expect(screen.getAllByLabelText('Valeur masquée')).toHaveLength(2)
+  })
+
+  it('montre un coffre incohérent au lieu de proposer de le déverrouiller', async () => {
+    const calls = mockApi({
+      'GET /api/secrets/status': {
+        ...locked,
+        problem: 'le coffre est illisible ou incohérent : sa clé publique a changé depuis le démarrage du hub',
+      },
+    })
+    render(<SecretsPage />)
+    expect((await screen.findByRole('alert')).textContent).toContain('clé publique a changé')
+    expect(screen.queryByLabelText('Phrase de passe du coffre')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Créer le coffre' })).toBeNull()
+    expect(calls.every(call => call.url === '/api/secrets/status')).toBe(true)
+  })
+
+  it('une application illisible ne cache pas les autres et peut être supprimée', async () => {
+    const calls = mockApi({
+      'GET /api/secrets/status': locked,
+      'GET /api/secrets/apps': { apps: [{ name: 'blog', variables: [], unreadable: true }, shop] },
+      'GET /api/secrets/audit': audit,
+      'DELETE /api/secrets/apps/blog': { deleted: true },
+    })
+    render(<SecretsPage />)
+    expect(await screen.findByText(/illisible ou a été modifié à la main/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^shop/ })).toBeTruthy()
+    expect(screen.queryByLabelText('Valeur')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Supprimer l’application' }))
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Supprimer définitivement' }))
+    await waitFor(() => expect(made(calls, 'DELETE', '/api/secrets/apps/blog')).toHaveLength(1))
+  })
+})
+
 describe('formatRemaining', () => {
   it('écrit les minutes et les secondes', () => {
     expect(formatRemaining(600)).toBe('10 min 00 s')
