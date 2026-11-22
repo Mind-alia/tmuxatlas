@@ -93,6 +93,7 @@ timeout and every response is read with a size bound.
 |---|---|---|
 | `TMUXATLAS_DOCKER` | on with authentication, off without; off in accounts mode while a `user` account is active | `off` turns the live view off; `on` forces it on without authentication, or with active `user` accounts |
 | `TMUXATLAS_DOCKER_SOCKET` | `/var/run/docker.sock` | Engine API socket, absolute path (`unix://` accepted) |
+| `TMUXATLAS_DEPLOY` | off | `on` lets admins deploy a Compose application from git (fetch, fast-forward, `docker compose build` and `up -d`) and roll it back, from the Applications tab; see [deploiement-applications.md](deploiement-applications.md) |
 
 ⚠️ Access to the Docker socket is root on the machine, and the live view
 gives it to every TmuxAtlas admin. On this server the hub account is already
