@@ -16,6 +16,7 @@ import {
   ZoomOut,
 } from 'lucide-react'
 import { OwnerPicker } from './OwnerPicker'
+import { SessionAgentsBadge } from './agents/agentSummary'
 import { IconButton, Sheet, StatusIcon, StatusPill, Tooltip } from './ui'
 import type { MicState } from '../hooks/useMicStream'
 import type { TerminalWorkspaceConnectionState } from '../state/terminalConnection'
@@ -175,6 +176,7 @@ export function TerminalCockpit(p: Props) {
               </span>
             </>
           )}
+          <SessionAgentsBadge hostId={p.hostId} session={p.sessionName} variant="link" />
           {p.connectionState !== 'connected' && (
             <span
               role="status"

@@ -9,6 +9,7 @@ import { resolveOwnerName } from '../lib/accountsApi'
 import { deriveSessionStatus, workspaceStatusLabel } from '../workspace/model'
 import { Button } from './ui/Button'
 import { StatusPill } from './ui/StatusPill'
+import { SessionAgentsBadge, useSessionAgents } from './agents/agentSummary'
 
 function formatActivity(value: string, format: string) {
   const date = new Date(value)
@@ -60,6 +61,8 @@ export function SessionCard({
     observer.observe(ref.current)
     return () => observer.disconnect()
   }, [])
+  const { summary: subAgents } = useSessionAgents(session.host, session.name)
+  const showsSubAgents = Boolean(subAgents && (subAgents.running > 0 || subAgents.recent_done > 0))
   const { preview } = useSessionPreview({ hostId: session.host, session: session.name }, { enabled: visible, lines: 4 })
   const agents = [
     ...new Set([
@@ -135,8 +138,9 @@ export function SessionCard({
           testId="session-owner-badge"
           className="absolute right-4 top-11"
         />
-        <div className="mt-3 flex justify-end border-t border-border/60 pt-2">
-          <Button type="button" variant="secondary" size="sm" onClick={onRelease}>
+        <div className="mt-3 flex items-center justify-between gap-2 border-t border-border/60 pt-2">
+          <SessionAgentsBadge hostId={session.host} session={session.name} />
+          <Button type="button" variant="secondary" size="sm" onClick={onRelease} className="ml-auto">
             Libérer
           </Button>
         </div>
@@ -151,7 +155,7 @@ export function SessionCard({
         type="button"
         onClick={onSelect}
         data-tone={status === 'error' || status === 'waiting' ? status : undefined}
-        className="atlas-surface ui-focus-ring flex h-full w-full items-start rounded-lg p-4 text-left transition-colors hover:bg-secondary/50"
+        className={`atlas-surface ui-focus-ring flex h-full w-full items-start rounded-lg p-4 text-left transition-colors hover:bg-secondary/50 ${showsSubAgents ? 'pb-12' : ''}`}
       >
         {cardBody}
       </button>
@@ -162,6 +166,7 @@ export function SessionCard({
         testId="session-owner-badge"
         className="absolute right-4 top-11"
       />
+      <SessionAgentsBadge hostId={session.host} session={session.name} className="absolute bottom-3 left-4" />
     </div>
   )
 }

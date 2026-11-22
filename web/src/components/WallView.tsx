@@ -7,6 +7,7 @@ import { useHostLabel } from '../lib/hostLabel'
 import { isAttentionStatus, type WorkspaceViewModel } from '../workspace/model'
 import { IconButton, Menu, MenuItem, StatusIcon } from './ui'
 import { Terminal } from './Terminal'
+import { SessionAgentsBadge } from './agents/agentSummary'
 
 const legacyStorageKey = 'wall-targets:v1'
 interface WallChoices {
@@ -239,6 +240,7 @@ export function WallView({
                     </select>
                     <ChevronDown size={16} aria-hidden="true" className="pointer-events-none absolute right-0" />
                   </div>
+                  {session && <SessionAgentsBadge hostId={session.hostId} session={session.name} />}
                   {session && <span ref={talkSlotRef(key)} className="flex shrink-0 items-center text-xs" />}
                   {session && (
                     <IconButton aria-label="Agrandir" size="sm" onClick={() => onOpenSession(key)}>

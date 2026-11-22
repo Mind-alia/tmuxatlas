@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentsPage, formatDuration, initials } from './AgentsPage'
+import { AGENTS_SESSION_EVENT } from './agentSummary'
 import type { AgentTeam } from './types'
 
 const now = Date.now()
@@ -71,6 +72,19 @@ describe('AgentsPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'micro' }))
     expect(await screen.findByText(/Aucun sous-agent lancé par cette session/)).toBeTruthy()
+  })
+
+  it('opens on the session named in the URL, then on the one a badge asks for', async () => {
+    respond(200, { teams: [team, { ...team, session_id: 's2', name: 'Autre', tmux_session: 'micro', agents: [] }] })
+    window.history.replaceState(null, '', '/agents?session=micro')
+    render(<AgentsPage />)
+    expect(await screen.findByText(/Aucun sous-agent lancé par cette session/)).toBeTruthy()
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENTS_SESSION_EVENT, { detail: 'fable-pr1' }))
+    })
+    expect((await screen.findByRole('region', { name: 'Agent sélectionné' })).textContent).toContain('Tests Go')
+    window.history.replaceState(null, '', '/')
   })
 
   it('says so when no Claude Code session is open', async () => {

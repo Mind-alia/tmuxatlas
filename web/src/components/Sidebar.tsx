@@ -11,6 +11,7 @@ import { resolveOwnerName } from '../lib/accountsApi'
 import { OwnerPicker } from './OwnerPicker'
 import { useHostLabel } from '../lib/hostLabel'
 import { focusableElements, makeOutsideInert } from './ui/overlayAccessibility'
+import { SidebarSessionAgents } from './agents/agentSummary'
 
 interface SidebarProps {
   workspace: WorkspaceViewModel
@@ -364,6 +365,7 @@ export function Sidebar({
             />
           )}
         </div>
+        {(!collapsed || mobileDrawerActive) && <SidebarSessionAgents hostId={session.hostId} session={session.name} />}
       </li>
     )
   }

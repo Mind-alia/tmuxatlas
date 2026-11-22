@@ -25,6 +25,7 @@ import { fetchAccountDirectory, resolveOwnerName, type AccountDirectoryEntry } f
 import { applyTheme } from './theme'
 import { getBrandStorage, setBrandStorage } from './lib/brandStorage'
 import { AccountRoleContext } from './lib/accountContext'
+import { AgentSummaryProvider } from './components/agents/agentSummary'
 import { isEditingOutsideTerminal } from './lib/focusGuard'
 import { postRuntimeMutation } from './lib/runtimeApi'
 import { ApplicationStateProvider, useApplicationState } from './state/provider'
@@ -837,6 +838,14 @@ function AppInner({
 
   return (
     <AccountRoleContext.Provider value={role}>
+    <AgentSummaryProvider
+      enabled={role !== 'user'}
+      localHostId={(hosts.find(host => host.local) ?? (hosts.length === 1 ? hosts[0] : undefined))?.id ?? null}
+      onOpen={() => {
+        setMobileSidebarOpen(false)
+        navigateTo(null, 'agents')
+      }}
+    >
     <div className="app-shell flex flex-col bg-background text-foreground">
       {(!zenMode ||
         applicationState.connection === 'auth-required' ||
@@ -1126,6 +1135,7 @@ function AppInner({
         />
       )}
     </div>
+    </AgentSummaryProvider>
     </AccountRoleContext.Provider>
   )
 }

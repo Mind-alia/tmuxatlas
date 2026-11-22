@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { AgentState, AgentTeam, TeamAgent } from './types'
 import { useAgentTeams } from './useAgentTeams'
+import { AGENTS_SESSION_EVENT } from './agentSummary'
 
 const STATE_LABEL: Record<AgentState, string> = {
   running: 'En cours',
@@ -310,13 +311,26 @@ function readSessionParam(): string | null {
 export function AgentsPage({ onOpenSession }: { onOpenSession?: (sessionKey: string) => void }) {
   const { teams, status, failed } = useAgentTeams()
   const [teamId, setTeamId] = useState<string | null>(null)
-  const [wantedSession] = useState(readSessionParam)
+  const [wantedSession, setWantedSession] = useState(readSessionParam)
   const [agentId, setAgentId] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(timer)
+  }, [])
+
+  // A badge elsewhere in the app asked for a session while this page is open.
+  useEffect(() => {
+    const onSession = (event: Event) => {
+      const session = (event as CustomEvent<string>).detail
+      if (typeof session !== 'string') return
+      setWantedSession(session)
+      setTeamId(null)
+      setAgentId(null)
+    }
+    window.addEventListener(AGENTS_SESSION_EVENT, onSession)
+    return () => window.removeEventListener(AGENTS_SESSION_EVENT, onSession)
   }, [])
 
   const team = useMemo(
