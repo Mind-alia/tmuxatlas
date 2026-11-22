@@ -1,5 +1,14 @@
 import { formatBytes, formatPercent, formatRelative } from '../../monitoring/format'
-import type { DockerContainer, DockerCreatePort, DockerPort, DockerStats } from './types'
+import type {
+  DockerContainer,
+  DockerCreatePort,
+  DockerPort,
+  DockerRoute,
+  DockerRouteSource,
+  DockerStack,
+  DockerStackAction,
+  DockerStats,
+} from './types'
 
 /** Colour of the status dot: green running, grey stopped, orange in transition, red failed. */
 export type DotTone = 'running' | 'stopped' | 'transition' | 'error'
@@ -224,4 +233,48 @@ export function parseEnv(text: string): string[] | string {
     out.push(line)
   }
   return out
+}
+
+/** The dot of a stack: red when a container failed, orange when only part of it runs. */
+export function stackTone(stack: DockerStack): DotTone {
+  const services = stack.services ?? []
+  if (services.some(c => dotTone(c) === 'error' || c.health === 'unhealthy')) return 'error'
+  if (stack.state === 'running') return services.some(c => dotTone(c) === 'transition') ? 'transition' : 'running'
+  return stack.state === 'partial' ? 'transition' : 'stopped'
+}
+
+export const stackStateLabel: Record<DockerStack['state'], string> = {
+  running: 'En cours',
+  partial: 'Partiel',
+  stopped: 'Arrêté',
+}
+
+/**
+ * The containers a stack action touches, in the order the server follows
+ * (pkg/dockerui/stacks.go): start takes the stopped ones, dependencies first;
+ * stop the active ones, dependencies last; restart the active ones only.
+ */
+export function stackTargets(stack: DockerStack, action: DockerStackAction): DockerContainer[] {
+  const services = stack.services ?? []
+  if (action === 'start') return services.filter(c => c.state === 'created' || c.state === 'exited' || c.state === 'dead')
+  const active = services.filter(isActive)
+  return action === 'stop' ? active.reverse() : active
+}
+
+export const routeSourceLabel: Record<DockerRouteSource, string> = {
+  traefik: 'Traefik',
+  caddy: 'Caddy',
+  port: 'Port publié',
+}
+
+/** What the first column of the routes table shows: the domain, else the path alone, else the raw rule. */
+export function routeLabel(route: DockerRoute): string {
+  if (route.host) return `${route.host}${route.path ?? ''}`
+  if (route.path) return `tous les domaines${route.path}`
+  return route.rule ?? '—'
+}
+
+export function routePort(route: DockerRoute): string {
+  if (!route.port) return '—'
+  return route.proto && route.proto !== 'tcp' ? `${route.port}/${route.proto}` : String(route.port)
 }

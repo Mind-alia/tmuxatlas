@@ -35,6 +35,8 @@ timeout and every response is read with a size bound.
 | `GET /docker/volumes` | `/volumes`, `/containers/json?all=1`, `/system/df?type=volume` | sizes are read in the background and cached one minute (`null` until then) |
 | `POST /docker/volumes` | `/volumes/create` | local driver, name only |
 | `DELETE /docker/volumes/{name}` | `DELETE /volumes/{name}` | never `force`: refused (409) while a container mounts the volume; only a name Docker listed is sent |
+| `GET /docker/stacks` | `/containers/json?all=1` | the **Applications** tab: containers grouped by Compose project from their labels, and the routes (Traefik and caddy-docker-proxy labels, else published ports); see [applications.md](applications.md) |
+| `POST /docker/stacks/{project}/start`, `stop`, `restart` | the per-container calls above, one container after the other | existing containers only, in `depends_on` order; stops at the first failure and reports every container; refused (409) for stop and restart when the hub runs in the stack; never up, down, pull, build nor delete |
 
 - `{id}` must be 12 to 64 lowercase hex characters and is resolved against a
   fresh listing; only the full ID returned by Docker is used afterwards.

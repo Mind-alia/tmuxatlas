@@ -3,6 +3,7 @@ import { runAction, openTerminal } from './api'
 import { ContainerDetail } from './ContainerDetail'
 import { ContainersList, InlineError, SummaryTiles, type ListCallbacks } from './ContainersList'
 import { isActive } from './model'
+import { ApplicationsPanel } from './ApplicationsPanel'
 import { ConfirmDialog, Tabs, type ConfirmRequest, type DetailTab, type PendingKind } from './parts'
 import { ImagesPanel, VolumesPanel } from './ResourcesPanels'
 import { useDockerContainers } from './useDockerContainers'
@@ -10,10 +11,11 @@ import type { DockerAction, DockerContainer } from './types'
 
 const detailTabs: DetailTab[] = ['logs', 'inspect', 'stats', 'terminal']
 
-type Section = 'containers' | 'images' | 'volumes'
+type Section = 'containers' | 'applications' | 'images' | 'volumes'
 
 const sections: { id: Section; label: string }[] = [
   { id: 'containers', label: 'Conteneurs' },
+  { id: 'applications', label: 'Applications' },
   { id: 'images', label: 'Images' },
   { id: 'volumes', label: 'Volumes' },
 ]
@@ -21,7 +23,7 @@ const sections: { id: Section; label: string }[] = [
 /** The section lives in the URL too (?vue=images), so a reload keeps it. */
 function readSection(): Section {
   const value = new URLSearchParams(window.location.search).get('vue')
-  return value === 'images' || value === 'volumes' ? value : 'containers'
+  return value === 'applications' || value === 'images' || value === 'volumes' ? value : 'containers'
 }
 
 function writeSection(section: Section) {
@@ -91,10 +93,11 @@ export function DockerPage({ onOpenSession }: { onOpenSession?: (sessionKey: str
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
-  const open = useCallback((c: DockerContainer, nextTab: DetailTab = 'logs') => {
-    writeLocation(c.id.slice(0, 12), nextTab, true)
-    setSelection({ id: c.id.slice(0, 12), tab: nextTab })
+  const openById = useCallback((id: string, nextTab: DetailTab = 'logs') => {
+    writeLocation(id.slice(0, 12), nextTab, true)
+    setSelection({ id: id.slice(0, 12), tab: nextTab })
   }, [])
+  const open = useCallback((c: DockerContainer, nextTab?: DetailTab) => openById(c.id, nextTab), [openById])
   const back = useCallback(() => {
     writeLocation(null, 'logs', true)
     setSelection({ id: null, tab: 'logs' })
@@ -207,7 +210,9 @@ export function DockerPage({ onOpenSession }: { onOpenSession?: (sessionKey: str
           />
         </div>
       )}
-      {!selectedId && section === 'images' ? (
+      {!selectedId && section === 'applications' ? (
+        <ApplicationsPanel onOpenContainer={openById} onContainersChanged={() => void refresh()} />
+      ) : !selectedId && section === 'images' ? (
         <ImagesPanel onContainersChanged={() => void refresh()} />
       ) : !selectedId && section === 'volumes' ? (
         <VolumesPanel />

@@ -79,6 +79,37 @@ describe('DockerPage', () => {
     window.history.replaceState(null, '', '/')
   })
 
+  it('ouvre l’onglet Applications, le garde dans l’URL et mène au détail d’un conteneur', async () => {
+    const shop = {
+      name: 'shop', config_files: [], state: 'running', running: 2, total: 2,
+      services: listing().containers!.filter(c => c.compose_project === 'shop'),
+    }
+    mockApi({
+      actions: {
+        'GET /api/docker/stacks': () =>
+          new Response(JSON.stringify({ available: true, collected_at: 1, stacks: [shop], standalone: [], routes: [] }), { status: 200 }),
+      },
+    })
+    render(<DockerPage />)
+    const tabs = await screen.findByRole('tablist', { name: 'Ressources Docker' })
+    expect(within(tabs).getAllByRole('tab').map(tab => tab.textContent)).toEqual(['Conteneurs', 'Applications', 'Images', 'Volumes'])
+    fireEvent.click(within(tabs).getByRole('tab', { name: 'Applications' }))
+    expect(window.location.search).toBe('?vue=applications')
+    const card = await screen.findByRole('article', { name: 'Application shop' })
+    expect(within(card).getByText('En cours · 2/2 services démarrés')).toBeTruthy()
+
+    fireEvent.click(within(card).getByRole('button', { name: 'Journaux et détails de shop-web-1' }))
+    expect(window.location.search).toBe(`?vue=applications&c=${WEB.slice(0, 12)}`)
+    expect(await screen.findByRole('heading', { level: 2 })).toHaveTextContent('shop-web-1')
+    expect(screen.queryByRole('tablist', { name: 'Ressources Docker' })).toBeNull()
+    cleanup()
+
+    // A reload on the same URL comes back to the same tab.
+    window.history.replaceState(null, '', '/ops?vue=applications')
+    render(<DockerPage />)
+    expect(await screen.findByRole('article', { name: 'Application shop' })).toBeTruthy()
+  })
+
   it('affiche les tuiles, groupe par projet Compose et remplit les colonnes', async () => {
     mockApi()
     render(<DockerPage />)

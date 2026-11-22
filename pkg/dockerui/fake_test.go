@@ -45,6 +45,8 @@ type fakeDocker struct {
 	bodies     []string // JSON bodies of the POST requests, in order
 	// hangInspect makes inspect requests hang, as with a stuck containerd.
 	hangInspect atomic.Bool
+	// failing lists the containers whose start, stop and restart fail.
+	failing map[string]bool
 }
 
 func newFakeDocker(t *testing.T) *fakeDocker {
@@ -236,6 +238,11 @@ func (f *fakeDocker) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", contentType)
 		_, _ = w.Write(f.logs[id])
 	case r.Method == http.MethodPost && (action == "start" || action == "stop" || action == "restart"):
+		if f.failing[id] {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"message": "driver failed"})
+			return
+		}
 		running := state == "running"
 		if (action == "start" && running) || (action == "stop" && !running) {
 			w.WriteHeader(http.StatusNotModified)

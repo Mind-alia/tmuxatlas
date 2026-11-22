@@ -146,3 +146,64 @@ export interface DockerCreateRequest {
   restart?: 'no' | 'always' | 'unless-stopped' | 'on-failure'
   start?: boolean
 }
+
+/** One Compose project (see pkg/dockerui/stacks.go). */
+export interface DockerStack {
+  name: string
+  working_dir?: string
+  config_files: string[] | null
+  state: 'running' | 'partial' | 'stopped'
+  running: number
+  total: number
+  /** The containers in start order: dependencies first. No stats here. */
+  services: DockerContainer[] | null
+  /** Why the stack cannot be stopped nor restarted from Atlas. */
+  protected?: string
+}
+
+export type DockerRouteSource = 'traefik' | 'caddy' | 'port'
+
+/** One way into a container: a proxy rule read from its labels, or a published port. */
+export interface DockerRoute {
+  source: DockerRouteSource
+  /** A domain, or "address:port" on the host for a published port. */
+  host?: string
+  path?: string
+  /** The label value the route was read from. */
+  rule?: string
+  /** Container port; absent when the labels do not say. */
+  port?: number
+  proto?: string
+  container: string
+  container_id: string
+  compose_project?: string
+  compose_service?: string
+  state: string
+}
+
+export interface DockerStacks {
+  available: boolean
+  error?: string
+  stacks: DockerStack[] | null
+  standalone: DockerContainer[] | null
+  routes: DockerRoute[] | null
+  collected_at: number
+}
+
+export type DockerStackAction = 'start' | 'stop' | 'restart'
+
+export interface DockerStackResult {
+  id: string
+  name: string
+  service?: string
+  status: 'done' | 'unchanged' | 'failed' | 'skipped'
+  error?: string
+}
+
+export interface DockerStackActionResponse {
+  stack: string
+  action: DockerStackAction
+  /** False when a container failed: results then tells which ones. */
+  ok: boolean
+  results: DockerStackResult[] | null
+}

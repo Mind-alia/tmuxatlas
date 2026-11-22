@@ -6,6 +6,9 @@ import type {
   DockerList,
   DockerLogs,
   DockerResourceResult,
+  DockerStackAction,
+  DockerStackActionResponse,
+  DockerStacks,
   DockerTerminal,
   DockerVolumes,
 } from './types'
@@ -113,4 +116,13 @@ export function createContainer(body: DockerCreateRequest) {
     method: 'POST',
     body: JSON.stringify(body),
   })
+}
+
+export function fetchStacks(signal?: AbortSignal) {
+  return request<DockerStacks>('/api/docker/stacks', { signal })
+}
+
+/** Resolves even when a container failed: the answer then has ok=false and one result per container. */
+export function runStackAction(stack: string, action: DockerStackAction) {
+  return request<DockerStackActionResponse>(`/api/docker/stacks/${encodeURIComponent(stack)}/${action}`, { method: 'POST' })
 }

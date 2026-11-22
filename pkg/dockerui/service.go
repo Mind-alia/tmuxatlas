@@ -149,6 +149,12 @@ type Service struct {
 	stats statsCache
 
 	volumes volumeSizes
+
+	// self returns the ID of the container this hub runs in, or "".
+	self func() string
+	// stackBusy holds the Compose projects with a stack action in progress.
+	stackMu   sync.Mutex
+	stackBusy map[string]bool
 }
 
 type inspectEntry struct {
@@ -175,6 +181,7 @@ func New(cfg Config, opener TerminalOpener) *Service {
 		logger:   logrus.WithField("component", "dockerui"),
 		now:      time.Now,
 		inspects: make(map[string]inspectEntry),
+		self:     hubContainerID,
 	}
 }
 
@@ -552,6 +559,12 @@ func (s *Service) Action(ctx context.Context, action, id string) (ActionResponse
 	if err != nil {
 		return ActionResponse{}, err
 	}
+	return s.act(ctx, action, c)
+}
+
+// act sends start, stop or restart to a container taken from a fresh
+// listing. Stack actions go through it too, so both share the same rules.
+func (s *Service) act(ctx context.Context, action string, c apiContainer) (ActionResponse, error) {
 	timeout := startTimeout
 	if action == "stop" || action == "restart" {
 		timeout = s.stopTimeout(ctx, c.ID) + stopMargin
