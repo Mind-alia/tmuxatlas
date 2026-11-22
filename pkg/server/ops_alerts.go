@@ -16,10 +16,10 @@ import (
 const alertInterval = 30 * time.Second
 
 // newAlertEngine starts the phone notifications for containers, backups and
-// probed sites. It returns nil when there is nothing to watch or when
+// probed sites; extra adds the signals of another source (database backups). It returns nil when there is nothing to watch or when
 // TMUXATLAS_OPS_NOTIFY=off.
-func newAlertEngine(ctx context.Context, opts *Options, opsMonitor *ops.Monitor, hostMonitor *monitor.Monitor) *ops.Engine {
-	if opsMonitor == nil && hostMonitor == nil {
+func newAlertEngine(ctx context.Context, opts *Options, opsMonitor *ops.Monitor, hostMonitor *monitor.Monitor, extra func() []ops.Signal) *ops.Engine {
+	if opsMonitor == nil && hostMonitor == nil && extra == nil {
 		return nil
 	}
 	if v := strings.ToLower(strings.TrimSpace(os.Getenv("TMUXATLAS_OPS_NOTIFY"))); v == "off" || v == "false" || v == "0" {
@@ -51,7 +51,11 @@ func newAlertEngine(ctx context.Context, opts *Options, opsMonitor *ops.Monitor,
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				engine.Evaluate(ctx, collectSignals(opsMonitor, hostMonitor))
+				signals := collectSignals(opsMonitor, hostMonitor)
+				if extra != nil {
+					signals = append(signals, extra()...)
+				}
+				engine.Evaluate(ctx, signals)
 			}
 		}
 	}()
