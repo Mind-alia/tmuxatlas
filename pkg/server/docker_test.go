@@ -244,6 +244,10 @@ func TestDockerRoutesKeepTheServerGuards(t *testing.T) {
 		{"compte user, journaux", http.MethodGet, "/api/docker/containers/" + dockerTestID + "/logs", base, alice, true, http.StatusForbidden},
 		{"compte user, arrêt", http.MethodPost, stop, base, alice, true, http.StatusForbidden},
 		{"compte user, terminal", http.MethodPost, terminal, base, alice, true, http.StatusForbidden},
+		{"compte user, applications", http.MethodGet, "/api/docker/stacks", base, alice, true, http.StatusForbidden},
+		{"compte user, arrêt d’une application", http.MethodPost, "/api/docker/stacks/shop/stop", base, alice, true, http.StatusForbidden},
+		{"anonyme, applications", http.MethodGet, "/api/docker/stacks", base, login{}, false, http.StatusUnauthorized},
+		{"admin sans jeton CSRF, application", http.MethodPost, "/api/docker/stacks/shop/stop", base, admin, false, http.StatusForbidden},
 		{"admin sans jeton CSRF", http.MethodPost, stop, base, admin, false, http.StatusForbidden},
 		{"admin, autre origine", http.MethodPost, stop, "http://evil.example", admin, true, http.StatusForbidden},
 		{"admin sans origine", http.MethodDelete, "/api/docker/containers/" + dockerTestID, "", admin, true, http.StatusForbidden},
@@ -263,6 +267,10 @@ func TestDockerRoutesKeepTheServerGuards(t *testing.T) {
 	if code, body := call(http.MethodGet, "/api/docker/containers/"+dockerTestID+"/inspect", base, admin, false); code != http.StatusOK ||
 		strings.Contains(body, "SECRET=x") || !strings.Contains(body, "SECRET=••••") {
 		t.Fatalf("inspect admin : %d %s", code, body)
+	}
+	if code, body := call(http.MethodGet, "/api/docker/stacks", base, admin, false); code != http.StatusOK ||
+		!strings.Contains(body, `"available":true`) || !strings.Contains(body, `"stacks":[`) {
+		t.Fatalf("applications admin : %d %s", code, body)
 	}
 	// A slow stop (1.5 s here, a grace period in real life) must not hold
 	// the account policy's lock, which every other request takes.

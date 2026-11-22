@@ -312,6 +312,10 @@ func TestRoutesAreAdminOnly(t *testing.T) {
 		{http.MethodGet, "/docker/volumes"},
 		{http.MethodPost, "/docker/volumes"},
 		{http.MethodDelete, "/docker/volumes/spare"},
+		{http.MethodGet, "/docker/stacks"},
+		{http.MethodPost, "/docker/stacks/shop/start"},
+		{http.MethodPost, "/docker/stacks/shop/stop"},
+		{http.MethodPost, "/docker/stacks/shop/restart"},
 	}
 	if len(routes) != len(Routes) {
 		t.Fatalf("Routes lists %d routes, the test %d", len(Routes), len(routes))

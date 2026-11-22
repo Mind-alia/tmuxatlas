@@ -31,6 +31,10 @@ var Routes = []string{
 	"GET /docker/volumes",
 	"POST /docker/volumes",
 	"DELETE /docker/volumes/{name}",
+	"GET /docker/stacks",
+	"POST /docker/stacks/{project}/start",
+	"POST /docker/stacks/{project}/stop",
+	"POST /docker/stacks/{project}/restart",
 }
 
 // Register mounts the routes. read carries the server's authentication;
@@ -47,6 +51,7 @@ func (s *Service) Register(read, mutate chi.Router) {
 	mutate.Post("/docker/containers/{id}/terminal", s.handleTerminal)
 	mutate.Delete("/docker/containers/{id}", s.handleRemove)
 	s.registerResources(read, mutate)
+	s.registerStacks(read, mutate)
 }
 
 // AdminOnly refuses signed-in accounts that are not admins. The account
@@ -165,7 +170,7 @@ func errorStatus(err error) (int, string) {
 		return http.StatusBadRequest, err.Error()
 	case errors.As(err, &request):
 		return request.status, request.message
-	case errors.Is(err, errNotFound):
+	case errors.Is(err, errNotFound), errors.Is(err, errStackNotFound):
 		return http.StatusNotFound, err.Error()
 	case errors.As(err, &conflict):
 		return http.StatusConflict, conflict.message
