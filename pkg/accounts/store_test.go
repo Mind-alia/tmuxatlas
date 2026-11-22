@@ -152,4 +152,24 @@ func TestBootstrapAndAdminProtection(t *testing.T) {
 	if err != nil || replaced.ID != admin.ID {
 		t.Fatalf("remplacement : %+v, %v", replaced, err)
 	}
+
+	alice, err := store.Create("alice", string(hash), "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminRole, userRole := "admin", "user"
+	if _, err := store.UpdateWithRole(admin.ID, admin.ID, "", nil, &userRole); !errors.Is(err, ErrProtectedAdmin) {
+		t.Fatalf("auto-rétrogradation : %v", err)
+	}
+	promoted, err := store.UpdateWithRole(alice.ID, admin.ID, "", nil, &adminRole)
+	if err != nil || promoted.Role != "admin" {
+		t.Fatalf("promotion : %+v, %v", promoted, err)
+	}
+	demoted, err := store.UpdateWithRole(admin.ID, alice.ID, "", nil, &userRole)
+	if err != nil || demoted.Role != "user" {
+		t.Fatalf("rétrogradation avec second admin actif : %+v, %v", demoted, err)
+	}
+	if _, err := store.UpdateWithRole(alice.ID, "autre-acteur", "", nil, &userRole); !errors.Is(err, ErrProtectedAdmin) {
+		t.Fatalf("rétrogradation du dernier admin : %v", err)
+	}
 }

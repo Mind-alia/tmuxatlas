@@ -134,7 +134,7 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 
 	var writeMu sync.Mutex
 	var images clipboardimage.Receiver
-	hold := newVoiceHold(ptySess)
+	hold := NewVoiceHold(ptySess)
 	claim := newSizeClaim(ptySess.Claim)
 	defer claim.stop()
 	dictation := &dictationState{}

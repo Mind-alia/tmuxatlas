@@ -273,6 +273,23 @@ describe('Tableau de bord /admin', () => {
       owner: 'bbbbbbbb22222222bbbbbbbb22222222',
     })
   })
+
+  it('modifie le rôle d’un compte depuis le sélecteur de rôle', async () => {
+    render(<AdminPage currentUsername="admin" />)
+    const aliceRow = await screen.findByTestId('admin-user-row-alice')
+    const roleSelect = within(aliceRow).getByLabelText('Rôle de alice')
+    expect(roleSelect).toHaveValue('user')
+
+    fireEvent.change(roleSelect, { target: { value: 'admin' } })
+
+    await waitFor(() => {
+      const patch = vi.mocked(fetch).mock.calls.find(
+        ([url, init]) => String(url).includes('/api/admin/users/bbbbbbbb22222222bbbbbbbb22222222') && init?.method === 'PATCH',
+      )
+      expect(patch).toBeDefined()
+      expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ role: 'admin' })
+    })
+  })
 })
 
 describe('Vue non-admin : claim, release, erreur 409 et absence de routes interdites', () => {

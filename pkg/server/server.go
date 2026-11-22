@@ -188,6 +188,7 @@ func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, 
 	msg, _ := peer.NewMessage(peer.MsgPTYOpen, peer.PTYOpenPayload{
 		StreamID: owner.StreamID, AttachToken: owner.AttachToken,
 		Generation: peerConn.Generation, Target: target, Cols: cols, Rows: rows,
+		MicID: remoteMicID(peerConn, r.URL.Query().Get("mic")),
 	})
 	if err := peerConn.Send(r.Context(), msg); err != nil {
 		return
@@ -237,6 +238,8 @@ func Run(ctx context.Context, opts *Options) error {
 	var lastNotificationTest atomic.Int64
 	// The browser microphone feeds programs on this host, so it needs local tmux.
 	var browserMic *voice.Mic
+	// Microphones for sessions on other hosts go to those hosts' agents.
+	micRelay := peer.NewMicRelay()
 	if opts.Client != nil && voice.Enabled(os.Getenv("TMUXATLAS_VOICE")) {
 		browserMic = voice.New(opts.Client.TmuxPath())
 		go func() {
@@ -720,10 +723,7 @@ func Run(ctx context.Context, opts *Options) error {
 
 			// Voice status — whether the browser microphone can be used on this host
 			r.Get("/voice", func(w http.ResponseWriter, r *http.Request) {
-				status := voice.Status{}
-				if browserMic != nil {
-					status = browserMic.Status()
-				}
+				status := voiceStatus(r, opts, browserMic, r.URL.Query().Get("host"))
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Cache-Control", "no-store")
 				json.NewEncoder(w).Encode(status)
@@ -1093,9 +1093,7 @@ func Run(ctx context.Context, opts *Options) error {
 			// a missing header is refused.
 			publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/sudo", sudoService.HandleTerminal)
 		}
-		if browserMic != nil {
-			publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/mic", browserMic.HandleStream)
-		}
+		publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/mic", micHandler(opts, browserMic, micRelay))
 		publicRouter.With(authMw, accountGuard, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
 			hostID := req.URL.Query().Get("host")
 			if opts.PeerMgr == nil || hostID == "" || !opts.PeerMgr.HasHost(hostID) {
@@ -1114,9 +1112,7 @@ func Run(ctx context.Context, opts *Options) error {
 		})
 	} else {
 		publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/events", hub.HandleEvents)
-		if browserMic != nil {
-			publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/mic", browserMic.HandleStream)
-		}
+		publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/mic", micHandler(opts, browserMic, micRelay))
 		publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
 			hostID := req.URL.Query().Get("host")
 			if opts.PeerMgr == nil || hostID == "" || !opts.PeerMgr.HasHost(hostID) {
@@ -1146,6 +1142,9 @@ func Run(ctx context.Context, opts *Options) error {
 	}
 	if opts.PTYRelay != nil {
 		publicRouter.With(admissionMiddleware(ingressPolicy, ingress.CategoryWSPeerPTY)).Get("/ws/peer-pty", opts.PTYRelay.HandlePeerPTY)
+	}
+	if opts.PeerHandler != nil {
+		publicRouter.With(admissionMiddleware(ingressPolicy, ingress.CategoryWSPeerPTY)).Get("/ws/peer-mic", micRelay.HandlePeerMic)
 	}
 
 	// Serve embedded frontend

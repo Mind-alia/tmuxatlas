@@ -33,8 +33,8 @@ Ces routes exigent le rôle `admin`. Un objet compte a la forme
 | Route | Corps ou réponse |
 |-------|------------------|
 | `GET /api/admin/users` | `{"users":[…]}`. |
-| `POST /api/admin/users` | `{"username":"alice","password":"…"}` ; 201 et objet compte. Le rôle créé est toujours `user`. |
-| `PATCH /api/admin/users/{id}` | `{"password":"…","disabled":true}` ; les deux champs sont facultatifs, mais au moins un est requis. Réponse : objet compte. |
+| `POST /api/admin/users` | `{"username":"alice","password":"…","role":"user"}` ; `"role"` est facultatif (`"user"` ou `"admin"`, défaut `"user"`). Réponse : 201 et objet compte. |
+| `PATCH /api/admin/users/{id}` | `{"password":"…","disabled":true,"role":"admin"}` ; les champs sont facultatifs, mais au moins un est requis. Réponse : objet compte. |
 | `DELETE /api/admin/users/{id}` | Libère les sessions connues du compte et le supprime ; 204. La suppression échoue si un hôte connu est hors ligne. |
 | `GET /api/admin/sessions` | Tableau des vues complètes des sessions et de leur `owner`. |
 

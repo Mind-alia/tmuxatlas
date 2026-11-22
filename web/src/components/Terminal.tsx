@@ -65,7 +65,10 @@ export interface TerminalProps {
   connectionState?: TerminalWorkspaceConnectionState
   fullscreen?: boolean
   zenMode?: boolean
-  /** The session runs on the machine serving this page, where the virtual microphone lives. */
+  /**
+   * The session runs on the machine serving this page, where the app's shared
+   * microphone lives. Other hosts get their own stream to their agent.
+   */
   hostLocal?: boolean
   /** Whether voice/microphone features are allowed for the current user role. */
   voiceAllowed?: boolean
@@ -231,7 +234,17 @@ export function Terminal({
     findPrevious,
     clearSearch,
   } = useTerminal(sessionName, hostId, input)
-  const mic = useMicStream(Boolean(hostLocal && !embedded && voiceAllowed && !sharedMic))
+  // The app's shared stream feeds this server's microphone only. A session of
+  // another host or Unix account streams to that host's agent instead, when it
+  // has voice: its recorders cannot hear this server's audio.
+  const remoteVoiceHost = Boolean(hostId) && !hostLocal
+  const voiceHost = hostLocal || remoteVoiceHost
+  const mic = useMicStream(
+    Boolean(!embedded && voiceAllowed && (remoteVoiceHost || (hostLocal && !sharedMic))),
+    false,
+    remoteVoiceHost ? hostId : '',
+  )
+  const ownMicToggle = remoteVoiceHost || !sharedMic
   const toggleMic = useCallback(() => {
     mic.toggle()
     focus()
@@ -264,8 +277,8 @@ export function Terminal({
     },
     [focus, onTalkHold, readScreen, sendRawInput, setVoiceHold, talkAgent],
   )
-  const talkMic = sharedMic ?? (embedded ? undefined : mic)
-  const showTalk = Boolean(talkMic?.available && hostLocal && voiceAllowed && (embedded || !compact))
+  const talkMic = remoteVoiceHost ? (embedded ? undefined : mic) : (sharedMic ?? (embedded ? undefined : mic))
+  const showTalk = Boolean(talkMic?.available && voiceHost && voiceAllowed && (embedded || !compact))
 
   const dictationRelay = useMemo<DictationRelay>(
     () => ({
@@ -716,7 +729,7 @@ export function Terminal({
           renderTalk(
             !talkAgent || talkMic?.state !== 'on' || workspaceConnection !== 'connected' || talkLocked,
             embedded ? targetLabel : undefined,
-            embedded || sharedMic ? 'below-right' : 'above-left',
+            embedded || !ownMicToggle ? 'below-right' : 'above-left',
             answersTalkKey,
           ),
           talkSlot,
@@ -905,9 +918,9 @@ export function Terminal({
                 >
                   <MessageSquareText size={18} aria-hidden />
                 </button>
-                {talkMic?.available && hostLocal && voiceAllowed && (
+                {talkMic?.available && voiceHost && voiceAllowed && (
                   <>
-                    {!sharedMic && (
+                    {ownMicToggle && (
                       <button
                         type="button"
                         aria-label={mic.state === 'off' ? 'Activer le micro' : 'Désactiver le micro'}

@@ -50,6 +50,8 @@ const (
 	MsgPeerDisconnected = "peer-disconnected"
 	// MsgPTYOpen requests the peer to spawn a PTY
 	MsgPTYOpen = "pty-open"
+	// MsgMicOpen asks the peer to connect a browser microphone to its virtual mic
+	MsgMicOpen = "mic-open"
 	// MsgRequestState asks the peer for a full state refresh
 	MsgRequestState = "request-state"
 )
@@ -134,6 +136,18 @@ type PTYOpenPayload struct {
 	Target      SessionTarget `json:"target"`
 	Cols        uint16        `json:"cols"`
 	Rows        uint16        `json:"rows"`
+	// MicID names the browser tab's microphone, so recorders started in this
+	// session hear that tab. Peers without CapabilityVoice ignore it.
+	MicID string `json:"mic_id,omitempty"`
+}
+
+// MicOpenPayload asks a peer to receive one browser tab's microphone on
+// /ws/peer-mic and play it into that tab's virtual microphone.
+type MicOpenPayload struct {
+	StreamID    string `json:"stream_id"`
+	AttachToken string `json:"attach_token"`
+	Generation  uint64 `json:"generation"`
+	MicID       string `json:"mic_id"`
 }
 
 // NewMessage creates a Message with a typed payload

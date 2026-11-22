@@ -44,6 +44,7 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
   const [newUsername, setNewUsername] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [newRole, setNewRole] = useState<'user' | 'admin'>('user')
   const [createError, setCreateError] = useState<string | null>(null)
   const [createSuccess, setCreateSuccess] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
@@ -146,16 +147,28 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
     }
     setCreating(true)
     try {
-      await createAdminUser(trimmed, newPassword)
+      await createAdminUser(trimmed, newPassword, newRole)
       setNewUsername('')
       setNewPassword('')
       setConfirmPassword('')
+      setNewRole('user')
       setCreateSuccess(`Compte « ${trimmed} » créé.`)
       await loadData()
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : 'Impossible de créer le compte.')
     } finally {
       setCreating(false)
+    }
+  }
+
+  const handleChangeRole = async (user: AccountUser, role: 'admin' | 'user') => {
+    if (user.role === role) return
+    setPageError(null)
+    try {
+      await updateAdminUser(user.id, { role })
+      await loadData()
+    } catch (err) {
+      setPageError(err instanceof Error ? err.message : 'Impossible de modifier le rôle du compte.')
     }
   }
 
@@ -269,7 +282,7 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
           <p className="mt-1 text-xs text-muted-foreground">
             Longueur du mot de passe : 10 à 200 caractères.
           </p>
-          <form onSubmit={handleCreateUser} className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <form onSubmit={handleCreateUser} className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <div className="space-y-1">
               <label htmlFor="admin-new-username" className="block text-xs text-muted-foreground">
                 Nom d’utilisateur
@@ -313,7 +326,21 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
                 className="ui-focus-ring min-h-11 w-full rounded bg-input px-3 text-sm text-foreground placeholder:text-muted-foreground"
               />
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 sm:col-span-3">
+            <div className="space-y-1">
+              <label htmlFor="admin-new-role" className="block text-xs text-muted-foreground">
+                Rôle
+              </label>
+              <select
+                id="admin-new-role"
+                value={newRole}
+                onChange={event => setNewRole(event.target.value as 'user' | 'admin')}
+                className="ui-focus-ring min-h-11 w-full rounded border border-border bg-input px-2.5 text-sm text-foreground"
+              >
+                <option value="user">Utilisateur</option>
+                <option value="admin">Administrateur</option>
+              </select>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 sm:col-span-2 lg:col-span-4">
               <div>
                 {createError && (
                   <p role="alert" className="text-xs text-destructive">
@@ -382,6 +409,22 @@ export function AdminPage({ currentUsername, liveSessions = [], onUsersChanged }
                       </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
+                      <label htmlFor={`role-select-${user.id}`} className="sr-only">
+                        Rôle de {user.username}
+                      </label>
+                      <select
+                        id={`role-select-${user.id}`}
+                        aria-label={`Rôle de ${user.username}`}
+                        value={user.role}
+                        disabled={isSelf}
+                        onChange={event =>
+                          void handleChangeRole(user, event.target.value as 'admin' | 'user')
+                        }
+                        className="ui-focus-ring min-h-11 rounded border border-border bg-input px-2.5 text-xs text-foreground disabled:opacity-50"
+                      >
+                        <option value="user">Utilisateur</option>
+                        <option value="admin">Administrateur</option>
+                      </select>
                       <Button
                         type="button"
                         variant="secondary"

@@ -24,6 +24,7 @@ var (
 	ErrDuplicateUsername = errors.New("nom d'utilisateur déjà utilisé")
 	ErrNotFound          = errors.New("compte introuvable")
 	ErrInvalidHash       = errors.New("hash bcrypt invalide")
+	ErrInvalidRole       = errors.New("rôle invalide")
 )
 
 func ValidUsername(username string) bool {
@@ -138,7 +139,7 @@ func (s *Store) Create(username, hash, role string) (User, error) {
 		return User{}, ErrInvalidHash
 	}
 	if role != "admin" && role != "user" {
-		return User{}, errors.New("rôle invalide")
+		return User{}, ErrInvalidRole
 	}
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
@@ -214,10 +215,19 @@ var ErrProtectedAdmin = errors.New("opération interdite sur cet administrateur"
 // A nil disabled value leaves the state unchanged. An empty hash leaves the
 // password unchanged. The actor cannot disable their own account.
 func (s *Store) Update(id, actor, hash string, disabled *bool) (User, error) {
+	return s.UpdateWithRole(id, actor, hash, disabled, nil)
+}
+
+// UpdateWithRole modifies an account's password, disabled state, and/or role
+// while enforcing self-protection and the last-administrator invariant.
+func (s *Store) UpdateWithRole(id, actor, hash string, disabled *bool, role *string) (User, error) {
 	if hash != "" {
 		if _, err := bcrypt.Cost([]byte(hash)); err != nil {
 			return User{}, ErrInvalidHash
 		}
+	}
+	if role != nil && *role != "admin" && *role != "user" {
+		return User{}, ErrInvalidRole
 	}
 	var result User
 	err := s.withLock(func(users []User) ([]User, bool, error) {
@@ -225,14 +235,25 @@ func (s *Store) Update(id, actor, hash string, disabled *bool) (User, error) {
 			if users[i].ID != id {
 				continue
 			}
-			if disabled != nil && *disabled && !users[i].Disabled {
-				if id == actor || (users[i].Role == "admin" && activeAdmins(users) <= 1) {
-					return nil, false, ErrProtectedAdmin
-				}
+			nextRole := users[i].Role
+			if role != nil {
+				nextRole = *role
 			}
+			nextDisabled := users[i].Disabled
 			if disabled != nil {
-				users[i].Disabled = *disabled
+				nextDisabled = *disabled
 			}
+			if disabled != nil && *disabled && !users[i].Disabled && id == actor {
+				return nil, false, ErrProtectedAdmin
+			}
+			if role != nil && *role != "admin" && users[i].Role == "admin" && id == actor {
+				return nil, false, ErrProtectedAdmin
+			}
+			if users[i].Role == "admin" && !users[i].Disabled && (nextRole != "admin" || nextDisabled) && activeAdmins(users) <= 1 {
+				return nil, false, ErrProtectedAdmin
+			}
+			users[i].Role = nextRole
+			users[i].Disabled = nextDisabled
 			if hash != "" {
 				users[i].PasswordHash = hash
 				users[i].PasswordChangedAt = time.Now().UTC()
