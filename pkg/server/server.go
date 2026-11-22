@@ -771,6 +771,26 @@ func Run(ctx context.Context, opts *Options) error {
 				w.Header().Set("Cache-Control", "no-store")
 				json.NewEncoder(w).Encode(map[string]any{"teams": teams})
 			})
+			// The same teams reduced to counts and the unfinished agents, for the
+			// session lists that poll it. Same access rule as above.
+			r.Get("/agent-teams/summary", func(w http.ResponseWriter, r *http.Request) {
+				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role != "admin" {
+					http.Error(w, "accès interdit", http.StatusForbidden)
+					return
+				}
+				if agentTeams == nil {
+					http.Error(w, "équipes d'agents indisponibles", http.StatusServiceUnavailable)
+					return
+				}
+				sessions, err := agentTeams.Summary()
+				if err != nil {
+					http.Error(w, "lecture des équipes d'agents impossible", http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				json.NewEncoder(w).Encode(map[string]any{"sessions": sessions})
+			})
 
 			r.Get("/ops", func(w http.ResponseWriter, r *http.Request) {
 				if identity, ok := auth.AccountFromContext(r.Context()); ok && identity.User.Role != "admin" {

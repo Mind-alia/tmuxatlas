@@ -33,11 +33,13 @@ const (
 	quietAfter   = 3 * time.Minute
 	stoppedAfter = 30 * time.Minute
 	// keepFor bounds how far back a session's agents are listed.
-	keepFor      = 24 * time.Hour
-	maxAgents    = 24
-	maxLogLines  = 4
-	maxLineBytes = 8 << 20
-	maxActionLen = 96
+	keepFor = 24 * time.Hour
+	// recentDoneFor bounds how long a finished agent counts in a summary.
+	recentDoneFor = time.Hour
+	maxAgents     = 24
+	maxLogLines   = 4
+	maxLineBytes  = 8 << 20
+	maxActionLen  = 96
 )
 
 // Agent is one sub-agent of a session.
@@ -174,6 +176,73 @@ func (r *Reader) Teams() ([]Team, error) {
 		return teams[i].Name < teams[j].Name
 	})
 	return teams, nil
+}
+
+// SummaryAgent is an unfinished sub-agent, reduced to what a session list shows.
+type SummaryAgent struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	Action      string `json:"action"`
+	// State is StateRunning or StateQuiet.
+	State string `json:"state"`
+}
+
+// SessionSummary counts the sub-agents of the Claude Code sessions that run in
+// one tmux session.
+type SessionSummary struct {
+	TmuxSession string `json:"tmux_session"`
+	// Running counts the unfinished agents that are not presumed interrupted.
+	Running int `json:"running"`
+	// RecentDone counts the agents finished within the last hour.
+	RecentDone int `json:"recent_done"`
+	// Total counts every agent the Agents page lists for the session.
+	Total int `json:"total"`
+	// Agents lists the Running ones, most recently active first.
+	Agents []SummaryAgent `json:"agents"`
+}
+
+// Summary returns, for each tmux session whose Claude Code sessions started
+// sub-agents, their counts and the unfinished ones. It carries no log lines.
+func (r *Reader) Summary() ([]SessionSummary, error) {
+	teams, err := r.Teams()
+	if err != nil {
+		return nil, err
+	}
+	return summarize(teams, r.now()), nil
+}
+
+func summarize(teams []Team, now time.Time) []SessionSummary {
+	byName := make(map[string]*SessionSummary)
+	for _, team := range teams {
+		if team.TmuxSession == "" || len(team.Agents) == 0 {
+			continue
+		}
+		summary := byName[team.TmuxSession]
+		if summary == nil {
+			summary = &SessionSummary{TmuxSession: team.TmuxSession, Agents: []SummaryAgent{}}
+			byName[team.TmuxSession] = summary
+		}
+		for _, agent := range team.Agents {
+			summary.Total++
+			switch agent.State {
+			case StateRunning, StateQuiet:
+				summary.Running++
+				summary.Agents = append(summary.Agents, SummaryAgent{
+					ID: agent.ID, Description: agent.Description, Action: agent.Action, State: agent.State,
+				})
+			case StateDone:
+				if now.Sub(agent.UpdatedAt) <= recentDoneFor {
+					summary.RecentDone++
+				}
+			}
+		}
+	}
+	summaries := make([]SessionSummary, 0, len(byName))
+	for _, summary := range byName {
+		summaries = append(summaries, *summary)
+	}
+	sort.Slice(summaries, func(i, j int) bool { return summaries[i].TmuxSession < summaries[j].TmuxSession })
+	return summaries
 }
 
 func activeCount(t Team) int {

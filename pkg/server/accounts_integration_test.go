@@ -232,6 +232,21 @@ func runAccountsIntegration(t *testing.T, scenario string) {
 		if again.StatusCode != http.StatusTooManyRequests {
 			t.Fatalf("second test immédiat : %s", again.Status)
 		}
+		for _, path := range []string{"/api/agent-teams", "/api/agent-teams/summary"} {
+			for _, who := range []login{aliceLogin, bobLogin, {}} {
+				response := call(http.MethodGet, path, "", who)
+				response.Body.Close()
+				if response.StatusCode != http.StatusForbidden && response.StatusCode != http.StatusUnauthorized {
+					t.Fatalf("%s hors admin : %s", path, response.Status)
+				}
+			}
+			response := call(http.MethodGet, path, "", adminLogin)
+			data, _ := io.ReadAll(response.Body)
+			response.Body.Close()
+			if response.StatusCode != http.StatusOK || !strings.HasPrefix(string(data), "{") {
+				t.Fatalf("%s par l'admin : %s %s", path, response.Status, data)
+			}
+		}
 		for _, who := range []login{aliceLogin, bobLogin, {}} {
 			response := call(http.MethodGet, "/api/ops", "", who)
 			data, _ := io.ReadAll(response.Body)

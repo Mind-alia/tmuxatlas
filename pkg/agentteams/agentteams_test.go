@@ -132,3 +132,72 @@ func TestMissingClaudeDirectoryGivesNoTeams(t *testing.T) {
 		t.Fatalf("teams = %v, err = %v", teams, err)
 	}
 }
+
+func TestSummaryCountsPerTmuxSessionWithoutLogs(t *testing.T) {
+	reader, sub := fixture(t)
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	reader.now = func() time.Time { return now }
+	// A second Claude session in the same tmux session, one outside tmux and one without agents.
+	const other = "22222222-2222-3333-4444-555555555555"
+	const bare = "33333333-2222-3333-4444-555555555555"
+	dir := reader.claudeDir
+	write(t, filepath.Join(dir, "sessions", "101.json"), `{"pid":101,"sessionId":"`+other+`","name":"Voisine","tmux":"ma:session:@3.%5"}`)
+	write(t, filepath.Join(dir, "sessions", "102.json"), `{"pid":102,"sessionId":"`+bare+`","name":"Hors tmux"}`)
+	write(t, filepath.Join(dir, "sessions", "103.json"), `{"pid":103,"sessionId":"44444444-2222-3333-4444-555555555555","tmux":"vide:@1.%1"}`)
+	reader.alive = func(pid int) bool { return pid >= 100 && pid <= 103 }
+	otherSub := filepath.Join(dir, "projects", "-work", other, "subagents")
+	bareSub := filepath.Join(dir, "projects", "-work", bare, "subagents")
+
+	tool := func(command string) string {
+		return line("assistant", "2026-11-19T11:51:00Z", `[{"type":"tool_use","name":"Bash","input":{"command":"`+command+`"}}]`)
+	}
+	agents := []struct {
+		dir, id, meta, log string
+		age                time.Duration
+	}{
+		{sub, "run", `{"description":"Tests Go"}`, tool("go vet") + tool("go test"), time.Minute},
+		{sub, "quiet", `{"description":"Longue commande"}`, tool("sleep 600"), 10 * time.Minute},
+		{sub, "stopped", `{"description":"Interrompu"}`, tool("x"), 2 * time.Hour},
+		{sub, "done", `{"description":"Fini","finished":true}`, tool("x"), 20 * time.Minute},
+		{sub, "olddone", `{"description":"Fini hier","finished":true}`, tool("x"), 5 * time.Hour},
+		{otherSub, "peer", `{"description":"Relecture"}`, "", 30 * time.Second},
+		{bareSub, "lost", `{"description":"Sans tmux"}`, tool("x"), time.Minute},
+	}
+	for _, a := range agents {
+		write(t, filepath.Join(a.dir, "agent-"+a.id+".meta.json"), a.meta)
+		path := filepath.Join(a.dir, "agent-"+a.id+".jsonl")
+		write(t, path, line("user", "2026-11-19T11:00:00Z", `"x"`)+a.log)
+		at := now.Add(-a.age)
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	summaries, err := reader.Summary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("summaries = %+v, want only the tmux session that has agents", summaries)
+	}
+	s := summaries[0]
+	if s.TmuxSession != "ma:session" || s.Running != 3 || s.RecentDone != 1 || s.Total != 6 {
+		t.Fatalf("summary = %+v", s)
+	}
+	got := map[string]SummaryAgent{}
+	for _, a := range s.Agents {
+		got[a.ID] = a
+	}
+	if len(s.Agents) != 3 || got["run"].Action != "Bash go test" || got["run"].Description != "Tests Go" ||
+		got["run"].State != StateRunning || got["quiet"].State != StateQuiet || got["peer"].Action != "" {
+		t.Fatalf("agents = %+v", s.Agents)
+	}
+}
+
+func TestSummaryIsEmptyNotNullWithoutAgents(t *testing.T) {
+	reader, _ := fixture(t)
+	summaries, err := reader.Summary()
+	if err != nil || summaries == nil || len(summaries) != 0 {
+		t.Fatalf("summaries = %#v, err = %v", summaries, err)
+	}
+}
