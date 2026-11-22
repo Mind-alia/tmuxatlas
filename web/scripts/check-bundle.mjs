@@ -13,8 +13,9 @@ const limits = {
   // L’explorateur de fichiers (éditeur, Markdown, coloration) pèse environ
   // 42 Kio brotli, la vue Docker (conteneurs, images, volumes) environ 14,
   // l’onglet Boucles et les comptes CLI du monitoring environ 20, l’onglet
-  // Secrets environ 6. Tous sont chargés à la demande. Marge d’environ 1,5 %.
-  'total brotli': 346 * 1024,
+  // Secrets environ 6, le bloc Déploiement des applications environ 4. Tous
+  // sont chargés à la demande. Marge d’environ 0,5 %.
+  'total brotli': 350 * 1024,
 }
 let entryGzip = 0
 let xtermGzip = 0

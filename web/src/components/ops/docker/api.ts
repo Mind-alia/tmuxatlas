@@ -44,7 +44,7 @@ async function failure(response: Response): Promise<DockerApiError> {
   return new DockerApiError(response.status, capitalize(message.trim()) || `Erreur ${response.status}`)
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response
   try {
     response = await apiFetch(path, { cache: 'no-store', ...init })
