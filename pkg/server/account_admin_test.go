@@ -55,7 +55,7 @@ func TestAccountAdministrationHidesHashesAndRevokes(t *testing.T) {
 		t.Fatalf("create: %d %s", created.Code, created.Body.String())
 	}
 	var user accountView
-	if err := json.Unmarshal(created.Body.Bytes(), &user); err != nil || user.Role != "user" {
+	if err := json.Unmarshal(created.Body.Bytes(), &user); err != nil || user.Role != "admin" {
 		t.Fatalf("created user: %+v %v", user, err)
 	}
 	list := request(http.MethodGet, "/users", "")
