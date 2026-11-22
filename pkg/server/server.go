@@ -234,7 +234,8 @@ func Run(ctx context.Context, opts *Options) error {
 		opsMonitor = ops.New(dir)
 		go opsMonitor.Run(ctx)
 	}
-	alertEngine := newAlertEngine(ctx, opts, opsMonitor, hostMonitor)
+	dbBackups := &dbBackupService{}
+	alertEngine := newAlertEngine(ctx, opts, opsMonitor, hostMonitor, dbBackups.signals())
 	var lastNotificationTest atomic.Int64
 	// The browser microphone feeds programs on this host, so it needs local tmux.
 	var browserMic *voice.Mic
@@ -474,6 +475,9 @@ func Run(ctx context.Context, opts *Options) error {
 		// (pkg/secrets). Same routers: a passphrase check or a restart must
 		// not hold the account policy's lock.
 		newSecretsHandler(opts, dockerUI).Register(dockerRouters(r, opts, originMiddleware))
+
+		// Database backups of the containers, admin only (pkg/dbbackup).
+		dbBackups.start(ctx, opts, dockerUI).Register(dockerRouters(r, opts, originMiddleware))
 
 		// Protected API routes
 		r.Group(func(r chi.Router) {
