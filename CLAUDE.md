@@ -45,7 +45,7 @@ pkg/
   activity/              # Activity tracking (sparklines)
   monitor/               # Host monitoring: metrics, services, probes, alerts (`/api/monitor`, disable with TMUXATLAS_MONITOR=off)
   ops/                   # Admin-only ops status read from a shared directory: containers, backups and phone notifications (`/api/ops`, `TMUXATLAS_OPS_DIR`, `TMUXATLAS_NTFY_URL`, see docs/ops.md)
-  dockerui/              # Admin-only live Containers view over the Docker Engine API socket: containers (list, stats, logs, inspect, actions, shell in tmux, create from an image), images (list, pull, delete, prune) and volumes (list, create, delete) (`/api/docker/*`, `TMUXATLAS_DOCKER`, `TMUXATLAS_DOCKER_SOCKET`, see docs/ops.md)
+  dockerui/              # Admin-only live Containers view over the Docker Engine API socket: containers (list, stats, logs, inspect, actions, shell in tmux, create from an image), images (list, pull, delete, prune), volumes (list, create, delete) and Compose applications (grouping by labels, start/stop/restart of a whole stack, read-only routes; see docs/applications.md) (`/api/docker/*`, `TMUXATLAS_DOCKER`, `TMUXATLAS_DOCKER_SOCKET`, see docs/ops.md)
   fleethealth/           # Fleet health evaluation
   httpguard/             # HTTP request guards (body limits and deadlines)
   ingress/               # Bounded admission controls for ingress connections
