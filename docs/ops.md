@@ -272,6 +272,10 @@ or a new `started_at` each count as a restart.
 
 ## Backups
 
+This panel only watches a backup made elsewhere. The hub can also back up the
+databases of the containers itself (PostgreSQL, MySQL, MariaDB), from the same
+tab: see [`sauvegardes-bases.md`](sauvegardes-bases.md).
+
 The **Sauvegardes** panel (section *Sauvegardes et alertes* of the same page) shows the date of the last full
 backup, whether the copy on Cloudflare R2 succeeded and was verified, when the
 next one is expected, and the retention: **3 days locally, 14 days on R2**.

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Alerts } from '../monitoring/Monitoring'
 import { toneColor } from '../monitoring/primitives'
 import { formatRelative } from '../monitoring/format'
@@ -8,6 +8,14 @@ import { Tabs } from './docker/parts'
 import { NotificationsPanel } from './NotificationsPanel'
 import type { OpsContainers, OpsResponse } from './types'
 import { useOps } from './useOps'
+
+// Database backups of the containers: loaded with the tab that shows them.
+const DbBackupsPanel = lazy(() => import('./DbBackupsPanel'))
+const dbBackups = (
+  <Suspense fallback={null}>
+    <DbBackupsPanel />
+  </Suspense>
+)
 
 type OpsTab = 'containers' | 'backups'
 
@@ -49,6 +57,7 @@ export function OpsView({ data }: { data: OpsResponse }) {
     return (
       <>
         <NotConfigured />
+        {dbBackups}
         {data.notifications && <NotificationsPanel notifications={data.notifications} />}
       </>
     )
@@ -58,6 +67,7 @@ export function OpsView({ data }: { data: OpsResponse }) {
       <Alerts alerts={data.alerts ?? []} okText="Conteneurs et sauvegardes sont en ordre." />
       <Freshness containers={data.containers} />
       {data.backups && <BackupsPanel backups={data.backups} />}
+      {dbBackups}
       {data.notifications && <NotificationsPanel notifications={data.notifications} />}
     </>
   )
