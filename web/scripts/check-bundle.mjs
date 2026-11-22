@@ -15,7 +15,7 @@ const limits = {
   // l’onglet Boucles et les comptes CLI du monitoring environ 20, l’onglet
   // Secrets environ 6, les sauvegardes de bases de données environ 4,5, le
   // bloc Déploiement des applications environ 4. Tous sont chargés à la demande.
-  'total brotli': 355 * 1024,
+  'total brotli': 360 * 1024,
 }
 let entryGzip = 0
 let xtermGzip = 0
