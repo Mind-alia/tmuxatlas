@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, Layers, Play, RotateCw, ScrollText, Square } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { lazy, Suspense, useRef, useState } from 'react'
 import { Button, Dialog } from '../../ui'
 import { fetchStacks, runStackAction } from './api'
 import { InlineError } from './ContainersList'
@@ -25,6 +25,9 @@ import type {
   DockerStackActionResponse,
   DockerStackResult,
 } from './types'
+
+/** Deployment from git: loaded when an application's block is first opened. */
+const DeployBlock = lazy(() => import('./deploy/DeployBlock'))
 
 type View = 'stacks' | 'routes'
 
@@ -170,6 +173,10 @@ export function ApplicationsPanel({
                 })
               }
               onAction={action => setConfirm({ stack, action })}
+              onChanged={() => {
+                void refresh()
+                onContainersChanged()
+              }}
               onOpenContainer={onOpenContainer}
             />
           ))}
@@ -207,6 +214,7 @@ function StackCard({
   outcome,
   onDismiss,
   onAction,
+  onChanged,
   onOpenContainer,
 }: {
   stack: DockerStack
@@ -216,6 +224,7 @@ function StackCard({
   outcome?: Outcome
   onDismiss: () => void
   onAction: (action: DockerStackAction) => void
+  onChanged: () => void
   onOpenContainer: (id: string, tab?: DetailTab) => void
 }) {
   const services = stack.services ?? []
@@ -264,6 +273,7 @@ function StackCard({
         )}
       </div>
       {outcome && <OutcomeReport outcome={outcome} onDismiss={onDismiss} />}
+      {stack.working_dir && <DeploySection stack={stack.name} onChanged={onChanged} />}
       <button
         type="button"
         aria-expanded={open}
@@ -275,6 +285,47 @@ function StackCard({
       </button>
       {open && <ServiceList containers={services} onOpenContainer={onOpenContainer} />}
     </article>
+  )
+}
+
+const deployOpenKey = (stack: string) => `atlas-deploy-open:${stack}`
+
+/** The "Déploiement" block of a card. It stays open across reloads, so a running deployment is found again. */
+function DeploySection({ stack, onChanged }: { stack: string; onChanged: () => void }) {
+  const [open, setOpen] = useState(() => {
+    try {
+      return window.localStorage.getItem(deployOpenKey(stack)) === '1'
+    } catch {
+      return false
+    }
+  })
+  const toggle = () => {
+    const next = !open
+    setOpen(next)
+    try {
+      if (next) window.localStorage.setItem(deployOpenKey(stack), '1')
+      else window.localStorage.removeItem(deployOpenKey(stack))
+    } catch {
+      /* stockage indisponible : le bloc se refermera au rechargement */
+    }
+  }
+  return (
+    <>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={toggle}
+        className="ui-focus-ring -mx-1 flex min-h-9 items-center gap-1.5 self-start rounded px-1 text-2xs text-muted-foreground hover:text-foreground"
+      >
+        {open ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
+        Déploiement
+      </button>
+      {open && (
+        <Suspense fallback={<p className="text-2xs text-muted-foreground">Chargement…</p>}>
+          <DeployBlock stack={stack} onChanged={onChanged} />
+        </Suspense>
+      )}
+    </>
   )
 }
 

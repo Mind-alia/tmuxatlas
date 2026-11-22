@@ -479,6 +479,10 @@ func Run(ctx context.Context, opts *Options) error {
 		// Database backups of the containers, admin only (pkg/dbbackup).
 		dbBackups.start(ctx, opts, dockerUI).Register(dockerRouters(r, opts, originMiddleware))
 
+		// Application deployment — git fast-forward, compose build and up,
+		// rollback, admin only and off by default (pkg/deploy).
+		newDeployHandler(opts, dockerUI).Register(dockerRouters(r, opts, originMiddleware))
+
 		// Protected API routes
 		r.Group(func(r chi.Router) {
 			mutations := r

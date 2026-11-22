@@ -6,7 +6,8 @@ quels conteneurs. Il complète la vue en direct décrite dans
 [ops.md](ops.md#live-view-pkgdockerui) et suit les mêmes règles : réservé aux
 administrateurs (refusé aux comptes `user`), désactivé par
 `TMUXATLAS_DOCKER=off`, lecture de l’API Docker par son socket, aucune commande
-`docker` ni `docker compose` lancée.
+`docker` ni `docker compose` lancée — sauf par le bloc **Déploiement**, à
+activer à part ([deploiement-applications.md](deploiement-applications.md)).
 
 ## Ce que montre l’onglet
 
@@ -124,10 +125,12 @@ de la première colonne montre la valeur brute de l’étiquette.
 
 ## Limites
 
-- **Pas de mise à jour ni de déploiement** : pas de `compose up`, `down`,
-  `pull`, `build`, ni de suppression. Un service défini dans le fichier Compose
-  mais jamais créé n’apparaît pas, et une modification du fichier n’est pas
-  appliquée : il faut passer par `docker compose` sur le serveur.
+- **Démarrer, arrêter et redémarrer ne mettent rien à jour** : pas de
+  `compose up`, `down`, `pull`, `build`, ni de suppression. Un service défini
+  dans le fichier Compose mais jamais créé n’apparaît pas. Pour récupérer le
+  code depuis git, reconstruire et relancer, voir le bloc **Déploiement** de
+  chaque carte, désactivé par défaut :
+  [deploiement-applications.md](deploiement-applications.md).
 - **Routes détectées par étiquettes seulement.** Un proxy configuré par
   fichier (nginx, Caddyfile, fichier ou API de Traefik, tunnel) n’apparaît
   pas : la vue ne lit aucun fichier de configuration et n’interroge aucun
