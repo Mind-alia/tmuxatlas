@@ -470,6 +470,11 @@ func Run(ctx context.Context, opts *Options) error {
 		// Its routes carry their own authentication (see dockerRouters).
 		dockerUI.Register(dockerRouters(r, opts, originMiddleware))
 
+		// Secrets vault — encrypted application variables, admin only
+		// (pkg/secrets). Same routers: a passphrase check or a restart must
+		// not hold the account policy's lock.
+		newSecretsHandler(opts, dockerUI).Register(dockerRouters(r, opts, originMiddleware))
+
 		// Protected API routes
 		r.Group(func(r chi.Router) {
 			mutations := r

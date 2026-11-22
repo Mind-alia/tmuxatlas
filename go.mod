@@ -3,6 +3,7 @@ module github.com/LosFurina/tmuxatlas
 go 1.25.1
 
 require (
+	filippo.io/age v1.2.1
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/creack/pty/v2 v2.0.1
 	github.com/go-chi/chi/v5 v5.2.4

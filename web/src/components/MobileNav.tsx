@@ -4,6 +4,7 @@ import {
   Container,
   FolderOpen,
   Inbox,
+  KeyRound,
   LayoutGrid,
   List,
   LogOut,
@@ -37,6 +38,7 @@ export function MobileNav({
   onAgents,
   onFiles,
   onOps,
+  onSecrets,
   onAdmin,
   onSettings,
   onNewSession,
@@ -53,6 +55,7 @@ export function MobileNav({
   onAgents?: () => void
   onFiles?: () => void
   onOps?: () => void
+  onSecrets?: () => void
   onAdmin?: () => void
   onSettings: () => void
   onNewSession?: () => void
@@ -71,6 +74,7 @@ export function MobileNav({
     ...(onWall ? [{ label: 'Mur de sessions', icon: LayoutGrid, action: onWall, active: currentView === 'wall' }] : []),
     ...(onAgents ? [{ label: 'Équipes d’agents', icon: Orbit, action: onAgents, active: currentView === 'agents' }] : []),
     ...(onOps ? [{ label: 'Conteneurs', icon: Container, action: onOps, active: currentView === 'ops' }] : []),
+    ...(onSecrets ? [{ label: 'Secrets', icon: KeyRound, action: onSecrets, active: currentView === 'secrets' }] : []),
     ...(role === 'admin' && onAdmin
       ? [{ label: 'Administration', icon: Shield, action: onAdmin, active: currentView === 'admin' }]
       : []),
