@@ -28,7 +28,7 @@ function message(error: unknown, fallback: string) {
 }
 
 /** Loads a listing on mount, every 10 s while visible, and on demand. */
-function useListing<T>(load: (signal: AbortSignal) => Promise<T>) {
+export function useListing<T>(load: (signal: AbortSignal) => Promise<T>) {
   const [data, setData] = useState<T | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [forbidden, setForbidden] = useState(false)
@@ -64,7 +64,7 @@ function useListing<T>(load: (signal: AbortSignal) => Promise<T>) {
   return { data, failure, forbidden, refresh }
 }
 
-function ListingState({ data, failure, forbidden, what }: { data: unknown; failure: string | null; forbidden: boolean; what: string }) {
+export function ListingState({ data, failure, forbidden, what }: { data: unknown; failure: string | null; forbidden: boolean; what: string }) {
   if (forbidden) return <p className="text-xs text-muted-foreground">Cette page est réservée aux administrateurs.</p>
   if (!data && failure) return <InlineError message={`Impossible de lire les ${what} : ${failure}`} />
   if (!data) return <p className="text-xs text-muted-foreground">Chargement…</p>
@@ -136,7 +136,7 @@ function DeleteDialog({ request, onClose, onDone }: { request: DeleteRequest | n
   )
 }
 
-function Table({ label, head, children }: { label: string; head: string[]; children: ReactNode }) {
+export function Table({ label, head, children }: { label: string; head: string[]; children: ReactNode }) {
   return (
     <div role="region" aria-label={label} className="overflow-x-auto rounded-lg border border-border bg-card">
       <table className="w-full border-collapse text-left text-xs font-normal">
@@ -155,7 +155,7 @@ function Table({ label, head, children }: { label: string; head: string[]; child
   )
 }
 
-function Empty({ children }: { children: ReactNode }) {
+export function Empty({ children }: { children: ReactNode }) {
   return (
     <div className="rounded-lg border border-border bg-card px-3 py-6 text-center text-xs text-muted-foreground">{children}</div>
   )
