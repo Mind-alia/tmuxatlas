@@ -21,7 +21,7 @@ export interface DeployGit {
 }
 
 export type DeployStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
-export type DeployStepName = 'check' | 'fetch' | 'merge' | 'images' | 'retag' | 'build' | 'up' | 'verify'
+export type DeployStepName = 'check' | 'fetch' | 'merge' | 'images' | 'retag' | 'build' | 'up' | 'verify' | 'prune'
 
 export interface DeployStep {
   name: DeployStepName
@@ -40,6 +40,8 @@ export interface DeployImage {
   image: string
   image_id: string
   rollback_tag?: string
+  /** rebuilt: a new image was built and the old one is kept; unchanged: never touched; replaced: a rollback moved it back. */
+  status?: 'rebuilt' | 'unchanged' | 'replaced'
 }
 
 export type DeployResult = 'running' | 'success' | 'failed' | 'cancelled' | 'interrupted'
@@ -75,4 +77,7 @@ export interface DeployState {
   current?: DeployRecord
   history: DeployRecord[] | null
   rollback_id?: string
+  /** The latest deployment when it left nothing to restore, and why. */
+  rollback_blocked_id?: string
+  rollback_blocked?: string
 }

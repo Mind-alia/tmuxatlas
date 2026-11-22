@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -31,7 +32,15 @@ var stepTimeouts = map[string]time.Duration{
 	stepRetag:  2 * time.Minute,
 	stepBuild:  40 * time.Minute,
 	stepUp:     10 * time.Minute,
+	stepPrune:  2 * time.Minute,
 }
+
+// keptTags is how many rollback tags a rebuilt image of a stack keeps.
+const keptTags = 3
+
+// cleanupTimeout bounds each removal of a rollback tag. It is not tied to
+// the operation: a cancelled deployment still tidies up after itself.
+const cleanupTimeout = time.Minute
 
 // Defaults of the final verification.
 const (
@@ -99,6 +108,10 @@ type State struct {
 	History []Record `json:"history"`
 	// RollbackID is the deployment that can be rolled back, if any.
 	RollbackID string `json:"rollback_id,omitempty"`
+	// RollbackBlockedID is the latest deployment when it restarted the
+	// services but left nothing to restore; RollbackBlocked says why.
+	RollbackBlockedID string `json:"rollback_blocked_id,omitempty"`
+	RollbackBlocked   string `json:"rollback_blocked,omitempty"`
 }
 
 // Service runs and records the deployments.
@@ -249,7 +262,7 @@ func (s *Service) State(ctx context.Context, stack string) (State, error) {
 		}
 		state.History = history
 		if current == nil && state.Blocked == "" {
-			state.RollbackID = rollbackCandidate(history)
+			state.RollbackID, state.RollbackBlockedID, state.RollbackBlocked = rollbackCandidate(history)
 		}
 	}
 	return state, nil
@@ -275,14 +288,19 @@ func (s *Service) Record(stack, id string) (Record, error) {
 	return record, nil
 }
 
+// nothingToRestore refuses the rollback of a deployment that rebuilt no image.
+const nothingToRestore = "rien à restaurer : ce déploiement n’a reconstruit aucune image, et une image tirée d’un registre n’est jamais déplacée"
+
 // rollbackCandidate returns the deployment a rollback would undo: the latest
-// one, if its images were kept, if it went as far as restarting the services
-// and if it has not been rolled back since. history is most recent first.
-func rollbackCandidate(history []Record) string {
+// one, if it went as far as restarting the services, if it has not been
+// rolled back since and if it rebuilt at least one image that is still kept.
+// When only the last condition fails, blocked names that deployment and
+// reason says why. history is most recent first.
+func rollbackCandidate(history []Record) (id, blocked, reason string) {
 	undone := make(map[string]bool)
 	for _, record := range history {
 		if record.Result == ResultRunning {
-			return ""
+			return "", "", ""
 		}
 		if record.Kind == KindRollback {
 			if record.Result == ResultSuccess {
@@ -295,16 +313,16 @@ func rollbackCandidate(history []Record) string {
 		}
 		up := record.step(stepUp)
 		if undone[record.ID] || up == nil || (up.Status != StepDone && up.Status != StepFailed) {
-			return ""
+			return "", "", ""
 		}
 		for _, image := range record.Images {
-			if image.RollbackTag != "" && retaggable(image.Image) {
-				return record.ID
+			if image.restorable() {
+				return record.ID, "", ""
 			}
 		}
-		return ""
+		return "", record.ID, nothingToRestore
 	}
-	return ""
+	return "", "", ""
 }
 
 // begin checks the guards and reserves the stack for a new operation.
@@ -356,7 +374,7 @@ func (s *Service) begin(ctx context.Context, kind, stack, actor string, steps []
 // Deploy starts a deployment in the background and returns its record.
 func (s *Service) Deploy(ctx context.Context, stack, actor string) (Record, error) {
 	op, err := s.begin(ctx, KindDeploy, stack, actor,
-		[]string{stepCheck, stepFetch, stepMerge, stepImages, stepBuild, stepUp, stepVerify})
+		[]string{stepCheck, stepFetch, stepMerge, stepImages, stepBuild, stepUp, stepVerify, stepPrune})
 	if err != nil {
 		return Record{}, err
 	}
@@ -374,7 +392,11 @@ func (s *Service) Rollback(ctx context.Context, stack, id, actor string) (Record
 	if !ValidProject(stack) || !recordIDPattern.MatchString(id) {
 		return Record{}, refuse(http.StatusBadRequest, "identifiant invalide")
 	}
-	if rollbackCandidate(s.store.list(stack, listedRecords)) != id {
+	candidate, blocked, reason := rollbackCandidate(s.store.list(stack, listedRecords))
+	if blocked == id {
+		return Record{}, refuse(http.StatusConflict, "%s", reason)
+	}
+	if candidate != id {
 		return Record{}, refuse(http.StatusConflict, "ce déploiement n’est pas, ou plus, celui sur lequel on peut revenir : recharge l’état")
 	}
 	source, err := s.store.load(stack, id)
@@ -614,7 +636,9 @@ func (s *Service) runDeploy(op *operation) {
 	}
 
 	if !s.do(op, stepImages, stepTimeouts[stepImages], func(ctx context.Context, run Runner, out io.Writer) error {
-		return s.keepImages(ctx, op, run, out)
+		// Which images the build will replace is not known yet: all are kept,
+		// and the build step drops the tags of those it left alone.
+		return s.keepImages(ctx, op, run, out, nil, "")
 	}) {
 		return
 	}
@@ -627,13 +651,17 @@ func (s *Service) runDeploy(op *operation) {
 			select {
 			case s.build <- struct{}{}:
 			case <-ctx.Done():
+				s.forgetImages(op, run, out)
 				return ctx.Err()
 			}
 		}
 		defer func() { <-s.build }()
 		if err := run.Run(ctx, Command{Tool: ToolDocker, Args: op.plan.composeArgs("build"), Dir: dir}, nil); err != nil {
+			// Nothing was restarted: there is nothing to roll back to.
+			s.forgetImages(op, run, out)
 			return failed("docker compose build", err)
 		}
+		s.compareImages(op, run, out)
 		return nil
 	}) {
 		return
@@ -648,14 +676,207 @@ func (s *Service) runDeploy(op *operation) {
 		return
 	}
 
-	s.do(op, stepVerify, s.verifyBudget(), func(ctx context.Context, _ Runner, out io.Writer) error {
+	if !s.do(op, stepVerify, s.verifyBudget(), func(ctx context.Context, _ Runner, out io.Writer) error {
 		return s.verify(ctx, op, out)
+	}) {
+		return
+	}
+
+	// Never a failure: a tag that stays only takes disk space.
+	s.do(op, stepPrune, stepTimeouts[stepPrune], func(_ context.Context, run Runner, out io.Writer) error {
+		s.pruneTags(op, run, out)
+		return nil
 	})
 }
 
+// untag removes rollback tags, and only them: a tag that does not have the
+// exact shape this package gives them is left alone. `docker image rm` of a
+// tag removes that name, not the image, as long as the image has another
+// name or a container. It returns the tags that are gone.
+func (s *Service) untag(run Runner, out io.Writer, dir string, tags []string) map[string]bool {
+	gone := make(map[string]bool)
+	tried := make(map[string]bool)
+	for _, tag := range tags {
+		if tried[tag] || !isRollbackTag(tag) {
+			continue
+		}
+		tried[tag] = true
+		ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		answer := &limited{limit: 4096}
+		err := run.Run(ctx, Command{Tool: ToolDocker, Args: []string{"image", "rm", "--no-prune", tag}, Dir: dir}, answer)
+		cancel()
+		if err == nil || strings.Contains(strings.ToLower(answer.buf.String()), "no such image") {
+			gone[tag] = true
+		} else {
+			fmt.Fprintf(out, "Étiquette %s non retirée (%v)\n", tag, err)
+		}
+	}
+	return gone
+}
+
+// forgetImages drops every rollback tag the operation made: nothing changed,
+// so there is nothing to come back to.
+func (s *Service) forgetImages(op *operation, run Runner, out io.Writer) {
+	op.mu.Lock()
+	var tags []string
+	for _, image := range op.record.Images {
+		tags = append(tags, image.RollbackTag)
+	}
+	op.mu.Unlock()
+	gone := s.untag(run, out, op.plan.workingDir, tags)
+	s.update(op, func(record *Record) {
+		for i := range record.Images {
+			record.Images[i].Status = ImageUnchanged
+			if gone[record.Images[i].RollbackTag] {
+				record.Images[i].RollbackTag = ""
+			}
+		}
+	})
+}
+
+// compareImages tells, after the build, which services got a new image: those
+// whose image name now designates another image than the one their container
+// uses. The others keep no rollback tag: their image was not rebuilt (pulled
+// from a registry, or built identical), its name may be shared with other
+// applications, and a rollback must never move it.
+func (s *Service) compareImages(op *operation, run Runner, out io.Writer) {
+	op.mu.Lock()
+	images := append([]Image(nil), op.record.Images...)
+	op.mu.Unlock()
+	current := make(map[string]string) // image name -> ID it designates now
+	rebuiltTags := make(map[string]bool)
+	var rebuilt, unchanged []string
+	for i, image := range images {
+		status := ImageUnchanged
+		if image.RollbackTag != "" && retaggable(image.Image) {
+			id, known := current[image.Image]
+			if !known {
+				ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+				found := &limited{limit: 4096}
+				if err := run.Run(ctx, Command{Tool: ToolDocker, Args: []string{"image", "inspect", "--format", "{{.Id}}", image.Image}, Dir: op.plan.workingDir}, found); err == nil {
+					id = strings.TrimSpace(found.buf.String())
+				}
+				cancel()
+				current[image.Image] = id
+			}
+			if imageIDPattern.MatchString(id) && id != image.ImageID {
+				status = ImageRebuilt
+				rebuiltTags[image.RollbackTag] = true
+			}
+		}
+		images[i].Status = status
+		name := image.Service
+		if name == "" {
+			name = image.Container
+		}
+		if status == ImageRebuilt {
+			rebuilt = append(rebuilt, name)
+		} else {
+			unchanged = append(unchanged, name)
+		}
+	}
+	var drop []string
+	for _, image := range images {
+		if image.Status == ImageUnchanged && !rebuiltTags[image.RollbackTag] {
+			drop = append(drop, image.RollbackTag)
+		}
+	}
+	gone := s.untag(run, out, op.plan.workingDir, drop)
+	for i := range images {
+		if images[i].Status == ImageUnchanged && (gone[images[i].RollbackTag] || rebuiltTags[images[i].RollbackTag]) {
+			images[i].RollbackTag = ""
+		}
+	}
+	s.update(op, func(record *Record) { record.Images = images })
+	fmt.Fprintf(out, "Images reconstruites : %s ; inchangées : %s\n", listOrNone(rebuilt), listOrNone(unchanged))
+}
+
+func listOrNone(names []string) string {
+	if len(names) == 0 {
+		return "aucune"
+	}
+	return strings.Join(names, ", ")
+}
+
+// tagRepository returns what precedes ":atlas-rollback-…" in a rollback tag.
+func tagRepository(tag string) string {
+	if i := strings.LastIndex(tag, ":atlas-rollback-"); i >= 0 {
+		return tag[:i]
+	}
+	return tag
+}
+
+// pruneTags keeps, for each image this deployment rebuilt, the keptTags most
+// recent rollback tags of the stack and removes the older ones. It only knows
+// the tags written in the records of this stack: nothing else is removed.
+func (s *Service) pruneTags(op *operation, run Runner, out io.Writer) {
+	op.mu.Lock()
+	currentID, stack := op.record.ID, op.record.Stack
+	repos := make(map[string]bool)
+	for _, image := range op.record.Images {
+		if image.Status == ImageRebuilt && isRollbackTag(image.RollbackTag) {
+			repos[tagRepository(image.RollbackTag)] = true
+		}
+	}
+	op.mu.Unlock()
+	if len(repos) == 0 {
+		fmt.Fprintln(out, "Aucune image reconstruite : aucune étiquette à nettoyer.")
+		return
+	}
+	records := s.store.list(stack, keptRecords)
+	byRepo := make(map[string][]string)
+	seen := make(map[string]bool)
+	for _, record := range records {
+		for _, image := range record.Images {
+			tag := image.RollbackTag
+			if !isRollbackTag(tag) || seen[tag] || !repos[tagRepository(tag)] {
+				continue
+			}
+			seen[tag] = true
+			byRepo[tagRepository(tag)] = append(byRepo[tagRepository(tag)], tag)
+		}
+	}
+	var drop []string
+	for _, tags := range byRepo {
+		sort.Slice(tags, func(i, j int) bool {
+			a, b := rollbackStamp(tags[i]), rollbackStamp(tags[j])
+			if a != b {
+				return a > b
+			}
+			return tags[i] > tags[j]
+		})
+		if len(tags) > keptTags {
+			drop = append(drop, tags[keptTags:]...)
+		}
+	}
+	sort.Strings(drop)
+	gone := s.untag(run, out, op.plan.workingDir, drop)
+	// The records forget the tags that are gone, so they are not tried again.
+	for _, record := range records {
+		if record.ID == currentID || record.Result == ResultRunning {
+			continue
+		}
+		changed := false
+		for i := range record.Images {
+			if gone[record.Images[i].RollbackTag] {
+				record.Images[i].RollbackTag = ""
+				changed = true
+			}
+		}
+		if changed {
+			if err := s.store.save(record); err != nil {
+				s.logger.WithError(err).WithField("stack", stack).Warn("deployment record not written")
+			}
+		}
+	}
+	fmt.Fprintf(out, "%d ancienne(s) étiquette(s) de retour arrière retirée(s) ; les %d plus récentes de chaque image reconstruite sont gardées.\n", len(gone), keptTags)
+}
+
 // keepImages records, for each container of the stack, the image it uses,
-// and puts a local rollback tag on it. Nothing is pushed.
-func (s *Service) keepImages(ctx context.Context, op *operation, run Runner, out io.Writer) error {
+// and puts a local rollback tag on it. Nothing is pushed. With only, the
+// images under another name are recorded as unchanged and get no tag. status
+// is given to the tagged ones.
+func (s *Service) keepImages(ctx context.Context, op *operation, run Runner, out io.Writer, only map[string]bool, status string) error {
 	target, err := s.opts.Stacks.DeployTarget(ctx, op.plan.project)
 	if err != nil {
 		_, message := dockerui.ErrorStatus(err)
@@ -669,10 +890,18 @@ func (s *Service) keepImages(ctx context.Context, op *operation, run Runner, out
 		stamp = at.UTC().Format("20060102-150405")
 	}
 	var images []Image
+	var tags []string
+	kept := 0
 	tagged := make(map[string]string) // tag -> image ID
 	for _, service := range target.Services {
 		if !imageIDPattern.MatchString(service.ImageID) {
 			fmt.Fprintf(out, "%s : identifiant d’image inattendu, image non mémorisée\n", service.Container)
+			continue
+		}
+		if only != nil && !only[service.Image] {
+			images = append(images, Image{
+				Service: service.Service, Container: service.Container, Image: service.Image, ImageID: service.ImageID, Status: ImageUnchanged,
+			})
 			continue
 		}
 		tag := rollbackTag(op.plan.project, service.Service, service.Image, stamp)
@@ -682,63 +911,76 @@ func (s *Service) keepImages(ctx context.Context, op *operation, run Runner, out
 		}
 		if _, done := tagged[tag]; !done {
 			if err := run.Run(ctx, Command{Tool: ToolDocker, Args: []string{"image", "tag", service.ImageID, tag}, Dir: op.plan.workingDir}, nil); err != nil {
+				s.untag(run, out, op.plan.workingDir, tags)
 				return failed("docker image tag", err)
 			}
 			tagged[tag] = service.ImageID
+			tags = append(tags, tag)
 		}
+		kept++
 		images = append(images, Image{
-			Service: service.Service, Container: service.Container, Image: service.Image, ImageID: service.ImageID, RollbackTag: tag,
+			Service: service.Service, Container: service.Container, Image: service.Image, ImageID: service.ImageID, RollbackTag: tag, Status: status,
 		})
 	}
-	if len(images) == 0 {
+	if kept == 0 && only == nil {
 		return errors.New("aucune image à mémoriser : un retour arrière serait impossible")
 	}
 	s.update(op, func(record *Record) { record.Images = images })
 	return nil
 }
 
+// move is one image name a rollback puts back on the image kept under tag.
+type move struct{ tag, id, name string }
+
+// restorableMoves lists the names a rollback of source moves: only those of
+// the images that deployment rebuilt. An image it left unchanged, such as
+// one pulled from a registry and shared with other stacks, is never touched.
+func restorableMoves(source Record) []move {
+	var moves []move
+	seen := make(map[string]bool)
+	for _, image := range source.Images {
+		if image.restorable() && !seen[image.Image] {
+			seen[image.Image] = true
+			moves = append(moves, move{tag: image.RollbackTag, id: image.ImageID, name: image.Image})
+		}
+	}
+	return moves
+}
+
 func (s *Service) runRollback(op *operation, source Record) {
 	defer s.finish(op)
 	dir := op.plan.workingDir
+	moves := restorableMoves(source)
+	names := make(map[string]bool, len(moves))
+	for _, m := range moves {
+		names[m.name] = true
+	}
 
 	if !s.do(op, stepImages, stepTimeouts[stepImages], func(ctx context.Context, run Runner, out io.Writer) error {
+		if len(moves) == 0 {
+			return errors.New(nothingToRestore)
+		}
 		// The code does not move; its commit is noted when git can tell.
 		if commit, err := readHead(ctx, run, dir); err == nil {
 			s.update(op, func(record *Record) { record.CommitBefore, record.CommitAfter = commit, commit })
 		}
-		return s.keepImages(ctx, op, run, out)
+		// Only the images about to be replaced are kept.
+		return s.keepImages(ctx, op, run, out, names, ImageReplaced)
 	}) {
 		return
 	}
 
 	if !s.do(op, stepRetag, stepTimeouts[stepRetag], func(ctx context.Context, run Runner, out io.Writer) error {
-		type move struct{ tag, id, name string }
-		var moves []move
-		seen := make(map[string]string)
-		for _, image := range source.Images {
-			switch {
-			case image.RollbackTag == "" || !imageIDPattern.MatchString(image.ImageID):
-				fmt.Fprintf(out, "%s : aucune image mémorisée, service laissé tel quel\n", image.Service)
-			case !retaggable(image.Image):
-				fmt.Fprintf(out, "%s : image désignée par son empreinte ou son identifiant, laissée telle quelle\n", image.Service)
-			case seen[image.Image] == "":
-				seen[image.Image] = image.ImageID
-				moves = append(moves, move{tag: image.RollbackTag, id: image.ImageID, name: image.Image})
-			case seen[image.Image] != image.ImageID:
-				fmt.Fprintf(out, "%s : une autre image était mémorisée sous le même nom, la première est gardée\n", image.Service)
-			}
-		}
-		if len(moves) == 0 {
-			return errors.New("aucune image à restaurer")
-		}
 		// Every kept image is checked before any name moves.
 		for _, m := range moves {
 			found := &limited{limit: 4096}
-			if err := run.Run(ctx, Command{Tool: ToolDocker, Args: []string{"image", "inspect", "--format", "{{.Id}}", m.tag}, Dir: dir}, found); err != nil {
-				return fmt.Errorf("l’image de retour arrière %s est introuvable (%v) : elle a peut-être été supprimée", m.tag, err)
+			err := run.Run(ctx, Command{Tool: ToolDocker, Args: []string{"image", "inspect", "--format", "{{.Id}}", m.tag}, Dir: dir}, found)
+			if err == nil && strings.TrimSpace(found.buf.String()) != m.id {
+				err = errors.New("elle ne désigne plus l’image mémorisée")
 			}
-			if strings.TrimSpace(found.buf.String()) != m.id {
-				return fmt.Errorf("l’étiquette %s ne désigne plus l’image mémorisée", m.tag)
+			if err != nil {
+				s.forgetImages(op, run, out)
+				return fmt.Errorf("l’image de retour arrière %s est inutilisable (%v) : elle a peut-être été supprimée", m.tag, err)
 			}
 		}
 		for _, m := range moves {

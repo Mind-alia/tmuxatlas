@@ -23,6 +23,9 @@ var (
 	imageIDPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	// imageRefPattern is a repository with an optional tag, as docker tag takes it.
 	imageRefPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,199}(:[0-9]{1,5}/[a-z0-9._/-]{1,199})?(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$`)
+	// rollbackTagPattern is the exact shape of the tags this package creates:
+	// nothing else is ever removed.
+	rollbackTagPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:-]{0,254}:atlas-rollback-([0-9]{8}-[0-9]{6})(-[0-9a-f]{12})?$`)
 	// tagUnsafe is what a repository name cannot hold.
 	tagUnsafe = regexp.MustCompile(`[^a-z0-9._-]+`)
 )
@@ -161,4 +164,17 @@ func rollbackTag(project, service, image, stamp string) string {
 		repo = "atlas-rollback/" + strings.Trim(name, "-._")
 	}
 	return repo + ":atlas-rollback-" + stamp
+}
+
+// isRollbackTag tells whether tag has the shape of a tag made by rollbackTag.
+func isRollbackTag(tag string) bool {
+	return rollbackTagPattern.MatchString(tag)
+}
+
+// rollbackStamp returns the date part of a rollback tag, which sorts by age.
+func rollbackStamp(tag string) string {
+	if match := rollbackTagPattern.FindStringSubmatch(tag); match != nil {
+		return match[1]
+	}
+	return ""
 }

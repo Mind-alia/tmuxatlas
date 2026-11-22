@@ -54,6 +54,21 @@ const (
 	stepBuild  = "build"  // docker compose build
 	stepUp     = "up"     // docker compose up -d
 	stepVerify = "verify" // the containers run and are healthy
+	stepPrune  = "prune"  // drop the oldest rollback tags of the rebuilt images
+)
+
+// What an operation did to the image of a service.
+const (
+	// ImageRebuilt: the deployment built a new image under the service's
+	// image name; the previous one is kept under RollbackTag.
+	ImageRebuilt = "rebuilt"
+	// ImageUnchanged: the name still designates the same image (pulled from a
+	// registry, or rebuilt identical). No rollback tag is kept and a rollback
+	// never touches it: other applications may share that name.
+	ImageUnchanged = "unchanged"
+	// ImageReplaced: a rollback moved the name back to an earlier image; the
+	// one it replaced is kept under RollbackTag.
+	ImageReplaced = "replaced"
 )
 
 // Step is one stage of an operation.
@@ -77,8 +92,19 @@ type Image struct {
 	// Image is the reference the container was created from.
 	Image   string `json:"image"`
 	ImageID string `json:"image_id"`
-	// RollbackTag is the local tag put on ImageID, "" when tagging failed.
+	// RollbackTag is the local tag that keeps ImageID, "" when there is none
+	// (image unchanged, or tag removed since).
 	RollbackTag string `json:"rollback_tag,omitempty"`
+	// Status is rebuilt, unchanged or replaced; "" until the build is over,
+	// and in records written before the distinction existed.
+	Status string `json:"status,omitempty"`
+}
+
+// restorable tells whether a rollback can put this image back: only an image
+// this deployment rebuilt, still kept under a tag, under a name that can move.
+func (i Image) restorable() bool {
+	return i.Status == ImageRebuilt && i.RollbackTag != "" && isRollbackTag(i.RollbackTag) &&
+		imageIDPattern.MatchString(i.ImageID) && retaggable(i.Image)
 }
 
 // ServiceCheck is the state of one container at the last verification.

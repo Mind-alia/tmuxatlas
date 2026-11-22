@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -37,10 +38,75 @@ type fakeRunner struct {
 	on map[string]func(ctx context.Context, out io.Writer) error
 	// merged is set once `git merge` ran: the head is then the new commit.
 	merged bool
+	// tags is the image store of the fake Docker: name -> image ID. `image
+	// tag`, `image rm` and `image inspect` act on it as Docker does.
+	tags map[string]string
+	// builds is what `compose build` produces: image name -> new image ID.
+	builds map[string]string
 }
 
 func newFakeRunner() *fakeRunner {
-	return &fakeRunner{on: map[string]func(context.Context, io.Writer) error{}}
+	return &fakeRunner{
+		on:     map[string]func(context.Context, io.Writer) error{},
+		tags:   map[string]string{"postgres:16": imageDB, "shop-web": imageWeb},
+		builds: map[string]string{},
+	}
+}
+
+// image returns what a name designates in the fake image store.
+func (f *fakeRunner) image(name string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tags[name]
+}
+
+// rollbackTags lists the atlas-rollback tags of the fake image store.
+func (f *fakeRunner) rollbackTags() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for name := range f.tags {
+		if strings.Contains(name, ":atlas-rollback-") {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// docker plays the image commands on the fake store.
+func (f *fakeRunner) docker(args []string, out io.Writer) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case len(args) == 4 && args[0] == "image" && args[1] == "tag":
+		id := args[2]
+		if !strings.HasPrefix(id, "sha256:") {
+			if id = f.tags[args[2]]; id == "" {
+				io.WriteString(out, "Error response from daemon: No such image: "+args[2]+"\n")
+				return errors.New("exit status 1")
+			}
+		}
+		f.tags[args[3]] = id
+	case len(args) == 4 && args[0] == "image" && args[1] == "rm":
+		if _, found := f.tags[args[3]]; !found {
+			io.WriteString(out, "Error response from daemon: No such image: "+args[3]+"\n")
+			return errors.New("exit status 1")
+		}
+		delete(f.tags, args[3])
+	case len(args) == 5 && args[0] == "image" && args[1] == "inspect":
+		id := f.tags[args[4]]
+		if id == "" {
+			io.WriteString(out, "Error response from daemon: No such image: "+args[4]+"\n")
+			return errors.New("exit status 1")
+		}
+		io.WriteString(out, id+"\n")
+	case args[0] == "compose" && args[len(args)-1] == "build":
+		for name, id := range f.builds {
+			f.tags[name] = id
+		}
+	}
+	return nil
 }
 
 func (f *fakeRunner) Run(ctx context.Context, cmd Command, out io.Writer) error {
@@ -72,6 +138,8 @@ func (f *fakeRunner) Run(ctx context.Context, cmd Command, out io.Writer) error 
 		} else {
 			io.WriteString(out, headBefore)
 		}
+	case cmd.Tool == ToolDocker:
+		return f.docker(cmd.Args, out)
 	}
 	return nil
 }
@@ -201,6 +269,9 @@ func refusal(t *testing.T, err error) *Error {
 
 func TestDeployRunsTheStepsInOrder(t *testing.T) {
 	f := newFixture(t, nil)
+	// The build gives the web service a new image; the database image comes
+	// from a registry and stays what it was.
+	f.runner.builds["shop-web"] = imageWebNew
 	record := f.run(t, "shop")
 
 	stamp := mustStamp(t, record.StartedAt)
@@ -214,6 +285,9 @@ func TestDeployRunsTheStepsInOrder(t *testing.T) {
 		"docker image tag " + imageDB + " postgres:atlas-rollback-" + stamp,
 		"docker image tag " + imageWeb + " shop-web:atlas-rollback-" + stamp,
 		compose + " build",
+		"docker image inspect --format {{.Id}} postgres:16",
+		"docker image inspect --format {{.Id}} shop-web",
+		"docker image rm --no-prune postgres:atlas-rollback-" + stamp,
 		compose + " up -d",
 	}
 	if got := f.runner.commands(); !reflect.DeepEqual(got, want) {
@@ -227,7 +301,7 @@ func TestDeployRunsTheStepsInOrder(t *testing.T) {
 	if record.Result != ResultSuccess || record.Error != "" || record.FinishedAt == "" {
 		t.Fatalf("résultat : %s %q (%s)", record.Result, record.Error, statuses(record))
 	}
-	if statuses(record) != "check=done fetch=done merge=done images=done build=done up=done verify=done" {
+	if statuses(record) != "check=done fetch=done merge=done images=done build=done up=done verify=done prune=done" {
 		t.Fatalf("étapes : %s", statuses(record))
 	}
 	if record.Actor != "admin" || record.Kind != KindDeploy || record.Branch != "main" || record.Upstream != "origin/main" {
@@ -238,11 +312,21 @@ func TestDeployRunsTheStepsInOrder(t *testing.T) {
 		t.Fatalf("commits : %+v %+v", record.CommitBefore, record.CommitAfter)
 	}
 	wantImages := []Image{
-		{Service: "db", Container: "shop-db-1", Image: "postgres:16", ImageID: imageDB, RollbackTag: "postgres:atlas-rollback-" + stamp},
-		{Service: "web", Container: "shop-web-1", Image: "shop-web", ImageID: imageWeb, RollbackTag: "shop-web:atlas-rollback-" + stamp},
+		{Service: "db", Container: "shop-db-1", Image: "postgres:16", ImageID: imageDB, Status: ImageUnchanged},
+		{Service: "web", Container: "shop-web-1", Image: "shop-web", ImageID: imageWeb, RollbackTag: "shop-web:atlas-rollback-" + stamp, Status: ImageRebuilt},
 	}
 	if !reflect.DeepEqual(record.Images, wantImages) {
 		t.Fatalf("images : %+v", record.Images)
+	}
+	// Only the rebuilt image keeps a rollback tag; the shared one has none.
+	if got := f.runner.rollbackTags(); !reflect.DeepEqual(got, []string{"shop-web:atlas-rollback-" + stamp}) {
+		t.Fatalf("étiquettes de retour arrière : %v", got)
+	}
+	if f.runner.image("postgres:16") != imageDB || f.runner.image("shop-web:atlas-rollback-"+stamp) != imageWeb {
+		t.Fatal("images déplacées")
+	}
+	if output := record.step(stepBuild).Output; !strings.Contains(output, "Images reconstruites : web ; inchangées : db") {
+		t.Fatalf("sortie du build : %q", output)
 	}
 	if len(record.Checks) != 2 || record.Checks[0].Verdict != verdictOK {
 		t.Fatalf("vérification : %+v", record.Checks)
@@ -311,7 +395,7 @@ func TestDirtyWorkingTreeIsRefused(t *testing.T) {
 		return nil
 	}
 	record := f.run(t, "shop")
-	if record.Result != ResultFailed || statuses(record) != "check=failed fetch=skipped merge=skipped images=skipped build=skipped up=skipped verify=skipped" {
+	if record.Result != ResultFailed || statuses(record) != "check=failed fetch=skipped merge=skipped images=skipped build=skipped up=skipped verify=skipped prune=skipped" {
 		t.Fatalf("résultat : %s (%s)", record.Result, statuses(record))
 	}
 	for _, want := range []string{"non commitées", "M src/app.py", "R docs/new name.md"} {
@@ -363,7 +447,7 @@ func TestFastForwardFailureStopsBeforeDocker(t *testing.T) {
 		return errors.New("exit status 128")
 	}
 	record := f.run(t, "shop")
-	if record.Result != ResultFailed || statuses(record) != "check=done fetch=done merge=failed images=skipped build=skipped up=skipped verify=skipped" {
+	if record.Result != ResultFailed || statuses(record) != "check=done fetch=done merge=failed images=skipped build=skipped up=skipped verify=skipped prune=skipped" {
 		t.Fatalf("résultat : %s (%s)", record.Result, statuses(record))
 	}
 	if !strings.Contains(record.Error, "avance rapide impossible") || !strings.Contains(record.step(stepMerge).Output, "Not possible to fast-forward") {
@@ -392,7 +476,7 @@ func TestBuildFailureRestartsNothing(t *testing.T) {
 		return errors.New("exit status 17")
 	}
 	record := f.run(t, "shop")
-	if record.Result != ResultFailed || statuses(record) != "check=done fetch=done merge=done images=done build=failed up=skipped verify=skipped" {
+	if record.Result != ResultFailed || statuses(record) != "check=done fetch=done merge=done images=done build=failed up=skipped verify=skipped prune=skipped" {
 		t.Fatalf("résultat : %s (%s)", record.Result, statuses(record))
 	}
 	if !strings.Contains(record.Error, "docker compose build a échoué") || !strings.Contains(record.step(stepBuild).Output, "failed to solve") {
@@ -403,28 +487,40 @@ func TestBuildFailureRestartsNothing(t *testing.T) {
 			t.Fatalf("services relancés après un build en échec : %s", call)
 		}
 	}
-	// The images were kept, but nothing changed: no rollback is offered.
-	if len(record.Images) != 2 {
-		t.Fatalf("images : %+v", record.Images)
+	// Nothing changed: the tags just made are removed and no rollback is offered.
+	stamp := mustStamp(t, record.StartedAt)
+	got := f.runner.mutating()
+	if want := []string{
+		"docker image rm --no-prune postgres:atlas-rollback-" + stamp,
+		"docker image rm --no-prune shop-web:atlas-rollback-" + stamp,
+	}; len(got) < 2 || !reflect.DeepEqual(got[len(got)-2:], want) {
+		t.Fatalf("commandes : %v", got)
 	}
-	if state, _ := f.service.State(context.Background(), "shop"); state.RollbackID != "" {
+	if tags := f.runner.rollbackTags(); len(tags) != 0 {
+		t.Fatalf("étiquettes laissées : %v", tags)
+	}
+	for _, image := range record.Images {
+		if image.Status != ImageUnchanged || image.RollbackTag != "" {
+			t.Fatalf("images : %+v", record.Images)
+		}
+	}
+	if state, _ := f.service.State(context.Background(), "shop"); state.RollbackID != "" || state.RollbackBlockedID != "" {
 		t.Fatal("retour arrière proposé alors que rien n’a été relancé")
 	}
 }
 
 func TestRollbackPutsTheKeptImagesBack(t *testing.T) {
+	const imagePulled = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
 	f := newFixture(t, nil)
+	f.runner.builds["shop-web"] = imageWebNew
 	deployed := f.run(t, "shop")
 	stamp := mustStamp(t, deployed.StartedAt)
-	// The build gave the web service a new image.
 	f.stacks.set("shop", func(target *dockerui.DeployTarget) { target.Services[1].ImageID = imageWebNew })
-	inspected := map[string]string{"postgres": imageDB, "shop-web": imageWeb}
-	for repo, id := range inspected {
-		f.runner.on["docker image inspect --format {{.Id}} "+repo+":"] = func(_ context.Context, out io.Writer) error {
-			io.WriteString(out, id+"\n")
-			return nil
-		}
-	}
+	// Meanwhile another application pulled a newer postgres:16: the name the
+	// database service shares now designates another image.
+	f.runner.mu.Lock()
+	f.runner.tags["postgres:16"] = imagePulled
+	f.runner.mu.Unlock()
 
 	if _, err := f.service.Rollback(context.Background(), "shop", "20200101T000000.000000000Z-00000000", "admin"); refusal(t, err).Status != http.StatusConflict {
 		t.Fatalf("retour vers un déploiement inconnu : %v", err)
@@ -447,11 +543,8 @@ func TestRollbackPutsTheKeptImagesBack(t *testing.T) {
 	now := mustStamp(t, record.StartedAt)
 	want := []string{
 		"git --no-optional-locks log -1 --format=%H%x1f%h%x1f%cI%x1f%s",
-		"docker image tag " + imageDB + " postgres:atlas-rollback-" + now,
 		"docker image tag " + imageWebNew + " shop-web:atlas-rollback-" + now,
-		"docker image inspect --format {{.Id}} postgres:atlas-rollback-" + stamp,
 		"docker image inspect --format {{.Id}} shop-web:atlas-rollback-" + stamp,
-		"docker image tag postgres:atlas-rollback-" + stamp + " postgres:16",
 		"docker image tag shop-web:atlas-rollback-" + stamp + " shop-web",
 		"docker compose -p shop --project-directory " + f.appDir + " -f " + f.compose + " up -d --no-build",
 	}
@@ -462,16 +555,33 @@ func TestRollbackPutsTheKeptImagesBack(t *testing.T) {
 		statuses(record) != "images=done retag=done up=done verify=done" {
 		t.Fatalf("résultat : %s %q (%s)", record.Result, record.Error, statuses(record))
 	}
+	// The rebuilt image is back under its name; the shared image, its name
+	// and its tags were never touched.
+	if f.runner.image("shop-web") != imageWeb || f.runner.image("postgres:16") != imagePulled {
+		t.Fatalf("images : web %s, postgres %s", f.runner.image("shop-web"), f.runner.image("postgres:16"))
+	}
+	for _, call := range f.runner.commands() {
+		if strings.HasPrefix(call, "docker image tag") && strings.HasSuffix(call, " postgres:16") {
+			t.Fatalf("nom partagé ré-étiqueté : %s", call)
+		}
+	}
+	if got := f.runner.rollbackTags(); !reflect.DeepEqual(got, []string{"shop-web:atlas-rollback-" + stamp, "shop-web:atlas-rollback-" + now}) {
+		t.Fatalf("étiquettes : %v", got)
+	}
 	// The code did not move, and no git command changed anything.
 	if record.CommitBefore == nil || record.CommitAfter == nil || record.CommitBefore.SHA != record.CommitAfter.SHA {
 		t.Fatalf("commits : %+v %+v", record.CommitBefore, record.CommitAfter)
 	}
-	// The image the rollback replaced is kept too.
-	if record.Images[1].ImageID != imageWebNew || record.Images[1].RollbackTag != "shop-web:atlas-rollback-"+now {
+	// Only the image the rollback replaced is kept.
+	wantImages := []Image{
+		{Service: "db", Container: "shop-db-1", Image: "postgres:16", ImageID: imageDB, Status: ImageUnchanged},
+		{Service: "web", Container: "shop-web-1", Image: "shop-web", ImageID: imageWebNew, RollbackTag: "shop-web:atlas-rollback-" + now, Status: ImageReplaced},
+	}
+	if !reflect.DeepEqual(record.Images, wantImages) {
 		t.Fatalf("images : %+v", record.Images)
 	}
 	state, _ := f.service.State(context.Background(), "shop")
-	if state.RollbackID != "" || len(state.History) != 2 || state.History[0].Kind != KindRollback {
+	if state.RollbackID != "" || state.RollbackBlockedID != "" || len(state.History) != 2 || state.History[0].Kind != KindRollback {
 		t.Fatalf("état après retour arrière : %+v", state)
 	}
 	if _, err := f.service.Rollback(context.Background(), "shop", deployed.ID, "admin"); refusal(t, err).Status != http.StatusConflict {
@@ -479,15 +589,168 @@ func TestRollbackPutsTheKeptImagesBack(t *testing.T) {
 	}
 }
 
+// A deployment that rebuilt nothing leaves nothing to restore: its images
+// come from a registry and may be shared with other applications.
+func TestRollbackIsRefusedWhenNothingWasRebuilt(t *testing.T) {
+	f := newFixture(t, nil)
+	deployed := f.run(t, "shop")
+	if deployed.Result != ResultSuccess || len(f.runner.rollbackTags()) != 0 {
+		t.Fatalf("déploiement : %s, étiquettes %v", deployed.Result, f.runner.rollbackTags())
+	}
+	state, _ := f.service.State(context.Background(), "shop")
+	if state.RollbackID != "" || state.RollbackBlockedID != deployed.ID || !strings.Contains(state.RollbackBlocked, "rien à restaurer") {
+		t.Fatalf("état : %q %q %q", state.RollbackID, state.RollbackBlockedID, state.RollbackBlocked)
+	}
+	before := len(f.runner.commands())
+	_, err := f.service.Rollback(context.Background(), "shop", deployed.ID, "admin")
+	if refused := refusal(t, err); refused.Status != http.StatusConflict || !strings.Contains(refused.Message, "rien à restaurer") {
+		t.Fatalf("refus : %d %s", refused.Status, refused.Message)
+	}
+	if got := f.runner.commands()[before:]; len(got) != 0 {
+		t.Fatalf("commandes : %v", got)
+	}
+
+	// A record written before images had a status says nothing of what was
+	// rebuilt: its tags are not trusted either.
+	legacy := deployed
+	legacy.ID = "20990101T000000.000000000Z-00000000"
+	legacy.Images = []Image{{Service: "db", Container: "shop-db-1", Image: "postgres:16", ImageID: imageDB, RollbackTag: "postgres:atlas-rollback-20990101-000000"}}
+	if err := f.service.store.save(legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.Rollback(context.Background(), "shop", legacy.ID, "admin"); !strings.Contains(refusal(t, err).Message, "rien à restaurer") {
+		t.Fatalf("ancien enregistrement : %v", err)
+	}
+	if got := f.runner.commands()[before:]; len(got) != 0 {
+		t.Fatalf("commandes : %v", got)
+	}
+}
+
+// After a successful deployment only the three most recent rollback tags of
+// each rebuilt image stay, and nothing but tags Atlas made is removed.
+func TestOldRollbackTagsArePruned(t *testing.T) {
+	var clock sync.Mutex
+	now := time.Date(2026, 1, 5, 10, 0, 0, 0, time.UTC)
+	f := newFixture(t, func(options *Options) {
+		options.Now = func() time.Time {
+			clock.Lock()
+			defer clock.Unlock()
+			now = now.Add(time.Minute)
+			return now
+		}
+	})
+	// Tags that look alike but that no record of Atlas knows.
+	f.runner.mu.Lock()
+	f.runner.tags["shop-web:atlas-rollback-manual"] = imageWeb
+	f.runner.tags["shop-web:atlas-rollback-20200101-000000"] = imageWeb
+	f.runner.tags["shop-web:v1"] = imageWeb
+	f.runner.mu.Unlock()
+
+	var stamps []string
+	var records []Record
+	for i := 0; i < 5; i++ {
+		built := fmt.Sprintf("sha256:%064d", 5000+i)
+		f.runner.builds["shop-web"] = built
+		before := len(f.runner.commands())
+		record := f.run(t, "shop")
+		if record.Result != ResultSuccess || statuses(record) != "check=done fetch=done merge=done images=done build=done up=done verify=done prune=done" {
+			t.Fatalf("déploiement %d : %s %q", i, record.Result, record.Error)
+		}
+		records = append(records, record)
+		stamps = append(stamps, mustStamp(t, record.StartedAt))
+		f.stacks.set("shop", func(target *dockerui.DeployTarget) { target.Services[1].ImageID = built })
+		var removed []string
+		for _, call := range f.runner.commands()[before:] {
+			if strings.HasPrefix(call, "docker image rm") {
+				removed = append(removed, strings.TrimPrefix(call, "docker image rm --no-prune "))
+			}
+		}
+		// Each deployment drops the tag of the unchanged database image, then
+		// from the fourth on the oldest tag of the rebuilt one, last.
+		want := []string{"postgres:atlas-rollback-" + stamps[i]}
+		if i >= keptTags {
+			want = append(want, "shop-web:atlas-rollback-"+stamps[i-keptTags])
+		}
+		if !reflect.DeepEqual(removed, want) {
+			t.Fatalf("déploiement %d, étiquettes retirées : %v, attendu %v", i, removed, want)
+		}
+	}
+	want := []string{
+		"shop-web:atlas-rollback-20200101-000000",
+		"shop-web:atlas-rollback-" + stamps[2], "shop-web:atlas-rollback-" + stamps[3], "shop-web:atlas-rollback-" + stamps[4],
+		"shop-web:atlas-rollback-manual",
+	}
+	if got := f.runner.rollbackTags(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("étiquettes gardées : %v\nattendu : %v", got, want)
+	}
+	if f.runner.image("shop-web:v1") != imageWeb || f.runner.image("postgres:16") != imageDB {
+		t.Fatal("une autre étiquette a été touchée")
+	}
+	// The records forget the tags that are gone and keep the others.
+	for i, record := range records {
+		stored, err := f.service.Record("shop", record.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tag := stored.Images[1].RollbackTag
+		if kept := i >= 2; kept != (tag == "shop-web:atlas-rollback-"+stamps[i]) || (!kept && tag != "") {
+			t.Errorf("déploiement %d : étiquette enregistrée %q", i, tag)
+		}
+	}
+	if state, _ := f.service.State(context.Background(), "shop"); state.RollbackID != records[4].ID {
+		t.Fatalf("retour arrière : %q", state.RollbackID)
+	}
+}
+
+func TestOnlyRollbackTagsAreEverRemoved(t *testing.T) {
+	for tag, want := range map[string]bool{
+		"shop-web:atlas-rollback-20260105-100000":                           true,
+		"registry.example.com:5000/team/app:atlas-rollback-20260105-100000": true,
+		"atlas-rollback/shop-web:atlas-rollback-20260105-100000":            true,
+		"shop-web:atlas-rollback-20260105-100000-0123456789ab":              true,
+		"shop-web:atlas-rollback-manual":                                    false,
+		"shop-web:latest":                                                   false,
+		"shop-web":                                                          false,
+		"postgres:16":                                                       false,
+		"shop-web:atlas-rollback-20260105-100000 --force":                   false,
+		"--all":                             false,
+		"":                                  false,
+		"sha256:" + strings.Repeat("a", 64): false,
+	} {
+		if isRollbackTag(tag) != want {
+			t.Errorf("isRollbackTag(%q) = %v", tag, !want)
+		}
+	}
+	f := newFixture(t, nil)
+	f.runner.mu.Lock()
+	f.runner.tags["shop-web:atlas-rollback-20260105-100000"] = imageWeb
+	f.runner.mu.Unlock()
+	gone := f.service.untag(f.runner, io.Discard, f.appDir, []string{
+		"shop-web", "postgres:16", "--all", imageWeb, "shop-web:atlas-rollback-20260105-100000", "shop-web:atlas-rollback-20260105-100000",
+		"shop-web:atlas-rollback-20990101-000000",
+	})
+	if got := f.runner.commands(); !reflect.DeepEqual(got, []string{
+		"docker image rm --no-prune shop-web:atlas-rollback-20260105-100000",
+		"docker image rm --no-prune shop-web:atlas-rollback-20990101-000000",
+	}) {
+		t.Fatalf("commandes : %v", got)
+	}
+	// A tag Docker no longer has counts as gone.
+	if len(gone) != 2 || f.runner.image("shop-web") != imageWeb || f.runner.image("postgres:16") != imageDB {
+		t.Fatalf("retirées : %v", gone)
+	}
+}
+
 func TestRollbackStopsWhenAKeptImageIsGoneOrMoved(t *testing.T) {
 	for name, inspect := range map[string]func(out io.Writer) error{
 		"gone":  func(out io.Writer) error { return errors.New("exit status 1") },
-		"moved": func(out io.Writer) error { io.WriteString(out, imageWebNew+"\n"); return nil },
+		"moved": func(out io.Writer) error { io.WriteString(out, imageDB+"\n"); return nil },
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t, nil)
+			f.runner.builds["shop-web"] = imageWebNew
 			deployed := f.run(t, "shop")
-			f.runner.on["docker image inspect"] = func(_ context.Context, out io.Writer) error { return inspect(out) }
+			f.runner.on["docker image inspect --format {{.Id}} shop-web:atlas-rollback-"] = func(_ context.Context, out io.Writer) error { return inspect(out) }
 			before := len(f.runner.commands())
 			started, err := f.service.Rollback(context.Background(), "shop", deployed.ID, "admin")
 			if err != nil {
@@ -499,8 +762,17 @@ func TestRollbackStopsWhenAKeptImageIsGoneOrMoved(t *testing.T) {
 				t.Fatalf("résultat : %s (%s)", record.Result, statuses(record))
 			}
 			for _, call := range f.runner.commands()[before:] {
-				if strings.Contains(call, "compose") || strings.HasPrefix(call, "docker image tag postgres:atlas-rollback-") {
+				if strings.Contains(call, "compose") || strings.HasPrefix(call, "docker image tag shop-web:atlas-rollback-") {
 					t.Fatalf("un nom d’image a bougé ou un service a été relancé : %s", call)
+				}
+			}
+			if f.runner.image("shop-web") != imageWebNew {
+				t.Fatal("le nom de l’image a bougé")
+			}
+			// Nothing was replaced: the rollback keeps no tag of its own.
+			for _, image := range record.Images {
+				if image.RollbackTag != "" || image.Status != ImageUnchanged {
+					t.Fatalf("images : %+v", record.Images)
 				}
 			}
 		})
@@ -515,12 +787,32 @@ func TestImagesPinnedByDigestAreLeftAlone(t *testing.T) {
 	})
 	deployed := f.run(t, "shop")
 	stamp := mustStamp(t, deployed.StartedAt)
-	if deployed.Images[0].RollbackTag != "postgres:atlas-rollback-"+stamp || deployed.Images[1].RollbackTag != "atlas-rollback/shop-web:atlas-rollback-"+stamp {
-		t.Fatalf("étiquettes : %+v", deployed.Images)
+	// Both get a tag before the build, under a name made for them, and lose
+	// it after: a name by digest or by ID cannot be rebuilt.
+	for _, want := range []string{
+		"docker image tag " + imageDB + " postgres:atlas-rollback-" + stamp,
+		"docker image tag " + imageWeb + " atlas-rollback/shop-web:atlas-rollback-" + stamp,
+		"docker image rm --no-prune postgres:atlas-rollback-" + stamp,
+		"docker image rm --no-prune atlas-rollback/shop-web:atlas-rollback-" + stamp,
+	} {
+		found := false
+		for _, call := range f.runner.mutating() {
+			found = found || call == want
+		}
+		if !found {
+			t.Errorf("commande absente : %s\n%s", want, strings.Join(f.runner.mutating(), "\n"))
+		}
 	}
-	// Neither name can receive a tag: there is nothing to roll back to.
-	if state, _ := f.service.State(context.Background(), "shop"); state.RollbackID != "" {
-		t.Fatalf("retour arrière proposé : %s", state.RollbackID)
+	for _, call := range f.runner.commands() {
+		if strings.HasPrefix(call, "docker image inspect") {
+			t.Errorf("image épinglée inspectée : %s", call)
+		}
+	}
+	if tags := f.runner.rollbackTags(); len(tags) != 0 || deployed.Images[0].Status != ImageUnchanged || deployed.Images[1].Status != ImageUnchanged {
+		t.Fatalf("étiquettes : %v, images : %+v", tags, deployed.Images)
+	}
+	if state, _ := f.service.State(context.Background(), "shop"); state.RollbackID != "" || state.RollbackBlockedID != deployed.ID {
+		t.Fatalf("retour arrière proposé : %+v", state)
 	}
 }
 
@@ -623,7 +915,7 @@ func TestCancelStopsTheCommandInProgress(t *testing.T) {
 	}
 	f.service.Wait("shop")
 	record, _ := f.service.Record("shop", started.ID)
-	if record.Result != ResultCancelled || statuses(record) != "check=done fetch=done merge=done images=done build=failed up=skipped verify=skipped" {
+	if record.Result != ResultCancelled || statuses(record) != "check=done fetch=done merge=done images=done build=failed up=skipped verify=skipped prune=skipped" {
 		t.Fatalf("résultat : %s (%s)", record.Result, statuses(record))
 	}
 	if record.step(stepBuild).Error != "annulée" {
@@ -775,9 +1067,10 @@ func TestVerification(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t, func(options *Options) { options.VerifyTimeout = 30 * time.Millisecond })
+			f.runner.builds["shop-web"] = imageWebNew
 			f.stacks.set("shop", func(target *dockerui.DeployTarget) { tc.change(&target.Services[1]) })
 			record := f.run(t, "shop")
-			if record.Result != ResultFailed || statuses(record) != "check=done fetch=done merge=done images=done build=done up=done verify=failed" {
+			if record.Result != ResultFailed || statuses(record) != "check=done fetch=done merge=done images=done build=done up=done verify=failed prune=skipped" {
 				t.Fatalf("résultat : %s (%s)", record.Result, statuses(record))
 			}
 			if !strings.Contains(record.Error, tc.want) {
@@ -815,7 +1108,7 @@ func TestOutputIsMaskedAndBounded(t *testing.T) {
 		}
 	}
 	build := record.step(stepBuild)
-	if len(build.Output) > maxStepOutput || !build.Truncated || !strings.HasSuffix(build.Output, "last line\n") {
+	if len(build.Output) > maxStepOutput || !build.Truncated || !strings.Contains(build.Output, "\nlast line\n") {
 		t.Fatalf("sortie du build : %d octets, tronquée %v", len(build.Output), build.Truncated)
 	}
 	for _, want := range []string{"API_TOKEN=***", "DATABASE_PASSWORD=***", "NPM_KEY=***", "Bearer ***", "ERROR DATABASE"} {

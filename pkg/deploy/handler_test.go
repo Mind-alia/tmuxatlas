@@ -1,9 +1,7 @@
 package deploy
 
 import (
-	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -81,6 +79,7 @@ func TestRoutesFlow(t *testing.T) {
 		t.Fatal("réponse sans no-store")
 	}
 
+	f.runner.builds["shop-web"] = imageWebNew
 	response = serve(h, testAdmin, http.MethodPost, base, "")
 	var started Record
 	if response.Code != http.StatusAccepted || json.Unmarshal(response.Body.Bytes(), &started) != nil || started.Actor != "root-admin" || started.Result != ResultRunning {
@@ -93,12 +92,6 @@ func TestRoutesFlow(t *testing.T) {
 		t.Fatalf("enregistrement : %d %s", response.Code, response.Body)
 	}
 
-	for repo, id := range map[string]string{"postgres": imageDB, "shop-web": imageWeb} {
-		f.runner.on["docker image inspect --format {{.Id}} "+repo+":"] = func(_ context.Context, out io.Writer) error {
-			io.WriteString(out, id+"\n")
-			return nil
-		}
-	}
 	// A session without account (passkey) acts under the handler's name.
 	response = serve(h, nil, http.MethodPost, base+"/rollback", `{"id":"`+started.ID+`"}`)
 	var rollback Record

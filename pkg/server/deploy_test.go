@@ -62,6 +62,9 @@ func (r *recordingRunner) Run(_ context.Context, cmd deploy.Command, out io.Writ
 		io.WriteString(out, "# branch.oid 1111\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +0 -1\n")
 	case strings.Contains(line, " log "):
 		io.WriteString(out, "1111111111111111111111111111111111111111\x1f1111111\x1f2026-01-05T10:00:00+00:00\x1fAdd the cart page\n")
+	case strings.Contains(line, " inspect "):
+		// The build produced a new image under the service's name.
+		io.WriteString(out, "sha256:"+strings.Repeat("9", 64)+"\n")
 	case strings.Contains(line, " build"):
 		io.WriteString(out, "building with NPM_TOKEN=build-secret-value\n")
 	}
@@ -289,9 +292,9 @@ func TestDeployRoutesKeepTheServerGuards(t *testing.T) {
 	}
 	compose := "docker compose -p shop --project-directory " + s.appDir + " -f " + filepath.Join(s.appDir, "compose.yaml")
 	changes := s.runner.changes()
-	if len(changes) != 5 || changes[0] != "git fetch" || changes[1] != "git merge --ff-only @{upstream}" ||
+	if len(changes) != 6 || changes[0] != "git fetch" || changes[1] != "git merge --ff-only @{upstream}" ||
 		!strings.HasPrefix(changes[2], "docker image tag sha256:"+dockerTestID+" shop-web:atlas-rollback-") ||
-		changes[3] != compose+" build" || changes[4] != compose+" up -d" {
+		changes[3] != compose+" build" || changes[4] != "docker image inspect --format {{.Id}} shop-web" || changes[5] != compose+" up -d" {
 		t.Fatalf("commandes : %v", changes)
 	}
 	// The output of the build goes to the admin only, secrets masked.

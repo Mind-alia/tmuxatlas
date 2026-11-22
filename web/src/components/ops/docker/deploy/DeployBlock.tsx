@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Button, Dialog } from '../../../ui'
 import { InlineError } from '../ContainersList'
 import { cancelDeploy, fetchDeployRecord, fetchDeployState, startDeploy, startRollback } from './api'
-import type { DeployCommit, DeployRecord, DeployState, DeployStep, DeployStepName } from './types'
+import type { DeployCommit, DeployImage, DeployRecord, DeployState, DeployStep, DeployStepName } from './types'
 
 /** Polling: fast while an operation runs, slow otherwise (each reading runs two git commands). */
 const RUNNING_MS = 2_000
@@ -18,9 +18,16 @@ const stepLabel: Record<DeployStepName, string> = {
   build: 'Construire (docker compose build)',
   up: 'Relancer les services (docker compose up -d)',
   verify: 'Vérifier les conteneurs',
+  prune: 'Retirer les anciennes étiquettes de retour arrière',
 }
 
-const deploySteps: DeployStepName[] = ['check', 'fetch', 'merge', 'images', 'build', 'up', 'verify']
+const imageStatusLabel: Record<NonNullable<DeployImage['status']>, string> = {
+  rebuilt: 'reconstruite, l’ancienne est gardée',
+  unchanged: 'inchangée',
+  replaced: 'remplacée par la précédente',
+}
+
+const deploySteps: DeployStepName[] = ['check', 'fetch', 'merge', 'images', 'build', 'up', 'verify', 'prune']
 
 const resultLabel: Record<DeployRecord['result'], string> = {
   running: 'en cours',
@@ -165,6 +172,7 @@ function HistoryRow({
     return () => controller.abort()
   }, [open, stack, record.id, record.result])
   const moved = record.commit_before && record.commit_after && record.commit_before.sha !== record.commit_after.sha
+  const images = (record.images ?? []).filter(image => image.status)
   return (
     <li data-record={record.id} className="flex min-w-0 flex-col gap-1 py-2">
       <button
@@ -207,6 +215,16 @@ function HistoryRow({
           {failure && <InlineError message={failure} />}
           {!detail && !failure && <p className="text-2xs text-muted-foreground">Chargement…</p>}
           {detail && <Steps record={detail} />}
+          {images.length > 0 && (
+            <ul aria-label="Images des services" className="mt-1 flex flex-col gap-0.5 text-2xs text-muted-foreground">
+              {images.map(image => (
+                <li key={image.container} data-image-status={image.status} className="break-all">
+                  <span className="font-mono text-foreground">{image.service || image.container}</span> : {image.image} —{' '}
+                  {imageStatusLabel[image.status!]}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
     </li>
@@ -414,6 +432,15 @@ export default function DeployBlock({ stack, onChanged }: { stack: string; onCha
                       >
                         Revenir à la version d’avant
                       </Button>
+                    ) : record.id === state.rollback_blocked_id ? (
+                      <div className="flex flex-col gap-1">
+                        <Button size="sm" leadingIcon={<Undo2 size={14} aria-hidden />} disabled aria-describedby={`${record.id}-blocked`}>
+                          Revenir à la version d’avant
+                        </Button>
+                        <p id={`${record.id}-blocked`} className="break-words text-2xs text-muted-foreground">
+                          Retour arrière indisponible : {state.rollback_blocked}.
+                        </p>
+                      </div>
                     ) : undefined
                   }
                 />
@@ -433,7 +460,7 @@ export default function DeployBlock({ stack, onChanged }: { stack: string; onCha
         title={confirm?.kind === 'rollback' ? `Revenir à la version d’avant pour « ${stack} » ?` : `Déployer « ${stack} » ?`}
         description={
           confirm?.kind === 'rollback'
-            ? 'Atlas remet en service les images qui tournaient avant ce déploiement. Le code sur le disque et la base de données ne sont pas touchés.'
+            ? 'Atlas remet en service les images que ce déploiement a reconstruites, telles qu’elles étaient avant. Les images inchangées, le code sur le disque et la base de données ne sont pas touchés.'
             : 'Atlas met le code à jour depuis git, reconstruit les images et relance les services. L’application est coupée le temps que ses conteneurs soient recréés.'
         }
         footer={
@@ -458,7 +485,7 @@ export default function DeployBlock({ stack, onChanged }: { stack: string; onCha
         {confirm?.kind === 'rollback' ? (
           <div className="flex flex-col gap-2 text-xs">
             <ul aria-label="Images remises en service" className="max-h-40 list-disc overflow-y-auto pl-5">
-              {(rollbackRecord?.images ?? confirm.record.images ?? []).map(image => (
+              {(rollbackRecord?.images ?? confirm.record.images ?? []).filter(image => image.status === 'rebuilt' && image.rollback_tag).map(image => (
                 <li key={image.container} className="break-all">
                   <span className="font-mono">{image.service || image.container}</span> : {image.image}{' '}
                   <span className="text-muted-foreground">({image.image_id.replace('sha256:', '').slice(0, 12)})</span>

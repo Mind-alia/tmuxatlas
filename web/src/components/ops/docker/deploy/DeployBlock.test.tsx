@@ -10,7 +10,7 @@ const FIRST = '20260105T100000.000000000Z-0a0b0c0d'
 const SECOND = '20260106T093000.000000000Z-1a1b1c1d'
 
 function steps(overrides: Partial<Record<DeployStep['name'], Partial<DeployStep>>> = {}): DeployStep[] {
-  return (['check', 'fetch', 'merge', 'images', 'build', 'up', 'verify'] as const).map(name => ({
+  return (['check', 'fetch', 'merge', 'images', 'build', 'up', 'verify', 'prune'] as const).map(name => ({
     name, status: 'done', duration_ms: 1200, ...overrides[name],
   }))
 }
@@ -22,8 +22,8 @@ function record(overrides: Partial<DeployRecord> = {}): DeployRecord {
     commit_before: { sha: '1'.repeat(40), short: '1111111', subject: 'Add the cart page', date: '2026-01-05T10:00:00Z' },
     commit_after: { sha: '2'.repeat(40), short: '2222222', subject: 'Fix the checkout total', date: '2026-01-06T09:00:00Z' },
     images: [
-      { service: 'db', container: 'shop-db-1', image: 'postgres:16', image_id: `sha256:${'a'.repeat(64)}`, rollback_tag: 'postgres:atlas-rollback-20260106-093000' },
-      { service: 'web', container: 'shop-web-1', image: 'shop-web', image_id: `sha256:${'b'.repeat(64)}`, rollback_tag: 'shop-web:atlas-rollback-20260106-093000' },
+      { service: 'db', container: 'shop-db-1', image: 'postgres:16', image_id: `sha256:${'a'.repeat(64)}`, status: 'unchanged' },
+      { service: 'web', container: 'shop-web-1', image: 'shop-web', image_id: `sha256:${'b'.repeat(64)}`, rollback_tag: 'shop-web:atlas-rollback-20260106-093000', status: 'rebuilt' },
     ],
     steps: steps(),
     ...overrides,
@@ -156,6 +156,7 @@ describe('DeployBlock', () => {
       'Construire (docker compose build)',
       'Relancer les services (docker compose up -d)',
       'Vérifier les conteneurs',
+      'Retirer les anciennes étiquettes de retour arrière',
     ])
     expect(within(dialog).getByText(/2 commits à récupérer sur origin\/main/)).toBeTruthy()
     expect(within(dialog).getByText('db, web')).toBeTruthy()
@@ -178,6 +179,7 @@ describe('DeployBlock', () => {
         build: { status: 'running', duration_ms: 0, output: '$ docker compose build\n#5 building…\nAPI_TOKEN=***\n', truncated: true },
         up: { status: 'pending', duration_ms: 0 },
         verify: { status: 'pending', duration_ms: 0 },
+        prune: { status: 'pending', duration_ms: 0 },
       }),
     })
     let current = state({ current: running, history: [running.steps ? { ...running, steps: running.steps.map(step => ({ ...step, output: undefined })) } : running] })
@@ -191,7 +193,7 @@ describe('DeployBlock', () => {
     const section = await screen.findByRole('region', { name: 'Opération en cours' })
     expect(within(section).getByText(/Déploiement en cours, lancé par admin/)).toBeTruthy()
     const items = within(section).getAllByRole('listitem')
-    expect(items.map(item => item.getAttribute('data-status'))).toEqual(['done', 'done', 'done', 'done', 'running', 'pending', 'pending'])
+    expect(items.map(item => item.getAttribute('data-status'))).toEqual(['done', 'done', 'done', 'done', 'running', 'pending', 'pending', 'pending'])
     // The output of the running step is shown without a click.
     const output = within(section).getByLabelText('Sortie de l’étape Construire (docker compose build)')
     expect(output.textContent).toContain('[… début tronqué]')
@@ -256,17 +258,43 @@ describe('DeployBlock', () => {
     // Opening a record fetches its steps and their output.
     fireEvent.click(within(rows[1]).getByRole('button', { expanded: false }))
     expect((await within(rows[1]).findByLabelText('Sortie de l’étape Construire (docker compose build)')).textContent).toContain('failed to solve')
+    // It also says which services got a new image and which were left alone.
+    const listed = within(within(rows[1]).getByRole('list', { name: 'Images des services' })).getAllByRole('listitem')
+    expect(listed.map(item => item.textContent)).toEqual([
+      'db : postgres:16 — inchangée',
+      'web : shop-web — reconstruite, l’ancienne est gardée',
+    ])
+    expect(listed.map(item => item.getAttribute('data-image-status'))).toEqual(['unchanged', 'rebuilt'])
 
     fireEvent.click(within(rows[0]).getByRole('button', { name: 'Revenir à la version d’avant' }))
     const dialog = screen.getByRole('alertdialog')
     expect(within(dialog).getByText(/migrations de base de données déjà appliquées ne sont pas annulées/)).toBeTruthy()
     expect(within(dialog).getByText(/le code sur le disque\s+reste au commit/)).toBeTruthy()
     const images = within(within(dialog).getByRole('list', { name: 'Images remises en service' })).getAllByRole('listitem').map(item => item.textContent)
-    expect(images).toEqual(['db : postgres:16 (aaaaaaaaaaaa)', 'web : shop-web (bbbbbbbbbbbb)'])
+    // Only the rebuilt image is restored: the unchanged one is not listed.
+    expect(images).toEqual(['web : shop-web (bbbbbbbbbbbb)'])
     expect(posts(calls)).toEqual([])
     fireEvent.click(within(dialog).getByRole('button', { name: 'Revenir en arrière' }))
     await waitFor(() => expect(posts(calls)).toEqual([{ url: `${BASE}/rollback`, method: 'POST', body: JSON.stringify({ id: SECOND }) }]))
     expect(await screen.findByText(/Retour arrière en cours/)).toBeTruthy()
+  })
+
+  it('disables the rollback, with the reason, when the deployment rebuilt nothing', async () => {
+    const nothing = record({
+      images: [{ service: 'db', container: 'shop-db-1', image: 'postgres:16', image_id: `sha256:${'a'.repeat(64)}`, status: 'unchanged' }],
+    })
+    const calls = mockApi(() =>
+      state({ history: [nothing], rollback_blocked_id: SECOND, rollback_blocked: 'rien à restaurer : ce déploiement n’a reconstruit aucune image' }),
+    )
+    render(<DeployBlock stack="shop" onChanged={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Historique \(1\)/ }))
+    const button = screen.getByRole('button', { name: 'Revenir à la version d’avant' }) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    expect(screen.getByText(/Retour arrière indisponible : rien à restaurer/)).toBeTruthy()
+    expect(button.getAttribute('aria-describedby')).toBe(`${SECOND}-blocked`)
+    fireEvent.click(button)
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(posts(calls)).toEqual([])
   })
 
   it('shows why the server refused an action', async () => {

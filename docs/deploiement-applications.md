@@ -14,10 +14,12 @@ travail est dans un dépôt git, il permet de :
 Le code est dans `pkg/deploy` ; les routes sont sous
 `/api/docker/stacks/{application}/deploy`.
 
-> ⚠️ **Cette fonction n’a été vérifiée que par des tests automatiques** où git
-> et Docker sont simulés. Elle n’a encore jamais tourné contre un vrai Docker.
-> Avant de s’en servir sur une application qui compte, essaie-la sur une
-> application sans enjeu.
+> **Ce qui a été essayé.** Le chemin nominal — un déploiement puis un retour
+> arrière réussis — a été essayé avec Docker Compose v5 sur une application
+> jetable. Tout le reste (échecs à chaque étape, annulation, délais, nettoyage
+> des étiquettes, images partagées) n’est vérifié que par des tests
+> automatiques où git et Docker sont simulés. Avant de t’en servir sur une
+> application qui compte, essaie-le sur une application sans enjeu.
 
 ## Activation
 
@@ -83,14 +85,50 @@ Les étapes, dans cet ordre, avec arrêt à la première erreur :
 | 1. Vérifier le dépôt | refus si le dossier n’est pas dans un dépôt git, si aucune branche n’est sortie (HEAD détachée), si la branche ne suit aucune branche distante, ou si des fichiers suivis ont des modifications non commitées (elles sont nommées) | 1 min |
 | 2. Récupérer | `git fetch` | 3 min |
 | 3. Avancer la branche | `git merge --ff-only @{upstream}` : avance rapide uniquement, vers la branche distante suivie | 2 min |
-| 4. Mémoriser les images | pour chaque conteneur de l’application, l’identifiant de l’image qu’il utilise est noté, et reçoit une étiquette locale `<dépôt>:atlas-rollback-<AAAAMMJJ-HHMMSS>` (`docker image tag`) ; rien n’est poussé | 2 min |
-| 5. Construire | `docker compose -p <projet> --project-directory <dossier> [--env-file …] -f <fichiers…> build` | 40 min |
+| 4. Mémoriser les images | pour chaque conteneur de l’application, l’identifiant de l’image qu’il utilise est noté, et reçoit une étiquette locale provisoire `<dépôt>:atlas-rollback-<AAAAMMJJ-HHMMSS>` (`docker image tag`) ; rien n’est poussé | 2 min |
+| 5. Construire | `docker compose -p <projet> --project-directory <dossier> [--env-file …] -f <fichiers…> build`, puis tri des images (voir « Images reconstruites et images inchangées ») | 40 min |
 | 6. Relancer | la même commande avec `up -d` | 10 min |
 | 7. Vérifier | après 5 secondes, lecture des conteneurs toutes les 4 secondes, pendant 3 minutes au plus (voir ci-dessous) | 3 min |
+| 8. Nettoyer | seulement après un déploiement réussi : retrait des plus anciennes étiquettes de retour arrière (voir plus bas) ; cette étape n’échoue jamais | 2 min |
 
 Ce qui n’est **jamais** fait : `git reset`, `checkout` ou changement de
 branche, `pull` avec fusion, `push`, option `--force`, `compose down`,
-suppression de conteneur, de volume ou d’image.
+suppression de conteneur ou de volume. La seule suppression est celle
+d’étiquettes `atlas-rollback-…` qu’Atlas a posées lui-même
+(`docker image rm --no-prune <étiquette>`, qui retire le nom et laisse
+l’image tant qu’elle a un autre nom ou un conteneur).
+
+### Images reconstruites et images inchangées
+
+Une application mêle souvent des images qu’elle construit (`build:`) et des
+images tirées d’un registre (`image: postgres:16`), dont le nom peut servir à
+d’autres applications du serveur. Seules les premières sont concernées par le
+retour arrière.
+
+Juste après le build, pour chaque service, Atlas demande à Docker quelle image
+le nom du service désigne maintenant (`docker image inspect`) et la compare à
+celle que son conteneur utilisait avant :
+
+- **différente** : le service est marqué **reconstruit**. L’ancienne image
+  garde son étiquette `atlas-rollback-…` ; c’est elle qu’un retour arrière
+  remettra ;
+- **identique** (image d’un registre, build sans changement), ou nom par
+  empreinte (`nom@sha256:…`), ou nom introuvable : le service est marqué
+  **inchangé**, l’étiquette provisoire posée à l’étape 4 est retirée, et un
+  retour arrière ne touchera jamais à cette image ni à son nom.
+
+Si le build échoue ou est annulé, toutes les étiquettes provisoires sont
+retirées : rien n’a changé, il n’y a rien à quoi revenir.
+
+L’historique montre, pour chaque opération, quels services ont été
+reconstruits et lesquels sont inchangés.
+
+**Nettoyage.** Après un déploiement réussi, Atlas ne garde, pour chaque image
+reconstruite, que les **3** étiquettes de retour arrière les plus récentes de
+l’application et retire les plus anciennes. Il ne retire que des étiquettes
+de la forme exacte `…:atlas-rollback-AAAAMMJJ-HHMMSS` inscrites dans les
+enregistrements de cette application : une étiquette posée à la main, même de
+nom voisin, n’est jamais touchée.
 
 Le projet, le dossier, les fichiers Compose et les éventuels fichiers
 `--env-file` sont ceux que Compose a lui-même notés dans les étiquettes des
@@ -117,16 +155,22 @@ Ce qui est déjà fait n’est pas défait : voir « En cas d’échec ».
 
 Dans l’historique, le dernier déploiement porte le bouton **Revenir à la
 version d’avant** s’il est allé jusqu’à relancer les services (étape 6
-tentée), si au moins une de ses images peut être remise sous son nom et s’il
-n’a pas déjà été annulé par un retour arrière réussi. Après confirmation :
+tentée) et s’il n’a pas déjà été annulé par un retour arrière réussi. Le
+bouton est **grisé, avec l’explication « rien à restaurer »**, quand ce
+déploiement n’a reconstruit aucune image (le serveur refuse aussi la
+demande). Après confirmation :
 
-1. les images actuellement en service sont mémorisées et étiquetées à leur
-   tour (on peut donc les retrouver) ;
-2. pour chaque image mémorisée par le déploiement, Atlas vérifie que
-   l’étiquette `atlas-rollback-…` désigne toujours la même image, puis la
+1. les images des services **reconstruits**, telles qu’elles tournent à ce
+   moment, sont mémorisées et étiquetées à leur tour (on peut donc les
+   retrouver) ; les images inchangées ne reçoivent aucune étiquette ;
+2. pour chaque image reconstruite par le déploiement, Atlas vérifie que
+   l’étiquette `atlas-rollback-…` désigne toujours l’image mémorisée, puis la
    remet sous le nom que le service attend
    (`docker image tag <dépôt>:atlas-rollback-… <nom d’image du service>`) ;
-   si une seule vérification échoue, aucun nom n’est déplacé ;
+   si une seule vérification échoue, aucun nom n’est déplacé et les
+   étiquettes de l’étape 1 sont retirées. **Le nom d’une image inchangée —
+   `postgres:16`, par exemple — n’est jamais déplacé**, même s’il a été mis à
+   jour entre-temps par un `pull` ;
 3. `docker compose … up -d --no-build` : Compose recrée les conteneurs dont
    l’image a changé ;
 4. la même vérification finale qu’un déploiement.
@@ -147,14 +191,20 @@ n’a pas déjà été annulé par un retour arrière réussi. Après confirmati
 - **Un seul niveau** : on ne revient que sur le dernier déploiement fait par
   Atlas. Les images plus anciennes gardent leur étiquette et peuvent être
   remises à la main.
+- **Seules les images reconstruites reculent.** Une image tirée d’un
+  registre (`image: postgres:16`), même si le déploiement a changé sa version
+  dans le fichier Compose, n’est pas remise : `up -d` la relance telle que le
+  fichier Compose actuel la demande.
 - **Images désignées par empreinte** (`image: nom@sha256:…`) ou sans nom :
-  elles sont mémorisées mais pas remises (un nom par empreinte ne se
-  déplace pas) ; le service est laissé tel quel et l’étape le signale.
+  jamais remises.
 - **Image supprimée** (par un `docker image prune -a`, par exemple) : le
   retour arrière échoue à l’étape 2, sans rien toucher.
-- **Images tirées d’un registre** (`image: postgres:16`) : le nom local est
-  remis sur l’ancienne image. Un service avec `pull_policy: always` la
-  retéléchargera au prochain `up`.
+- **Service construit sous un nom partagé** : si un service a à la fois
+  `build:` et un `image:` qui sert aussi à une autre application, ce nom est
+  reconstruit puis remis comme les autres. Donne aux images construites un
+  nom propre à l’application.
+- **Déploiements d’avant cette règle** : un enregistrement qui ne dit pas
+  quelles images ont été reconstruites n’offre pas de retour arrière.
 - Un déploiement fait à la main (hors Atlas) entre-temps n’est pas connu :
   le retour arrière remet les images d’avant le dernier déploiement **fait
   par Atlas**.
@@ -165,7 +215,8 @@ Chaque déploiement et chaque retour arrière laisse un enregistrement dans le
 dossier de données du hub :
 `~/.local/share/tmuxatlas/deploy/<application>/<identifiant>.json` (fichiers
 en `0600`, dossiers en `0700`). Il contient la date, le compte, l’application,
-les commits avant et après, les images d’avant avec leur étiquette, chaque
+les commits avant et après, les images d’avant avec leur état (reconstruite,
+inchangée, remplacée) et leur étiquette de retour arrière s’il y en a une, chaque
 étape avec ses commandes, sa durée, la fin de sa sortie et son erreur, puis le
 résultat : `success`, `failed`, `cancelled` ou `interrupted`.
 
@@ -195,8 +246,8 @@ reste à faire dépend de l’étape :
 | 1. Vérifier le dépôt | rien n’a changé | commiter, remiser (`git stash`) ou annuler les modifications nommées ; sortir une branche qui suit une branche distante |
 | 2. Récupérer | rien n’a changé | vérifier l’accès au dépôt distant depuis le compte du hub (`git fetch` dans le dossier). Atlas ne peut répondre à aucune demande de mot de passe : il faut une clé SSH sans phrase de passe ou un identifiant enregistré |
 | 3. Avancer la branche | rien n’a changé | la branche locale a des commits que la distante n’a pas : `git status` puis pousser, rebaser ou supprimer ces commits à la main |
-| 4. Mémoriser les images | **le code a avancé**, les services tournent encore sur les anciennes images | corriger la cause (Docker injoignable ?) puis relancer « Déployer » |
-| 5. Construire | **le code a avancé**, rien n’a été relancé : l’application tourne toujours sur les anciennes images | lire la sortie du build, corriger par un nouveau commit et redéployer. Pour remettre le code à l’ancien commit en attendant : `git reset --hard <commit d’avant>` à la main (Atlas ne le fait jamais) |
+| 4. Mémoriser les images | **le code a avancé**, les services tournent encore sur les anciennes images ; les étiquettes déjà posées sont retirées | corriger la cause (Docker injoignable ?) puis relancer « Déployer » |
+| 5. Construire | **le code a avancé**, rien n’a été relancé : l’application tourne toujours sur les anciennes images ; les étiquettes provisoires sont retirées | lire la sortie du build, corriger par un nouveau commit et redéployer. Pour remettre le code à l’ancien commit en attendant : `git reset --hard <commit d’avant>` à la main (Atlas ne le fait jamais) |
 | 6. Relancer | indéterminé : certains conteneurs peuvent avoir été recréés, d’autres non | `docker compose ps` dans le dossier ; relancer « Déployer », ou « Revenir à la version d’avant » |
 | 7. Vérifier | les services ont été relancés mais l’un d’eux ne tient pas | lire ses journaux (bouton **Journaux** de la carte), puis corriger et redéployer, ou « Revenir à la version d’avant » |
 
@@ -215,16 +266,19 @@ Autres cas :
   pointent déjà sur les anciennes images ; `docker compose up -d --no-build`
   à la main dans le dossier finit le travail.
 - **Remettre une image à la main** : l’enregistrement donne, pour chaque
-  service, l’étiquette de retour arrière ;
+  service reconstruit, l’étiquette de retour arrière ;
   `docker image tag <étiquette> <nom d’image du service>` puis
   `docker compose up -d --no-build`.
 
 ## Autres limites
 
-- **Les étiquettes `atlas-rollback-…` ne sont jamais supprimées.** Chaque
-  déploiement en ajoute, et les images qu’elles retiennent occupent le
+- **Étiquettes `atlas-rollback-…` : accumulation bornée, pas nulle.** Chaque
+  image reconstruite garde jusqu’à 3 anciennes versions, qui occupent le
   disque : ni `docker image prune` ni le bouton de nettoyage des images ne
-  les enlèvent tant qu’elles sont étiquetées. À nettoyer de temps en temps :
+  les enlèvent tant qu’elles sont étiquetées. Le nettoyage n’a lieu qu’après
+  un déploiement réussi, et oublie les étiquettes dont l’enregistrement a
+  disparu (au-delà de 40 opérations) ou dont le retrait a échoué. Pour voir
+  et retirer ce qui reste :
   `docker image ls --filter reference='*:atlas-rollback-*'` puis
   `docker image rm <étiquette>`.
 - **`up -d` simple** : pas de `--remove-orphans`, pas de `--profile`. Un
